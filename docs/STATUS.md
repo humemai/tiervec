@@ -11,9 +11,41 @@ Each part has the test programs of the experiment, wrapped as JUnit 5 tests that
 | Flat tier | `FlatIndex` with `NONE`, `SQ8`, and `BINARY` scans, compaction, `serialize` and `load`, scalar twin kernels | Correctness program, threaded program (5 s fast, 20 s and 60 s slow), correctness again with the scalar twins |
 | Graph tier | `GraphIndex` (concurrent HNSW, delete, `consolidate`, optional SQ8), `SealedGraph`, `seal` and `fromSealed` in memory, `SealedGraph.serialize` and `load` (one segment file, CRC32C per section) | Functional program (quick mode), threaded program with background consolidate (5 s fast, 60 s slow for fp32 and SQ8), latency during consolidate (slow), segment round trip and damage tests |
 | IVF | `IvfIndex` as a standalone index: lazy training, background retrain with atomic swap, drift detection, compaction | Single-threaded program at n = 6000 (fast, vector and scalar) and n = 20000 (slow), drift program (slow), threaded program (5 s fast, 10 s slow) |
-| Tier | `TieredIndex`: exact tail, sealed graph segments, merge, tombstones with a version floor, `rebuildFrom`, `checkpoint` and `open` for a settled tier (segments plus a manifest per generation, [format](SEGMENT-FORMAT.md)) | The tier program, one test at a time (fast), the 10 s threaded test (slow), reopen, manifest and crash-step tests (fast) |
+| Tier | `TieredIndex`: exact tail, sealed graph segments, merge, tombstones with a version floor, `rebuildFrom`, `checkpoint` and `open` for a settled tier (segments plus a manifest per generation, [format](SEGMENT-FORMAT.md)) | The tier program, one test at a time (fast), the 10 s threaded test (slow), reopen, manifest and crash-step tests (fast), the record-id reuse tests (see below) |
 
 The wrappers assert two things per program: zero failed checks, and at least the number of checks the program reported in earlier runs of the experiment. The program code itself is not changed in a way that weakens an assertion.
+
+## Record-id reuse and tombstones
+
+A host database frees a record id and later gives it to a new record, so the tier sees `delete(id)` followed by `add(id, newVector)`. The version floor of `TieredIndex` keeps the old copies of an id hidden while the new vector is visible. Tests cover this ([#5](https://github.com/humemai/tiervec/issues/5)). They use a model that holds the current vector of every id and keeps the older vectors, so a resurrected vector is recognised by its score.
+
+Cases, each on a fresh index:
+
+| Case | What it does |
+|---|---|
+| `a_tail` | The old copy sits in the active tail: delete 30 percent, re-add 80 percent of them with new vectors, delete and re-add again, then seal |
+| `a2_tail_and_segments` | The old copies sit in one segment and in the tail: delete, re-add, seal, merge |
+| `b_sealed` | The old copies sit in sealed segments: delete, re-add (the new vector in the tail, the old one below the floor), seal beside the old copies, delete and re-add again, seal, merge |
+| `c1_reuse_in_merge` | Re-add, and delete then re-add, inside a running merge of the segments that hold the old copies; then again after the merge |
+| `c2_delete_in_merge` | Delete, delete then re-add, delete then re-add then delete, replace, and brand-new ids, all inside a running merge; no delete may be lost when the merged segment is swapped in |
+| `e_floor_chain` | One set of ids goes through four generations, each in its own segment, so the floor moves up four times; then a merge |
+| `s_seal_window` | Operations inside the publish window of a seal, with the frozen tail holding every old copy (before the swap) and right after the swap, using `setSealHooks` |
+| `f_fuzz_background` | Slow variant only: the background worker seals and merges while one writer reuses, replaces and deletes ids and one reader searches all the time; a hit counts only for an id that was untouched for the whole search |
+
+Every checkpoint searches plain, with the id alone allowed, and under `Freshness.SEALED_ONLY`, with the current vector and with an older vector of the id as the query. A deleted id, an older vector's score, a repeated id, a wrong score, or a reused id at rank 1 for its old vector fails the run. `size()` and `stats().live()` are compared with the model, and the floor map must be empty after a full merge in the deterministic cases. A merge window or seal window that is not reached fails the run, it is never skipped.
+
+The tests are `RidReuseTest` (fast: n = 3000, dimension 32 and 128, two seeds, all deterministic cases, no reader thread), `RidReuseLongTest` and `RidReuseBigLongTest` (slow: all cases including the background case, with a concurrent reader that counts a hit only for an id untouched while the search ran; n = 3000 with three seeds on three configurations, and n = 20000), `RidReuseSwapRaceTest` (slow: a search paused inside its allow predicate while `mergeNow()` swaps and cleans up the floor), and `RidReuseMutantTest` and `RidReuseMutantLongTest`. The probe itself is `RidReuseProbe`.
+
+The probe found a race between a search and a merge swap ([#26](https://github.com/humemai/tiervec/issues/26)): a search that started before the swap could return an id that was deleted before it started, or an older vector of an id that was deleted and added again, because the merge removed the floor entries that the old segments still needed. The fix: a search counts itself on the view it reads, a view that a swap replaces while searches run on it is held, and the floor entries that a segment of a held view needs stay until those searches are done (the worker, `awaitIdle`, `mergeNow`, `sealNow` and `checkpoint` drop them then). The query path still takes no lock and starts no thread: it does one atomic add and one atomic subtract per search. `RidReuseSwapRaceTest` holds a search inside the first call of its filter, runs `mergeNow()`, lets the search go on, and checks the answer and that the entry is dropped afterwards; it failed on the code before the fix.
+
+A probe that cannot fail is not a test, so the mutant tests check that it fails on a broken tier. The test reads `TieredIndex.java`, applies one single-line change (the anchor must occur exactly once), compiles the copy with the JDK compiler API into a temporary directory, and runs the probe in a class loader that prefers that directory. `TieredIndex.java` itself has no test hook. This needs a JDK, not a JRE: without a compiler the mutant tests are skipped with a message, and they fail when the `CI` environment variable is set.
+
+| Mutant | Change | The probe must report |
+|---|---|---|
+| X0 | none (control) | a clean run |
+| M1 | `add` removes the floor entry of the id instead of raising it | `staleHits` above 0, in `b_sealed` |
+| M2 | `delete` takes a version but writes no floor entry | `lostDeletes` above 0, in `b_sealed` |
+| M3 | `cleanupFloor` drops every entry after a merge | a wrong answer in `c2_delete_in_merge` |
 
 ## What does not exist yet
 

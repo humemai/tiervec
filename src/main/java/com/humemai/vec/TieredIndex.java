@@ -60,7 +60,8 @@ import java.util.function.Supplier;
  * smallest segments (or the dead one) into ONE segment from their valid vectors only, throttled to {@code mergeRatePerSec} inserts
  * per second so the cores that serve queries are not starved, and swaps it in atomically. Floor entries whose stale copies are gone
  * are dropped at the swap, except those that a search still running on an older view can need: a search counts itself on the view it
- * reads, a replaced view with readers is held, and the worker drops the remaining entries once those searches are done.
+ * reads, a replaced view with readers is held, and the remaining entries are dropped once those searches are done (by the worker, or by
+ * awaitIdle, mergeNow, sealNow or checkpoint on the calling thread).
  *
  * <p>Size-ratio trigger (fix7, {@code mergeTriggerRatio} X, default 0 = off and the code is then the old code). The segment with the most live rows is the BIG one. When the live rows of all the other
  * segments together exceed X times the live rows of the big one, ALL segments are merged into one (the small ones go into the big one). Otherwise, when the count exceeds {@code maxSegments} and
@@ -631,21 +632,25 @@ public final class TieredIndex implements VecIndex {
         floorDue = v.frozen != null || !held.isEmpty();
     }
 
+    /** finish a deferred floor cleanup on the calling thread (a no-op when none is pending): the calls that promise a settled tier use it */
+    private void settleFloorIfDue() {
+        if (!floorDue) return;
+        mu.lock();
+        try {
+            settleFloor();
+        } finally {
+            mu.unlock();
+        }
+    }
+
     // ---- worker: seal and merge, one at a time ----
 
     private void workerLoop() {
         while (!closed) {
             try {
-                wake.tryAcquire(50, TimeUnit.MILLISECONDS);
+                wake.tryAcquire(floorDue ? 5 : 50, TimeUnit.MILLISECONDS); // a pending floor cleanup waits for a search to leave an old view: look again soon
                 wake.drainPermits();
-                if (floorDue) {
-                    mu.lock();
-                    try {
-                        settleFloor();
-                    } finally {
-                        mu.unlock();
-                    }
-                }
+                settleFloorIfDue();
                 while (!closed) {
                     boolean did = false;
                     work.lock();
@@ -969,33 +974,39 @@ public final class TieredIndex implements VecIndex {
 
     // ---- control for tests and reports ----
 
-    /** seal the active tail now, on the calling thread, even below smallLimit; waits for a running worker task first */
+    /** seal the active tail now, on the calling thread, even below smallLimit; waits for a running worker task first; finishes a pending floor cleanup */
     public void sealNow() {
         work.lock();
         try {
             doSeal(true);
+            settleFloorIfDue();
         } finally {
             work.unlock();
         }
     }
 
-    /** merge every segment into one (or compact the lone one when it has hidden copies), on the calling thread */
+    /** merge every segment into one (or compact the lone one when it has hidden copies), on the calling thread; finishes a pending floor cleanup */
     public void mergeNow() {
         work.lock();
         try {
             doMerge(true);
+            settleFloorIfDue();
         } finally {
             work.unlock();
         }
     }
 
-    /** waits until no seal or merge is due or running (for a quiet writer); false on timeout */
+    /**
+     * waits until no seal or merge is due or running and no floor cleanup is pending (for a quiet writer); false on timeout. The floor
+     * cleanup waits for the searches that still run on a replaced view, so a search that outlasts the timeout makes this return false.
+     */
     public boolean awaitIdle(long timeoutMs) {
         long end = System.nanoTime() + timeoutMs * 1_000_000L;
         while (System.nanoTime() < end) {
-            if (!sealDue() && pickMerge(view.segs, false) == null && work.tryLock()) {
+            settleFloorIfDue(); // on this thread: no wait for the worker's next wake
+            if (!floorDue && !sealDue() && pickMerge(view.segs, false) == null && work.tryLock()) {
                 work.unlock();
-                if (!sealDue() && pickMerge(view.segs, false) == null) return true;
+                if (!floorDue && !sealDue() && pickMerge(view.segs, false) == null) return true;
             }
             if (!worker.isAlive()) return false;
             LockSupport.parkNanos(2_000_000L);
@@ -1072,7 +1083,7 @@ public final class TieredIndex implements VecIndex {
                 throw new IllegalStateException("checkpoint needs an empty tail: call sealNow() first (this version persists segments only)");
             }
             if (floorDue) settleFloor(); // a merge that overlapped searches may have left entries that no search needs any more
-            if (!floor.isEmpty()) {
+            if (!floor.isEmpty() && held.isEmpty()) { // with a held view, entries may serve only that view: the segments of this view are checked below
                 throw new IllegalStateException("checkpoint needs an empty floor map, " + floor.size() + " ids have a replaced or deleted copy in a segment (this version persists no tombstones)");
             }
             for (Segment s : v.segs) {

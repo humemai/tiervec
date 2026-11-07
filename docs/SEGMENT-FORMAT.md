@@ -125,7 +125,7 @@ The manifest and the tombstone file carry their own `major.minor` under the same
 
 ## Manifest and tombstone file
 
-`manifest-<generation>.tvm` holds: magic `TVMAN001`, version, the body length, the generation, the epoch and the high-water id of the host (both "none" in this version), the version counter of the tier, the next free segment id, a fingerprint of the data-affecting configuration (dimension, metric, id width, `M`, `efConstruction`, whether SQ8 is on, the layer 0 layout), the generation, length and CRC of the tombstone file, one entry per live segment (id, row count, file length, the header CRC, smallest and largest row version), and a CRC32C of everything before it. File names are built from the ids in the manifest, never read from it.
+`manifest-<generation>.tvm` holds: magic `TVMAN001`, version, the body length, the generation, the epoch and the high-water id of the host (both "none" for a tier that never had an epoch; otherwise the host's epoch and the largest id that a segment holds), the version counter of the tier, the next free segment id, a fingerprint of the data-affecting configuration (dimension, metric, id width, `M`, `efConstruction`, whether SQ8 is on, the layer 0 layout), the generation, length and CRC of the tombstone file, one entry per live segment (id, row count, file length, the header CRC, smallest and largest row version), and a CRC32C of everything before it. File names are built from the ids in the manifest, never read from it.
 
 `tomb-<generation>.tvd` holds: magic `TVTOMB01`, version, the generation, the number of segments, then for each segment its id, its row count and one bit per row, and a CRC32C. This version writes only zero bits and refuses a file with a bit set.
 
@@ -167,14 +167,16 @@ The table is for a process kill (the page cache survives). A crash after a step 
 2. Compare the fingerprint with the configuration (dimension, metric, `M`, `efConstruction`, SQ8). A difference throws `MismatchException`.
 3. Read every segment with every section checksummed, and compare it with its manifest entry.
 4. Delete the files that the manifest does not name (orphans of a crashed publish, older generations).
-5. Restore the version counter and start the tier with the segments, an empty tail and an empty floor map.
+5. Restore the version counter and the epoch, and start the tier with the segments, an empty tail and an empty floor map.
 
 Any failure throws. The overload `open(dir, dim, metric, config, rebuildSource)` catches it and builds the tier from the records with `rebuildFrom`; `openFallbackCause()` tells why. The directory is left as it was in that case, and the next `checkpoint` replaces its contents.
+
+`open(dir, dim, metric, config, recordSource)` adds, after step 5, the epoch comparison (another epoch gives a cold index), the drop of ids above the host's recovered maximum (rebuilt segments and a new generation before it returns), the liveness check, and the replay of the host's live records above the high-water id: see [ID-EPOCH-AND-REPLAY.md](ID-EPOCH-AND-REPLAY.md).
 
 ## What the first cut leaves out
 
 - Memory mapping. A segment is read into the heap arrays of `SealedGraph`.
-- Replay of the tail and the high-water id. The manifest carries the epoch and the high-water id as "none". The host replays whatever it needs after `open`.
+- Replay of the tail by the library itself. The host replays what the segments lack through `RecordSource`.
 - Tombstones. `checkpoint` refuses a tier with a non-empty tail, a non-empty floor map, or a segment with hidden copies (an `IllegalStateException`), and `SegmentWriter` refuses a graph with soft-deleted rows. The tombstone file exists and is verified, but holds only zeros. Rebuilding the floor map from bitmaps is the follow-up.
 - Lazy and chunked CRC verification. Every section is verified at open.
 - The fixed-stride layer 0 layout and padded rows.

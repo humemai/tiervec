@@ -85,6 +85,12 @@ import java.util.function.Supplier;
  * <p>Persistence (first cut). A settled tier (empty tail, no hidden copies) can be written to a directory with {@link #checkpoint} and
  * read back with {@link #open}: segment files, a tombstone file and a manifest per generation, see docs/SEGMENT-FORMAT.md. The records
  * stay the truth; when {@code open} cannot read the directory, the host rebuilds from its records as above.
+ *
+ * <p>Epoch and replay (docs/ID-EPOCH-AND-REPLAY.md). The host names its numbering of ids with an epoch. A rebuild with an epoch
+ * ({@link #rebuildFrom(Supplier, long)}) keeps the writes that arrive during the build and applies them after the swap, skipping adds at or below the
+ * snapshot position. A checkpoint stores the epoch and the largest id that the segments hold (the high-water id) in the manifest. {@link #open(Path, int,
+ * Metric, Config, RecordSource)} discards persisted state of another epoch, drops held ids above the id the host recovered (durably), hides ids that
+ * the host no longer holds, and replays the host's live records above the high-water id.
  */
 public final class TieredIndex implements VecIndex {
 
@@ -200,6 +206,9 @@ public final class TieredIndex implements VecIndex {
                         int floorEntries, long failures, int live, long backpressureWaits, long sealedVectors, long mergedVectors,
                         int[] segmentSizes, long adds, double mergeWriteAmp, double totalWriteAmp, long maxSealMillis, long maxMergeMillis,
                         int[] taskKinds, long[] taskStartNs, long[] taskEndNs, int[] taskRows, long taskDropped, long bigMerges, long bigMergedVectors) {}
+
+    /** one accepted write, kept for the rebuild that is running: the adds with the tier's own copies of their vectors, then the deletes */
+    private record Change(long[] addIds, float[][] addVecs, long[] deletes) {}
 
     private static final Hit[] NONE = new Hit[0];
     private static final int FLAT_RERANK = 5; // the default of FlatIndex for SQ8
@@ -352,7 +361,10 @@ public final class TieredIndex implements VecIndex {
     private Path persistedDir;           // the directory of the last checkpoint or open, guarded by mu
     private Manifest persistedManifest;  // the generation that directory holds, guarded by mu
     private volatile Throwable fallbackCause; // why open fell back to a rebuild, null when the segments were read from files
-    private volatile long epoch = Manifest.NONE; // STUB: never set
+    /** the host's id epoch: set by a rebuild with an epoch, by open with a record source, and read back from a manifest; {@link Manifest#NONE} when none was ever given */
+    private volatile long epoch = Manifest.NONE;
+    /** the changes that arrived while a snapshot rebuild runs, in arrival order, or null when none runs; guarded by mu (see {@link #rebuildFrom(Supplier, long)}) */
+    private ArrayList<Change> capture;
     private volatile Runnable hookBeforePublish;
     private volatile Runnable hookAfterPublish;
     private final AtomicLong seals = new AtomicLong(), merges = new AtomicLong(), sealNanos = new AtomicLong(), mergeNanos = new AtomicLong();
@@ -461,6 +473,7 @@ public final class TieredIndex implements VecIndex {
         mu.lock();
         try {
             wakeUp = addLocked(id, copy);
+            if (capture != null) capture.add(new Change(new long[] {id}, new float[][] {copy}, new long[0]));
         } finally {
             mu.unlock();
         }
@@ -485,7 +498,9 @@ public final class TieredIndex implements VecIndex {
     public boolean delete(long id) {
         mu.lock();
         try {
-            return deleteLocked(id);
+            boolean was = deleteLocked(id);
+            if (capture != null) capture.add(new Change(new long[0], new float[0][], new long[] {id}));
+            return was;
         } finally {
             mu.unlock();
         }
@@ -541,6 +556,13 @@ public final class TieredIndex implements VecIndex {
             try {
                 for (int i = 0; i < na; i++) addLocked(batch.adds().get(i).id(), copies[i]);
                 for (long id : batch.deletes()) deleteLocked(id);
+                if (capture != null) {
+                    long[] addIds = new long[na];
+                    for (int i = 0; i < na; i++) addIds[i] = batch.adds().get(i).id();
+                    long[] delIds = new long[batch.deletes().size()];
+                    for (int i = 0; i < delIds.length; i++) delIds[i] = batch.deletes().get(i);
+                    capture.add(new Change(addIds, copies, delIds));
+                }
             } finally {
                 batchSeq = batchSeq + 1; // even: the batch is whole, a volatile write after all of its changes
             }
@@ -1121,59 +1143,148 @@ public final class TieredIndex implements VecIndex {
      * the duration; searches keep using the old state until the swap. The swap is the one a merge uses: a search that is still running on the old view
      * after it keeps the floor entries that its segments need, and they are dropped when those searches are done (by the worker, or by awaitIdle,
      * mergeNow, sealNow or checkpoint on the calling thread). With no such search the floor map is empty when this method returns. A later duplicate id
-     * replaces an earlier one.
+     * replaces an earlier one. This form keeps the epoch as it is; a host that writes while the rebuild runs uses {@link #rebuildFrom(Supplier, long)}.
      */
     public void rebuildFrom(Iterable<IdVector> src) {
         work.lock();
         mu.lock();
         try {
-            LinkedHashMap<Long, float[]> m = new LinkedHashMap<>();
-            for (IdVector iv : src) {
-                if (iv.v().length != dim) throw new IllegalArgumentException("dim " + iv.v().length + " != " + dim);
-                m.put(iv.id(), iv.v());
-            }
-            int n = m.size();
-            long[] ids = new long[n];
-            final float[][] vecs = new float[n][];
-            int i = 0;
-            for (Map.Entry<Long, float[]> e : m.entrySet()) {
-                ids[i] = e.getKey();
-                vecs[i] = e.getValue();
-                i++;
-            }
-            Tail nt = new Tail(dim, metric, cfg.tailQuant());
-            Segment[] segs = new Segment[0];
-            if (n >= cfg.smallLimit() && n > 0) {
-                long[] vers = new long[n];
-                for (int j = 0; j < n; j++) vers[j] = ++counter;
-                SealedGraph sg = build(ids, n, j -> vecs[j].clone(), false);
-                if (sg.n != n) throw new IllegalStateException("rebuilt rows " + sg.n + " != " + n);
-                segs = new Segment[] {new Segment(sg, ids, vers)};
-            } else {
-                for (int j = 0; j < n; j++) nt.put(ids[j], new Rec(vecs[j].clone(), ++counter));
-            }
-            publish(new View(segs, null, nt)); // the one swap: a search that still reads the old view makes it held
-            settleFloor(); // every rebuilt copy is newer than every floor entry: the entries go now, or when the searches of the old view end
-            live.set(n);
+            install(buildFrom(src));
         } finally {
             mu.unlock();
             work.unlock();
         }
     }
 
-    /** STUB (tests first): the epoch of the host's numbering; never set in this commit */
+    /**
+     * Rebuild while the host keeps writing (docs/ID-EPOCH-AND-REPLAY.md, "Rebuild while the host keeps writing"). The library starts to record every
+     * {@link #add}, {@link #delete} and {@link #apply} it accepts, and only then asks {@code source} for the {@link Snapshot}: the records and the snapshot
+     * position, the highest id that the records cover. The build runs without the write lock, so writes and searches go on against the old state,
+     * which serves them until the swap. At the swap, under one hold of the write lock and one open batch window (a search sees the old state or the
+     * whole new one), the rebuilt state is published with {@code epoch} and the recorded writes are applied to it in arrival order, the adds whose id
+     * is at or below the snapshot position excepted (the snapshot already holds them), then recording stops. A write that arrives after that goes to
+     * the new state directly. So a write is either in the snapshot or recorded, and a recorded one is applied once: none is lost, none twice (adding
+     * a held id again would change nothing visible anyway).
+     *
+     * <p>The host must take the snapshot inside {@code source}, and serialize that with its own calls of {@code apply} (for instance with the monitor
+     * that it holds around commit and apply): a write that it applied before the library started to record, and that the snapshot does not cover,
+     * would be lost. The supplier runs on the calling thread while the library holds its work lock (a seal, a merge and a checkpoint wait for it) and
+     * not the write lock. When {@code source} or the build throws, nothing changes. A seal or a merge does not run during the build, so the old tail
+     * grows, and {@link #add} waits for back pressure as usual; {@link #apply} never waits. The catch-up at the swap takes time proportional to the
+     * number of writes that were recorded.
+     *
+     * @param epoch the epoch of the host's numbering of ids from now on; it is not {@link Manifest#NONE}
+     */
+    public void rebuildFrom(Supplier<Snapshot> source, long epoch) {
+        checkEpoch(epoch);
+        work.lock();
+        try {
+            mu.lock();
+            try {
+                capture = new ArrayList<>();
+            } finally {
+                mu.unlock();
+            }
+            boolean swapped = false;
+            try {
+                Snapshot snap = source.get();
+                Built built = buildFrom(snap.records());
+                mu.lock();
+                try {
+                    batchSeq = batchSeq + 1;     // odd: see apply; a search waits, or runs again, so it never sees a mixture of the old state and the new
+                    VarHandle.storeStoreFence();
+                    try {
+                        install(built);
+                        this.epoch = epoch;
+                        for (Change c : capture) replay(c, snap.position());
+                    } finally {
+                        batchSeq = batchSeq + 1; // even: the new state is whole
+                    }
+                    swapped = true;
+                } finally {
+                    capture = null;
+                    mu.unlock();
+                }
+            } finally {
+                if (!swapped) {
+                    mu.lock();
+                    try {
+                        capture = null;
+                    } finally {
+                        mu.unlock();
+                    }
+                }
+            }
+        } finally {
+            work.unlock();
+        }
+        if (view.active.raw.size() >= cfg.tailLimit() && wake.availablePermits() == 0) wake.release();
+    }
+
+    /** {@link #rebuildFrom(Supplier, long)} for a host that hands over its records and the snapshot position, and that holds back its own writes from the moment it took the position until this call has started */
+    public void rebuildFrom(Iterable<IdVector> src, long epoch, long snapshotPosition) {
+        rebuildFrom(() -> new Snapshot(snapshotPosition, src), epoch);
+    }
+
+    /** the id epoch of the tier: the one the last rebuild with an epoch, or open with a record source, gave it, or the one a manifest carried; {@link Manifest#NONE} when it never had one */
     public long epoch() {
         return epoch;
     }
 
-    /** STUB (tests first): the epoch is ignored and nothing that arrives during the build is kept */
-    public void rebuildFrom(Supplier<Snapshot> source, long epoch) {
-        rebuildFrom(source.get().records());
+    private static void checkEpoch(long epoch) {
+        if (epoch == Manifest.NONE) throw new IllegalArgumentException("epoch " + epoch + " is the value that stands for no epoch");
     }
 
-    /** STUB (tests first): the epoch and the snapshot position are ignored */
-    public void rebuildFrom(Iterable<IdVector> src, long epoch, long snapshotPosition) {
-        rebuildFrom(src);
+    /** the records of a rebuild, with the graph that was built from them when there are enough of them */
+    private record Built(long[] ids, float[][] vecs, SealedGraph graph) {}
+
+    /** reads the records and builds the graph; takes no lock of its own (a caller holds the work lock) */
+    private Built buildFrom(Iterable<IdVector> src) {
+        LinkedHashMap<Long, float[]> m = new LinkedHashMap<>();
+        for (IdVector iv : src) {
+            if (iv.v().length != dim) throw new IllegalArgumentException("dim " + iv.v().length + " != " + dim);
+            m.put(iv.id(), iv.v());
+        }
+        int n = m.size();
+        long[] ids = new long[n];
+        final float[][] vecs = new float[n][];
+        int i = 0;
+        for (Map.Entry<Long, float[]> e : m.entrySet()) {
+            ids[i] = e.getKey();
+            vecs[i] = e.getValue();
+            i++;
+        }
+        SealedGraph sg = null;
+        if (n >= cfg.smallLimit() && n > 0) {
+            sg = build(ids, n, j -> vecs[j].clone(), false);
+            if (sg.n != n) throw new IllegalStateException("rebuilt rows " + sg.n + " != " + n);
+        }
+        return new Built(ids, vecs, sg);
+    }
+
+    /** under mu and the work lock: the swap of a rebuild, through the same publish call as a merge; the rebuilt copies are newer than every floor entry */
+    private void install(Built b) {
+        int n = b.ids().length;
+        Tail nt = new Tail(dim, metric, cfg.tailQuant());
+        Segment[] segs = new Segment[0];
+        if (b.graph() != null) {
+            long[] vers = new long[n];
+            for (int j = 0; j < n; j++) vers[j] = ++counter;
+            segs = new Segment[] {new Segment(b.graph(), b.ids(), vers)};
+        } else {
+            for (int j = 0; j < n; j++) nt.put(b.ids()[j], new Rec(b.vecs()[j].clone(), ++counter));
+        }
+        publish(new View(segs, null, nt)); // the one swap: a search that still reads the old view makes it held
+        settleFloor(); // the entries go now, or when the searches of the old view end
+        live.set(n);
+    }
+
+    /** under mu: one write that arrived during a rebuild, applied to the rebuilt state; an add at or below the snapshot position is in the snapshot already */
+    private void replay(Change c, long position) {
+        for (int i = 0; i < c.addIds().length; i++) {
+            if (c.addIds()[i] > position) addLocked(c.addIds()[i], c.addVecs()[i]);
+        }
+        for (long id : c.deletes()) deleteLocked(id);
     }
 
     // ---- persistence (first cut: a settled tier, segments only) ----
@@ -1186,7 +1297,7 @@ public final class TieredIndex implements VecIndex {
      *
      * <p>This first cut persists segments only, so it refuses a tier that holds anything else, with an {@link IllegalStateException}: a
      * non-empty tail (call {@link #sealNow} first), an entry in the floor map, or a segment with hidden copies. Writers and the seal and
-     * merge worker wait while it runs. One process owns a directory at a time; nothing here locks it.
+     * merge worker wait while it runs. One process owns a directory at a time; nothing here locks it. The manifest records the epoch of the tier and, inside an epoch, the largest id that the segments hold.
      */
     public void checkpoint(Path dir) throws IOException {
         checkpoint(dir, FaultHook.NONE);
@@ -1242,7 +1353,8 @@ public final class TieredIndex implements VecIndex {
             }
             GraphIndex.Params gp = cfg.graph();
             Manifest.Fingerprint fp = new Manifest.Fingerprint(dim, metric, gp.M(), gp.efConstruction(), gp.sq8());
-            Manifest m = new Manifest(gen, Manifest.NONE, Manifest.NONE, counter, nextSeg, fp, entries, 0L, 0L, 0);
+            long hw = epoch == Manifest.NONE ? Manifest.NONE : highWater(v.segs); // the high-water id means something only inside an epoch
+            Manifest m = new Manifest(gen, epoch, hw, counter, nextSeg, fp, entries, 0L, 0L, 0);
             Manifest done = Manifest.publish(dir, m, hook);
             for (int i = 0; i < v.segs.length; i++) v.segs[i].fileId = fileIds[i];
             persistedDir = dir;
@@ -1296,14 +1408,100 @@ public final class TieredIndex implements VecIndex {
         return t;
     }
 
-    /** STUB (tests first): opens like the overload with a rebuild source: no epoch check, no drop, no liveness check, no replay */
+    /**
+     * Opens the persisted tier and reconciles it with the host's records (docs/ID-EPOCH-AND-REPLAY.md, the replay protocol). The newest valid manifest is
+     * read. When there is none, when it is damaged or in another format, when its fingerprint is not this index's, or when its epoch is not the epoch
+     * of {@code host}, the persisted state is discarded as a whole and the tier is built from {@code host.allLive()} with {@code host}'s epoch (a cold
+     * index); the directory is left as it was, and the next {@link #checkpoint} replaces its contents; {@link #openFallbackCause()} tells which case it was.
+     * Otherwise the segments are read and then: (1) every held id above {@code host.recoveredMax()} is dropped (the host forgot the commit that wrote it, and
+     * may mint the id again), and when any row was dropped the segments are rebuilt without it and a new generation with the lowered high-water id is
+     * published before this method returns, so that a dropped row never comes back in a later generation (if that fails, the tier goes cold);
+     * (2) every other held id for which {@code host.isLive} says no is hidden (in memory: the files are not rewritten, and a later open asks again);
+     * (3) every live record of the host above the high-water id of the segments is added to the tail, in increasing id order, in batches. The tier is
+     * ready when the call returns.
+     */
     public static TieredIndex open(Path dir, int dim, Metric metric, Config cfg, RecordSource host) {
-        return open(dir, dim, metric, cfg, host::allLive);
+        Config c = cfg != null ? cfg : Config.defaults();
+        final long hostEpoch = host.epoch();
+        checkEpoch(hostEpoch);
+        Throwable cause;
+        try {
+            Manifest m = Manifest.readLatest(dir);
+            if (m == null) {
+                cause = new NoSuchFileException(dir.toString(), null, "no manifest in the directory");
+            } else if (m.epoch() != hostEpoch) {
+                cause = new SegmentFormat.MismatchException("the persisted state belongs to epoch " + (m.epoch() == Manifest.NONE ? "none" : Long.toString(m.epoch()))
+                        + ", the host is at epoch " + hostEpoch);
+            } else {
+                TieredIndex t = restore(dir, m, dim, metric, c);
+                try {
+                    t.reconcile(dir, host);
+                    return t;
+                } catch (IOException e) {
+                    t.close();
+                    cause = e;
+                } catch (RuntimeException e) {
+                    t.close();
+                    throw e;
+                }
+            }
+        } catch (IOException e) {
+            cause = e;
+        }
+        TieredIndex t = new TieredIndex(dim, metric, c);
+        try {
+            t.rebuildFrom(host.allLive());
+            t.epoch = hostEpoch;
+        } catch (RuntimeException e) {
+            t.close();
+            throw e;
+        }
+        t.fallbackCause = cause;
+        return t;
     }
 
     /** why {@link #open(Path, int, Metric, Config, Supplier)} rebuilt instead of reading files, or null when the segments came from files */
     public Throwable openFallbackCause() {
         return fallbackCause;
+    }
+
+    /** the largest id that any of the segments holds (hidden copies included), {@link Manifest#NONE} when they hold no row */
+    private static long highWater(Segment[] segs) {
+        long hw = Manifest.NONE;
+        for (Segment s : segs) {
+            if (s.n > 0) hw = Math.max(hw, s.ids[s.n - 1]);
+        }
+        return hw;
+    }
+
+    /** steps 5 to 7 of the replay protocol on a tier that {@link #restore} just made and that no other thread holds: see {@link #open(Path, int, Metric, Config, RecordSource)} */
+    private void reconcile(Path dir, RecordSource host) throws IOException {
+        final long recovered = host.recoveredMax();
+        boolean dropped = false;
+        for (Segment s : view.segs) {
+            for (int i = 0; i < s.n; i++) {
+                long id = s.ids[i];
+                if (id > recovered) {
+                    delete(id);
+                    dropped = true;
+                } else if (!host.isLive(id)) {
+                    delete(id);
+                }
+            }
+        }
+        if (dropped) {
+            mergeNow();     // the dropped rows (and the rows the host deleted) are not copied into the new segment
+            checkpoint(dir); // the drop is durable before the index is ready; the high-water id of the new generation is the largest id that is left
+        }
+        List<IdVector> chunk = new ArrayList<>();
+        for (IdVector iv : host.liveAbove(highWater(view.segs))) {
+            chunk.add(iv);
+            if (chunk.size() == 1024) {
+                apply(new Batch(chunk, List.of()));
+                chunk.clear();
+            }
+        }
+        if (!chunk.isEmpty()) apply(new Batch(chunk, List.of()));
     }
 
     private static TieredIndex restore(Path dir, Manifest m, int dim, Metric metric, Config cfg) throws IOException {
@@ -1338,6 +1536,7 @@ public final class TieredIndex implements VecIndex {
         try {
             t.view = new View(segs.toArray(new Segment[0]), null, t.view.active);
             t.counter = m.versionCounter();
+            t.epoch = m.epoch();
             t.live.set(live);
             t.persistedDir = dir;
             t.persistedManifest = m;

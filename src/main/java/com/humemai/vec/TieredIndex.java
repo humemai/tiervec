@@ -102,6 +102,9 @@ public final class TieredIndex implements VecIndex {
     /** one raw vector with its id, the unit {@link #rebuildFrom} reads (the engine would stream its records) */
     public record IdVector(long id, float[] v) {}
 
+    /** the records a rebuild reads and the highest id they cover (see {@link #rebuildFrom(Supplier, long)}) */
+    public record Snapshot(long position, Iterable<IdVector> records) {}
+
     /**
      * The changes of one committed host transaction: adds first (in list order, a later add of an id replaces an earlier one), then deletes.
      * An update is an add of a new id plus a delete of the old id. The lists are copied at construction.
@@ -349,6 +352,7 @@ public final class TieredIndex implements VecIndex {
     private Path persistedDir;           // the directory of the last checkpoint or open, guarded by mu
     private Manifest persistedManifest;  // the generation that directory holds, guarded by mu
     private volatile Throwable fallbackCause; // why open fell back to a rebuild, null when the segments were read from files
+    private volatile long epoch = Manifest.NONE; // STUB: never set
     private volatile Runnable hookBeforePublish;
     private volatile Runnable hookAfterPublish;
     private final AtomicLong seals = new AtomicLong(), merges = new AtomicLong(), sealNanos = new AtomicLong(), mergeNanos = new AtomicLong();
@@ -1157,6 +1161,21 @@ public final class TieredIndex implements VecIndex {
         }
     }
 
+    /** STUB (tests first): the epoch of the host's numbering; never set in this commit */
+    public long epoch() {
+        return epoch;
+    }
+
+    /** STUB (tests first): the epoch is ignored and nothing that arrives during the build is kept */
+    public void rebuildFrom(Supplier<Snapshot> source, long epoch) {
+        rebuildFrom(source.get().records());
+    }
+
+    /** STUB (tests first): the epoch and the snapshot position are ignored */
+    public void rebuildFrom(Iterable<IdVector> src, long epoch, long snapshotPosition) {
+        rebuildFrom(src);
+    }
+
     // ---- persistence (first cut: a settled tier, segments only) ----
 
     /**
@@ -1275,6 +1294,11 @@ public final class TieredIndex implements VecIndex {
         }
         t.fallbackCause = cause;
         return t;
+    }
+
+    /** STUB (tests first): opens like the overload with a rebuild source: no epoch check, no drop, no liveness check, no replay */
+    public static TieredIndex open(Path dir, int dim, Metric metric, Config cfg, RecordSource host) {
+        return open(dir, dim, metric, cfg, host::allLive);
     }
 
     /** why {@link #open(Path, int, Metric, Config, Supplier)} rebuilt instead of reading files, or null when the segments came from files */

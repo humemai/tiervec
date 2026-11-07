@@ -9,7 +9,7 @@ Each part has the test programs of the experiment, wrapped as JUnit 5 tests that
 | Part | What exists | Tests |
 |---|---|---|
 | Flat tier | `FlatIndex` with `NONE`, `SQ8`, and `BINARY` scans, compaction, `serialize` and `load`, scalar twin kernels | Correctness program, threaded program (5 s fast, 20 s and 60 s slow), correctness again with the scalar twins |
-| Graph tier | `GraphIndex` (concurrent HNSW, delete, `consolidate`, optional SQ8), `SealedGraph`, `seal` and `fromSealed` in memory, `SealedGraph.serialize` and `load` (one segment file, CRC32C per section) | Functional program (quick mode), threaded program with background consolidate (5 s fast, 60 s slow for fp32 and SQ8), latency during consolidate (slow), segment round trip and damage tests |
+| Graph tier | `GraphIndex` (concurrent HNSW, delete, `consolidate`, optional SQ8), `SealedGraph`, `seal` and `fromSealed` in memory, `SealedGraph.serialize` and `load` (one segment file, CRC32C per section) | Functional program (quick mode), threaded program with background consolidate (5 s fast, 60 s slow for fp32 and SQ8), latency during consolidate (slow), segment round trip and damage tests, the functional, threaded, and segment programs again with the scalar twins, a differential test of the vector and scalar graph kernels, and a test that builds and searches a tier in a JVM without the Vector API module |
 | IVF | `IvfIndex` as a standalone index: lazy training, background retrain with atomic swap, drift detection, compaction | Single-threaded program at n = 6000 (fast, vector and scalar) and n = 20000 (slow), drift program (slow), threaded program (5 s fast, 10 s slow) |
 | Tier | `TieredIndex`: exact tail, sealed graph segments, merge, tombstones with a version floor, `rebuildFrom`, `checkpoint` and `open` for a settled tier (segments plus a manifest per generation, [format](SEGMENT-FORMAT.md)) | The tier program, one test at a time (fast), the 10 s threaded test (slow), reopen, manifest and crash-step tests (fast), the record-id reuse tests (see below) |
 
@@ -52,7 +52,6 @@ A probe that cannot fail is not a test, so the mutant tests check that it fails 
 - Serialization of IVF and of the flat tail. `FlatIndex` has its own `serialize` and `load`. The graph segments and a settled tier have the first cut ([SEGMENT-FORMAT.md](SEGMENT-FORMAT.md)): copy-based reads, no memory mapping, no tail replay, no non-empty tombstones (`checkpoint` refuses a tier with a tail, a floor entry, or hidden copies), every section verified at open. When `open` fails, the host falls back to `rebuildFrom`.
 - Engine integration. Nothing here is wired into ArcadeDB or any other engine.
 - IVF as a segment type of the tier. `IvfIndex` is standalone.
-- A scalar twin for the graph kernels (`Kern`). `GraphIndex`, `SealedGraph`, and `TieredIndex` need the `jdk.incubator.vector` module at run time.
 - A native-image test in CI.
 - A release: no publish workflow, version `0.1.0-SNAPSHOT`.
 - Published measurements. They are in a private harness and will be published later.

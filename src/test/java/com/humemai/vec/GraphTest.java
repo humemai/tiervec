@@ -248,7 +248,7 @@ public final class GraphTest {
 
     public static void main(String[] a) throws Exception {
         String mode = a.length > 0 ? a[0] : "all";
-        System.out.println("jdk " + System.getProperty("java.version") + " lanes=" + Kern.L);
+        System.out.println("jdk " + System.getProperty("java.version") + " lanes=" + Kern.lanes());
         if (mode.equals("bench")) {
             GraphT.run("bench 20000 1 thread", () -> { try { bench(20000, 1); } catch (Exception e) { throw new RuntimeException(e); } });
             GraphT.run("bench 20000 8 threads", () -> { try { bench(20000, 8); } catch (Exception e) { throw new RuntimeException(e); } });

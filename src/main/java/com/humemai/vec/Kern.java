@@ -1,66 +1,36 @@
 package com.humemai.vec;
 
-import jdk.incubator.vector.ByteVector;
-import jdk.incubator.vector.FloatVector;
-import jdk.incubator.vector.VectorOperators;
-import jdk.incubator.vector.VectorShape;
-import jdk.incubator.vector.VectorSpecies;
-
 /**
- * All distance kernels of the graph tier live here so they can be swapped for the flat tier's kernels later.
- * Plain float arrays with offsets; Vector API with two accumulators; scalar tail.
- * dotQ8: dot of a float query with SIGNED int8 codes (the codes are converted to float lanes).
+ * All distance kernels of the graph tier live here. Each one picks, once per JVM, between the Vector API version in {@link VKern} and a
+ * scalar twin: {@link Kernels#VECTOR} is the one switch for the flat, the IVF and the graph kernels (-Dhumemai.vec.scalar=true, a native
+ * image, or a missing jdk.incubator.vector module give the scalar twins). The scalar twins are the ones of {@link Kernels}
+ * (dotScalar, l2sqScalar, dotF8Scalar), so the graph and the flat tier compute the same score for the same data in scalar mode.
+ * VKern is touched only when Kernels.VECTOR is true, and nothing here has a Vector API type in a field or a signature, so loading this
+ * class never loads jdk.incubator.vector classes.
+ * Plain float arrays with offsets. dotQ8: dot of a float query with SIGNED int8 codes (the query starts at index 0).
+ * A float result depends only on n and the mode, never on offsets; the two modes can differ by rounding (the tests state the tolerance).
  */
 final class Kern {
     private Kern() {}
-    static final VectorSpecies<Float> F = FloatVector.SPECIES_PREFERRED;
-    static final int L = F.length();
-    static final VectorSpecies<Byte> BS = VectorSpecies.of(byte.class, VectorShape.forBitSize(L * 8));
 
     static float dot(float[] a, int ao, float[] b, int bo, int n) {
-        FloatVector s0 = FloatVector.zero(F), s1 = FloatVector.zero(F);
-        int i = 0;
-        for (; i + 2 * L <= n; i += 2 * L) {
-            s0 = FloatVector.fromArray(F, a, ao + i).fma(FloatVector.fromArray(F, b, bo + i), s0);
-            s1 = FloatVector.fromArray(F, a, ao + i + L).fma(FloatVector.fromArray(F, b, bo + i + L), s1);
-        }
-        for (; i + L <= n; i += L) s0 = FloatVector.fromArray(F, a, ao + i).fma(FloatVector.fromArray(F, b, bo + i), s0);
-        float s = s0.add(s1).reduceLanes(VectorOperators.ADD);
-        for (; i < n; i++) s += a[ao + i] * b[bo + i];
-        return s;
+        return Kernels.VECTOR ? VKern.dot(a, ao, b, bo, n) : Kernels.dotScalar(a, ao, b, bo, n);
     }
 
     /** squared L2 distance */
     static float l2(float[] a, int ao, float[] b, int bo, int n) {
-        FloatVector s0 = FloatVector.zero(F), s1 = FloatVector.zero(F);
-        int i = 0;
-        for (; i + 2 * L <= n; i += 2 * L) {
-            FloatVector d0 = FloatVector.fromArray(F, a, ao + i).sub(FloatVector.fromArray(F, b, bo + i));
-            FloatVector d1 = FloatVector.fromArray(F, a, ao + i + L).sub(FloatVector.fromArray(F, b, bo + i + L));
-            s0 = d0.fma(d0, s0);
-            s1 = d1.fma(d1, s1);
-        }
-        for (; i + L <= n; i += L) {
-            FloatVector d0 = FloatVector.fromArray(F, a, ao + i).sub(FloatVector.fromArray(F, b, bo + i));
-            s0 = d0.fma(d0, s0);
-        }
-        float s = s0.add(s1).reduceLanes(VectorOperators.ADD);
-        for (; i < n; i++) { float d = a[ao + i] - b[bo + i]; s += d * d; }
-        return s;
+        return Kernels.VECTOR ? VKern.l2(a, ao, b, bo, n) : Kernels.l2sqScalar(a, ao, b, bo, n);
     }
 
     /** sum over i of q[i] * codes[co + i] (codes are signed bytes) */
     static float dotQ8(float[] q, byte[] codes, int co, int n) {
-        FloatVector s0 = FloatVector.zero(F);
-        int i = 0;
-        for (; i + L <= n; i += L) {
-            FloatVector c = (FloatVector) ByteVector.fromArray(BS, codes, co + i).convertShape(VectorOperators.B2F, F, 0);
-            s0 = FloatVector.fromArray(F, q, i).fma(c, s0);
-        }
-        float s = s0.reduceLanes(VectorOperators.ADD);
-        for (; i < n; i++) s += q[i] * codes[co + i];
-        return s;
+        return Kernels.VECTOR && VKern.Q8_OK ? VKern.dotQ8(q, codes, co, n) : Kernels.dotF8Scalar(q, 0, codes, co, n);
     }
 
     static float sum(float[] a, int n) { float s = 0; for (int i = 0; i < n; i++) s += a[i]; return s; }
+
+    /** float lanes of the Vector API kernels, 0 when the scalar twins are in use */
+    static int lanes() {
+        return Kernels.VECTOR ? VKern.L : 0;
+    }
 }

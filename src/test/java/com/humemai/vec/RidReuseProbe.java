@@ -440,7 +440,7 @@ final class RidReuseProbe {
                 float[] qo = h[og];
                 Hit[] ro = ix.search(qo, K, null, EF);
                 verifyHits(c, m, qo, ro, null, null);
-                if (ro.length > 0 && ro[0].id() == id && close(ro[0].score(), score(m.metric, qo, qo))) {
+                if (ro.length > 0 && ro[0].id() == id && RidReuseProbe.close(ro[0].score(), score(m.metric, qo, qo))) {
                     c.oldRank1++;
                     c.note("id " + id + " is at rank 1 with the score of its old vector (generation " + og + ", current " + cu + ")");
                 }
@@ -448,7 +448,7 @@ final class RidReuseProbe {
                 verifyHits(c, m, qo, to, null, null);
                 Hit[] so = ix.search(qo, K, null, TieredIndex.Freshness.SEALED_ONLY).hits();
                 verifyHits(c, m, qo, so, null, null);
-                if (so.length > 0 && so[0].id() == id && close(so[0].score(), score(m.metric, qo, qo))) {
+                if (so.length > 0 && so[0].id() == id && RidReuseProbe.close(so[0].score(), score(m.metric, qo, qo))) {
                     c.oldRank1++;
                     c.note("id " + id + " is at rank 1 of a sealed-only search with the score of its old vector (generation " + og + ", current " + cu + ")");
                 }
@@ -542,7 +542,7 @@ final class RidReuseProbe {
                             rc.cSelfQ++;
                             if (h.length == 0 || h[0].id() != id) rc.cSelfMiss1++;
                         }
-                        if (useOld && h.length > 0 && h[0].id() == id && close(h[0].score(), score(m.metric, q, q))) {
+                        if (useOld && h.length > 0 && h[0].id() == id && RidReuseProbe.close(h[0].score(), score(m.metric, q, q))) {
                             rc.oldRank1++;
                             rc.note("reader: id " + id + " at rank 1 with the score of its old vector");
                         }

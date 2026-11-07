@@ -23,8 +23,8 @@ Decisions and tests that the rest of the work depends on.
 - [#4](https://github.com/humemai/tiervec/issues/4): Choose the default merge policy: one large segment plus a small recent one
 - [#5](https://github.com/humemai/tiervec/issues/5): Tests for record-id reuse and tombstone correctness across seal and merge
 - [#6](https://github.com/humemai/tiervec/issues/6): Specify the segment file and the manifest
-- [#7](https://github.com/humemai/tiervec/issues/7): Define the id epoch and the replay protocol for a host
-- [#8](https://github.com/humemai/tiervec/issues/8): Document the host contract in docs/PROVIDER-CONTRACT.md
+- [#7](https://github.com/humemai/tiervec/issues/7): Define the id epoch and the replay protocol for a host. Page: [ID-EPOCH-AND-REPLAY.md](ID-EPOCH-AND-REPLAY.md).
+- [#8](https://github.com/humemai/tiervec/issues/8): Document the host contract in docs/PROVIDER-CONTRACT.md. Page: [PROVIDER-CONTRACT.md](PROVIDER-CONTRACT.md).
 
 ## Next
 

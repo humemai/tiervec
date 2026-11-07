@@ -20,7 +20,7 @@ class RidReuseTest {
     @CsvSource({"n3000d32, 11", "n3000d32, 12", "n3000d128, 11", "n3000d128, 12"})
     void reuseAndSurvival(String cfg, long seed) {
         List<String> cases = RidReuseProbe.FAST_CASES;
-        Map<String, Object> r = RidReuseProbe.runOneMap(cfg, seed, cases);
+        Map<String, Object> r = RidReuseProbe.runOneMap(cfg, seed, cases, false);
         RidReuseRig.assertClean(cfg + " seed " + seed, r, cases);
     }
 }

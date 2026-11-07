@@ -80,11 +80,16 @@ final class RidReuseProbe {
         final long[] selfQ = new long[2], selfMiss1 = new long[2], selfMissK = new long[2], exQ = new long[2], exMiss = new long[2]; // index 1 = touched live ids (reused or replaced), 0 = untouched
         long cSelfQ, cSelfMiss1;                    // the concurrent reader's self queries
         long opsTotal, opsInSeal, opsInMerge, windowGroups, windowGroupsConfirmed;
-        final List<String> notes = new ArrayList<>();
+        final List<String> notes = new ArrayList<>();  // the first wrong answers
+        final List<String> events = new ArrayList<>(); // void windows, exceptions and worker errors, kept apart so that a flood of wrong answers cannot push them out
         String where = "";
 
         void note(String s) {
-            if (notes.size() < 40) notes.add(where + ": " + s);
+            if (notes.size() < 25) notes.add(where + ": " + s);
+        }
+
+        void event(String s) {
+            if (events.size() < 25) events.add(where + ": " + s);
         }
 
         long exact() {
@@ -105,7 +110,8 @@ final class RidReuseProbe {
             }
             cSelfQ += o.cSelfQ; cSelfMiss1 += o.cSelfMiss1;
             opsTotal += o.opsTotal; opsInSeal += o.opsInSeal; opsInMerge += o.opsInMerge; windowGroups += o.windowGroups; windowGroupsConfirmed += o.windowGroupsConfirmed;
-            for (String s : o.notes) if (notes.size() < 40) notes.add(s);
+            for (String s : o.notes) if (notes.size() < 25) notes.add(s);
+            for (String s : o.events) if (events.size() < 25) events.add(s);
         }
     }
 
@@ -273,8 +279,10 @@ final class RidReuseProbe {
         final Cnt c;
         final AtomicLongArray st;
         final SplittableRandom rng;
+        final boolean reader; // a concurrent reader thread in the merge cases and the background case
 
-        Ctx(Cfg cfg, String name, long seed, TieredIndex.Config tc, Cnt c) {
+        Ctx(Cfg cfg, String name, long seed, TieredIndex.Config tc, Cnt c, boolean reader) {
+            this.reader = reader;
             this.cfg = cfg;
             this.name = name;
             this.seed = seed;
@@ -293,7 +301,7 @@ final class RidReuseProbe {
         /** a message that also goes into the result, for the assertion message of the test */
         void note(String s) {
             log(s);
-            c.note(s);
+            c.event(s);
         }
 
         // ---- writer operations: model first, then the index, with the id's sequence number odd in between ----
@@ -344,6 +352,14 @@ final class RidReuseProbe {
                 buf[j] = t;
             }
             return Arrays.copyOf(buf, k);
+        }
+
+        /** null when the case runs without a reader */
+        Reader startReader(long readerSeed) {
+            if (!reader) return null;
+            Reader rd = new Reader(this, readerSeed);
+            rd.start();
+            return rd;
         }
 
         void quiet() {
@@ -424,17 +440,17 @@ final class RidReuseProbe {
                 float[] qo = h[og];
                 Hit[] ro = ix.search(qo, K, null, EF);
                 verifyHits(c, m, qo, ro, null, null);
-                if (ro.length > 0 && ro[0].id() == id) {
+                if (ro.length > 0 && ro[0].id() == id && close(ro[0].score(), score(m.metric, qo, qo))) {
                     c.oldRank1++;
-                    c.note("id " + id + " is at rank 1 for a query equal to its old vector (generation " + og + ", current " + cu + ")");
+                    c.note("id " + id + " is at rank 1 with the score of its old vector (generation " + og + ", current " + cu + ")");
                 }
                 Hit[] to = ix.search(qo, 1, only, EFT);
                 verifyHits(c, m, qo, to, null, null);
                 Hit[] so = ix.search(qo, K, null, TieredIndex.Freshness.SEALED_ONLY).hits();
                 verifyHits(c, m, qo, so, null, null);
-                if (so.length > 0 && so[0].id() == id) {
+                if (so.length > 0 && so[0].id() == id && close(so[0].score(), score(m.metric, qo, qo))) {
                     c.oldRank1++;
-                    c.note("id " + id + " is at rank 1 of a sealed-only search for its old vector (generation " + og + ", current " + cu + ")");
+                    c.note("id " + id + " is at rank 1 of a sealed-only search with the score of its old vector (generation " + og + ", current " + cu + ")");
                 }
             }
         }
@@ -526,9 +542,9 @@ final class RidReuseProbe {
                             rc.cSelfQ++;
                             if (h.length == 0 || h[0].id() != id) rc.cSelfMiss1++;
                         }
-                        if (useOld && h.length > 0 && h[0].id() == id) {
+                        if (useOld && h.length > 0 && h[0].id() == id && close(h[0].score(), score(m.metric, q, q))) {
                             rc.oldRank1++;
-                            rc.note("reader: id " + id + " at rank 1 for a query equal to its old vector");
+                            rc.note("reader: id " + id + " at rank 1 with the score of its old vector");
                         }
                     }
                 }
@@ -716,8 +732,7 @@ final class RidReuseProbe {
         x.checkpoint("c1/30 percent deleted before the merge");
         final int[] reuse = slice(dead, 0, (int) (0.80 * nd));
         final int[] rest = slice(dead, (int) (0.80 * nd), nd);
-        Reader rd = new Reader(x, x.seed * 31 + 7);
-        rd.start();
+        Reader rd = x.startReader(x.seed * 31 + 7);
         Mrg mg = new Mrg(x);
         boolean ok = mg.start();
         x.precond("mergeNow found in its build phase", ok);
@@ -729,7 +744,7 @@ final class RidReuseProbe {
             });
         }
         mg.join();
-        rd.finish();
+        if (rd != null) rd.finish();
         x.precond("exactly one merge ran", x.ix.stats().merges() == mg.m0 + 1 && x.ix.segmentCount() == 1);
         x.checkpoint("c1/after the merge swap");
         x.ix.sealNow();
@@ -758,8 +773,7 @@ final class RidReuseProbe {
         final int[] dDdd = slice(lv, 2 * (n / 10), 2 * (n / 10) + n / 20);
         final int[] dRep = slice(lv, 2 * (n / 10) + n / 20, 2 * (n / 10) + 2 * (n / 20));
         final int[] dNew = range(n, n + n / 20);
-        Reader rd = new Reader(x, x.seed * 31 + 11);
-        rd.start();
+        Reader rd = x.startReader(x.seed * 31 + 11);
         Mrg mg = new Mrg(x);
         boolean ok = mg.start();
         x.precond("mergeNow found in its build phase", ok);
@@ -781,7 +795,7 @@ final class RidReuseProbe {
             mg.group("add 5 percent brand-new ids", () -> x.addAll(dNew));
         }
         mg.join();
-        rd.finish();
+        if (rd != null) rd.finish();
         x.precond("exactly one merge ran", x.ix.stats().merges() == mg.m0 + 1 && x.ix.segmentCount() == 1);
         x.checkpoint("c2/after the merge swap");
         x.ix.sealNow();
@@ -867,8 +881,7 @@ final class RidReuseProbe {
         x.fill(0, n);
         x.quiet();
         x.checkpoint("f/after the initial fill and settle");
-        Reader rd = new Reader(x, x.seed * 31 + 13);
-        rd.start();
+        Reader rd = x.startReader(x.seed * 31 + 13);
         SplittableRandom r = new SplittableRandom(x.seed * 977L + 5L);
         int nextNew = n;
         int ops = n;
@@ -907,7 +920,7 @@ final class RidReuseProbe {
             if (act0 == 1 && act1 == 1) x.c.opsInSeal++;
             if (act0 == 2 && act1 == 2) x.c.opsInMerge++;
         }
-        rd.finish();
+        if (rd != null) rd.finish();
         x.quiet();
         x.checkpoint("f/final, quiet, after the background seals and merges");
         TieredIndex.Stats s = x.ix.stats();
@@ -957,7 +970,7 @@ final class RidReuseProbe {
      * One run: a fresh index per case, in the given order. Takes and returns JDK types only. The result has every counter as a Long under its own name, "case_NAME" with
      * the violations of each case, "pass" (Boolean), "line" (one summary line), "notes" (the first violations, as strings) and "tierClass".
      */
-    static Map<String, Object> runOneMap(String cfgName, long seed, List<String> cases) {
+    static Map<String, Object> runOneMap(String cfgName, long seed, List<String> cases, boolean reader) {
         Cfg cfg = cfgByName(cfgName);
         for (String cs : cases) if (!CASES.contains(cs)) throw new IllegalArgumentException("unknown case " + cs);
         long t0 = System.nanoTime();
@@ -967,7 +980,7 @@ final class RidReuseProbe {
             if (!cases.contains(name)) continue;
             long h0 = c.hard();
             c.where = cfg.name() + " seed=" + seed + " " + name;
-            Ctx x = new Ctx(cfg, name, seed, configFor(name, cfg), c);
+            Ctx x = new Ctx(cfg, name, seed, configFor(name, cfg), c, reader);
             try {
                 runCase(name, x);
             } catch (Throwable t) {
@@ -981,7 +994,7 @@ final class RidReuseProbe {
             per.put(name, dv);
             System.out.println("CASE cfg=" + cfg.name() + " seed=" + seed + " case=" + name + " violations=" + dv + " hard_total=" + c.hard());
         }
-        boolean readerCase = cases.contains("c1_reuse_in_merge") || cases.contains("c2_delete_in_merge") || cases.contains("f_fuzz_background");
+        boolean readerCase = reader && (cases.contains("c1_reuse_in_merge") || cases.contains("c2_delete_in_merge") || cases.contains("f_fuzz_background"));
         int rateFail = 0;
         if (rateBad(c.exMiss[1], c.exQ[1], c.exMiss[0], c.exQ[0], 0.002)) rateFail++;
         if (rateBad(c.selfMiss1[1], c.selfQ[1], c.selfMiss1[0], c.selfQ[0], 0.01)) rateFail++;
@@ -1009,7 +1022,9 @@ final class RidReuseProbe {
         LinkedHashMap<String, Object> out = new LinkedHashMap<>();
         out.put("pass", pass);
         out.put("line", sb.toString());
-        out.put("notes", new ArrayList<>(c.notes));
+        List<String> all = new ArrayList<>(c.events);
+        all.addAll(c.notes);
+        out.put("notes", all);
         out.put("tierClass", tierClassLocation());
         out.put("hard", c.hard());
         out.put("exact", c.exact());

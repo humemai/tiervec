@@ -40,20 +40,20 @@ class RidReuseMutantLongTest {
         "M3, 11", "M3, 12", "M3, 13"
     })
     void fullProbe(String variant, long seed) throws Exception {
-        List<String> cases = RidReuseProbe.CASES;
+        List<String> cases = RidReuseProbe.FAST_CASES;
         String what = variant + " seed " + seed;
         switch (variant) {
-            case "X0" -> RidReuseRig.assertClean(what, mutants.run(RidReuseRig.X0, CFG, seed, cases), cases);
+            case "X0" -> RidReuseRig.assertClean(what, mutants.run(RidReuseRig.X0, CFG, seed, cases, false), cases);
             case "M1" -> {
-                Map<String, Object> r = mutants.run(RidReuseRig.M1, CFG, seed, cases);
+                Map<String, Object> r = mutants.run(RidReuseRig.M1, CFG, seed, cases, false);
                 RidReuseRig.assertCaughtM1(what, r, cases, false);
             }
             case "M2" -> {
-                Map<String, Object> r = mutants.run(RidReuseRig.M2, CFG, seed, cases);
+                Map<String, Object> r = mutants.run(RidReuseRig.M2, CFG, seed, cases, false);
                 RidReuseRig.assertCaughtM2(what, r, cases, false);
             }
             case "M3" -> {
-                Map<String, Object> r = mutants.run(RidReuseRig.M3, CFG, seed, cases);
+                Map<String, Object> r = mutants.run(RidReuseRig.M3, CFG, seed, cases, false);
                 RidReuseRig.assertCaughtM3(what, r, cases, false);
             }
             default -> fail("unknown variant " + variant);

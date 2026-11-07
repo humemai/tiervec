@@ -22,7 +22,7 @@ class RidReuseLongTest {
     })
     void allCases(String cfg, long seed) {
         List<String> cases = RidReuseProbe.CASES;
-        Map<String, Object> r = RidReuseProbe.runOneMap(cfg, seed, cases);
+        Map<String, Object> r = RidReuseProbe.runOneMap(cfg, seed, cases, true);
         RidReuseRig.assertClean(cfg + " seed " + seed, r, cases);
     }
 }

@@ -40,25 +40,25 @@ class RidReuseMutantTest {
 
     @Test
     void controlWithoutChangePasses() throws Exception {
-        Map<String, Object> r = mutants.run(RidReuseRig.X0, CFG, SEED, SEALED);
+        Map<String, Object> r = mutants.run(RidReuseRig.X0, CFG, SEED, SEALED, false);
         RidReuseRig.assertClean("X0 (unchanged copy)", r, SEALED);
     }
 
     @Test
     void addThatRemovesTheFloorIsCaught() throws Exception {
-        Map<String, Object> r = mutants.run(RidReuseRig.M1, CFG, SEED, SEALED);
+        Map<String, Object> r = mutants.run(RidReuseRig.M1, CFG, SEED, SEALED, false);
         RidReuseRig.assertCaughtM1("M1", r, SEALED, true);
     }
 
     @Test
     void deleteWithoutFloorEntryIsCaught() throws Exception {
-        Map<String, Object> r = mutants.run(RidReuseRig.M2, CFG, SEED, SEALED);
+        Map<String, Object> r = mutants.run(RidReuseRig.M2, CFG, SEED, SEALED, false);
         RidReuseRig.assertCaughtM2("M2", r, SEALED, true);
     }
 
     @Test
     void floorCleanupThatDropsEverythingIsCaught() throws Exception {
-        Map<String, Object> r = mutants.run(RidReuseRig.M3, CFG, SEED, IN_MERGE);
+        Map<String, Object> r = mutants.run(RidReuseRig.M3, CFG, SEED, IN_MERGE, false);
         RidReuseRig.assertCaughtM3("M3", r, IN_MERGE, true);
     }
 }

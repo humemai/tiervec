@@ -76,12 +76,11 @@ final class RidReuseRig {
     }
 
     /**
-     * A mutant run that counts as a catch only when it was a real run: no worker error, every merge window was reached (a void case is not a catch), and with
+     * A mutant run that counts as a catch only when it was a real run: every merge window was reached (a void case is not a catch; an exception that the broken tier throws in a later merge is a reported violation, not a reason to reject the run), and with
      * strict set (a run of the one case that carries the signature) no precondition was missed either. A full run must not be strict: a broken floor can
      * legitimately miss the precondition of the floor-chain case, which asks for floor entries.
      */
     static void assertReachedAndSound(String what, Map<String, Object> r, List<String> cases, boolean strict) {
-        assertEquals(0, n(r, "tierFailures"), () -> what + ": the run died with an exception instead of reporting a violation" + describe(r));
         if (strict) assertEquals(0, n(r, "coverageFail"), () -> what + ": a window or precondition was not reached (void run, not a catch)" + describe(r));
         for (String cs : cases) n(r, "case_" + cs);
         assertTrue(n(r, "idsChecked") >= 1000, () -> what + ": only " + n(r, "idsChecked") + " ids were checked");
@@ -194,14 +193,14 @@ final class RidReuseRig {
 
     /** run the probe class of the given loader; proves that the probe and the index class came from that loader, and from the mutant directory when given */
     @SuppressWarnings("unchecked")
-    static Map<String, Object> runOn(ClassLoader loader, Path expectedTierDir, String cfg, long seed, List<String> cases) throws Exception {
+    static Map<String, Object> runOn(ClassLoader loader, Path expectedTierDir, String cfg, long seed, List<String> cases, boolean reader) throws Exception {
         Class<?> probe = Class.forName("com.humemai.vec.RidReuseProbe", true, loader);
         assertSame(loader, probe.getClassLoader(), "the probe class must be defined by the mutant loader, not by the application loader");
-        Method run = probe.getDeclaredMethod("runOneMap", String.class, long.class, List.class);
+        Method run = probe.getDeclaredMethod("runOneMap", String.class, long.class, List.class, boolean.class);
         run.setAccessible(true);
         Map<String, Object> r;
         try {
-            r = (Map<String, Object>) run.invoke(null, cfg, seed, cases);
+            r = (Map<String, Object>) run.invoke(null, cfg, seed, cases, reader);
         } catch (InvocationTargetException e) {
             if (e.getCause() instanceof Exception ex) throw ex;
             if (e.getCause() instanceof Error er) throw er;
@@ -243,8 +242,8 @@ final class RidReuseRig {
             return l;
         }
 
-        Map<String, Object> run(Mutation mu, String cfg, long seed, List<String> cases) throws Exception {
-            return runOn(loader(mu), dir(mu), cfg, seed, cases);
+        Map<String, Object> run(Mutation mu, String cfg, long seed, List<String> cases, boolean reader) throws Exception {
+            return runOn(loader(mu), dir(mu), cfg, seed, cases, reader);
         }
 
         @Override

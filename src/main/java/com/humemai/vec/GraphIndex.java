@@ -532,7 +532,8 @@ public final class GraphIndex implements VecIndex {
 
     // ---------------------------------------------------------------- consolidate
 
-    private static boolean bit(long[] b, int i) { return (b[i >>> 6] >>> (i & 63) & 1L) != 0; }
+    /** Bit i of b. An index past the end reads as not set: a pass sizes its bitsets from a snapshot of nextOrd, and a node allocated after the snapshot has no bit in them. */
+    private static boolean bit(long[] b, int i) { int w = i >>> 6; return w < b.length && (b[w] >>> (i & 63) & 1L) != 0; }
     private static void setBit(long[] b, int i) { b[i >>> 6] |= 1L << (i & 63); }
 
     /**
@@ -638,8 +639,9 @@ public final class GraphIndex implements VecIndex {
 
     private void repairOrphans(Scratch s, int hi) {
         Entry e = entry; if (e == null) return;
-        long[] seen = new long[(hi + 63) / 64];
-        int[] queue = new int[hi]; int qh = 0, qt = 0;
+        int lim = Math.max(hi, e.node + 1); // the entry point can be a node allocated after the snapshot hi
+        long[] seen = new long[(lim + 63) / 64];
+        int[] queue = new int[lim]; int qh = 0, qt = 0;
         queue[qt++] = e.node; setBit(seen, e.node);
         while (qh < qt) {
             int u = queue[qh++]; Chunk c = chunk(u);
@@ -702,7 +704,7 @@ public final class GraphIndex implements VecIndex {
         }
         off0[m] = ne;
         Entry e = entry; int er = -1, ml = 0;
-        if (e != null && map[e.node] >= 0) { er = map[e.node]; ml = level[er]; }
+        if (e != null && e.node < hi && map[e.node] >= 0) { er = map[e.node]; ml = level[er]; }
         else for (int r = 0; r < m; r++) if (er < 0 || level[r] > ml) { er = r; ml = level[r]; }
         return new SealedGraph(dim, metric, p, m, vec, codes, qb, qd, qn, ids, level, off0, Arrays.copyOf(edges0, ne), upIdx,
                 Arrays.copyOf(upOff, nuo), Arrays.copyOf(upEdges, nue), er, ml);

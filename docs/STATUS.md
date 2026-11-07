@@ -15,10 +15,6 @@ Each part has the test programs of the experiment, wrapped as JUnit 5 tests that
 
 The wrappers assert two things per program: zero failed checks, and at least the number of checks the program reported in earlier runs of the experiment. The program code itself is not changed in a way that weakens an assertion.
 
-## Known failing
-
-- `GraphConcurrencyLongTest` and `GraphConcurrencySq8LongTest` (the 60 s threaded graph program, fp32 and SQ8 vectors) fail in the slow CI job: 6 of 8 runs over two CI runs on JDK 21 and 25, while the 5 s version in the fast job passed in all 4 runs. `GraphIndex.consolidate()` throws `ArrayIndexOutOfBoundsException` when a concurrent `add` makes a node that was allocated after the scan started the entry point. Tracked in [#3](https://github.com/humemai/tiervec/issues/3). The tests are not weakened, so the slow job stays red until the issue is fixed.
-
 ## What does not exist yet
 
 - Serialization of the graph, IVF, and tier. Only `FlatIndex` has `serialize` and `load`. The tier is meant to be rebuilt from the host's records with `rebuildFrom`.
@@ -37,3 +33,4 @@ The wrappers assert two things per program: zero failed checks, and at least the
 - The graph test helper `T` was renamed `GraphT`, because the flat tests have their own `T` and both now live in one module and one package.
 - The test helpers got an `exitOnFailure` flag (default true, so a program run alone still ends the JVM on failure), and the end of each program's `main` is guarded by it. A JUnit wrapper sets it to false and reads the counters instead, because a `System.exit` would end the surefire JVM.
 - The micro-benchmark `FlatMicro`, the benchmark harness, and the native-image smoke test of the experiment are not part of this repository.
+- One edit to a main source, `GraphIndex.java` (issue [#3](https://github.com/humemai/tiervec/issues/3), found by the slow CI job): `consolidate()`, `repairOrphans` and `seal()` size their bitsets and arrays from a snapshot of `nextOrd`, and a concurrent `add` can publish a node allocated after the snapshot as the entry point (or, in `repairOrphans`, return one from its search), so the node index fell past the end. `bit` now reads an index past the end as not set, `repairOrphans` sizes its arrays to cover the entry point, and `seal()` ignores an entry point from after its snapshot. `GraphConsolidateRaceTest` builds that view without threads. It was pushed alone first and failed the fast job on the unfixed code.

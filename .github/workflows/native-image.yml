@@ -4,7 +4,7 @@
 # program fails when the scalar kernels are not the ones in use or when a class of jdk.incubator.vector is present.
 #
 # Trigger choice: pull requests and pushes to main that touch src/main, src/smoke or this file (a nightly schedule is not needed).
-# Run time: not measured yet, to be recorded here from the first green run.
+# Run time, read from the first green run (run 42411834063): the whole job took 58 s, of which the image build took 37 s and the image run 2 s.
 #
 # This job is not a required check. The GraalVM version is pinned (GraalVM Community 21.0.2, the last community release for JDK 21).
 name: Native Image Smoke

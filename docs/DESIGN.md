@@ -55,7 +55,7 @@ IVF has no serialization yet, and it is not used by `TieredIndex`.
 
 ## The tier
 
-`TieredIndex` is the composition. The vectors in the host's records are the source of truth. The tail, the segments, and the floor map are derived data that can be thrown away and rebuilt (`rebuildFrom`) from raw vectors, so the code never has to make the derived state durable.
+`TieredIndex` is the composition. The vectors in the host's records are the source of truth. The tail, the segments, and the floor map are derived data that can be thrown away and rebuilt (`rebuildFrom`) from raw vectors, so the code never has to make the derived state durable. `rebuildFrom` swaps the rebuilt state in the way a merge does: a search that started before the swap keeps the floor entries that its segments need, and they are dropped when that search is done.
 
 ### Exact tail
 

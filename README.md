@@ -38,7 +38,7 @@ The tests are the test programs of the experiment, wrapped as JUnit 5 tests. A w
 
 - [docs/DESIGN.md](docs/DESIGN.md): the architecture and the knobs of the tier configuration.
 - [docs/STATUS.md](docs/STATUS.md): what exists, what does not exist yet.
-- [docs/ROADMAP.md](docs/ROADMAP.md): placeholder until the scope decision.
+- [docs/ROADMAP.md](docs/ROADMAP.md): what is planned and in what order, with the open issues, and the non-goals.
 
 ## License
 

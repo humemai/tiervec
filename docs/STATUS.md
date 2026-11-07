@@ -17,7 +17,7 @@ The wrappers assert two things per program: zero failed checks, and at least the
 
 ## Known failing
 
-- `GraphConcurrencySq8LongTest` (the 60 s threaded graph program with SQ8 vectors) fails in the slow CI job on JDK 21 and 25. `GraphIndex.consolidate()` throws `ArrayIndexOutOfBoundsException` when a concurrent `add` makes a node that was allocated after the scan started the entry point. Tracked in [#3](https://github.com/humemai/tiervec/issues/3). The test is not weakened, so the slow job stays red until the issue is fixed.
+- `GraphConcurrencyLongTest` and `GraphConcurrencySq8LongTest` (the 60 s threaded graph program, fp32 and SQ8 vectors) fail in the slow CI job: 6 of 8 runs over two CI runs on JDK 21 and 25, while the 5 s version in the fast job passed in all 4 runs. `GraphIndex.consolidate()` throws `ArrayIndexOutOfBoundsException` when a concurrent `add` makes a node that was allocated after the scan started the entry point. Tracked in [#3](https://github.com/humemai/tiervec/issues/3). The tests are not weakened, so the slow job stays red until the issue is fixed.
 
 ## What does not exist yet
 

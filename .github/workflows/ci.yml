@@ -52,7 +52,9 @@ jobs:
   slow:
     name: slow tests (JDK ${{ matrix.java }})
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # The slow job takes about 42 to 45 minutes since the record-id reuse and batch stress tests joined it; 45 was the first limit and a JDK 21
+    # run was cancelled at it (run 42412345737). 90 leaves room; splitting the slow tests into two jobs per JDK is the way to make it short again.
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:

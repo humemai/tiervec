@@ -59,7 +59,8 @@ import java.util.function.Supplier;
  * <p>Merge. When the segment count exceeds {@code maxSegments}, or one segment is {@code deadFraction} dead, the worker rebuilds the
  * smallest segments (or the dead one) into ONE segment from their valid vectors only, throttled to {@code mergeRatePerSec} inserts
  * per second so the cores that serve queries are not starved, and swaps it in atomically. Floor entries whose stale copies are gone
- * are dropped at the swap.
+ * are dropped at the swap, except those that a search still running on an older view can need: a search counts itself on the view it
+ * reads, a replaced view with readers is held, and the worker drops the remaining entries once those searches are done.
  *
  * <p>Size-ratio trigger (fix7, {@code mergeTriggerRatio} X, default 0 = off and the code is then the old code). The segment with the most live rows is the BIG one. When the live rows of all the other
  * segments together exceed X times the live rows of the big one, ALL segments are merged into one (the small ones go into the big one). Otherwise, when the count exceeds {@code maxSegments} and
@@ -72,7 +73,7 @@ import java.util.function.Supplier;
  * holds {@code hardTailFactor * max(tailLimit, smallLimit)} vectors, writers wait (bounded, 10 s) for the worker.
  *
  * <p>Thread safety: add and delete take the write lock {@code mu} (short: one flat add, a few binary searches); searches take no
- * lock. {@link #rebuildFrom} and {@link #sealNow} and {@link #mergeNow} take the work lock.
+ * lock (each does one atomic add and one atomic subtract on the reader count of the view it reads). {@link #rebuildFrom} and {@link #sealNow} and {@link #mergeNow} take the work lock.
  *
  * <p>Persistence (first cut). A settled tier (empty tail, no hidden copies) can be written to a directory with {@link #checkpoint} and
  * read back with {@link #open}: segment files, a tombstone file and a manifest per generation, see docs/SEGMENT-FORMAT.md. The records
@@ -264,11 +265,13 @@ public final class TieredIndex implements VecIndex {
         }
     }
 
-    /** immutable: replaced as a whole by one volatile write */
+    /** immutable: replaced as a whole by one volatile write; only the reader count changes */
     private static final class View {
         final Segment[] segs;
         final Tail frozen; // being sealed, or null
         final Tail active;
+        /** searches that are running on this view (see {@code enter}); a floor entry that a segment of the view needs outlives them */
+        final AtomicInteger readers = new AtomicInteger();
 
         View(Segment[] segs, Tail frozen, Tail active) {
             this.segs = segs;
@@ -312,6 +315,10 @@ public final class TieredIndex implements VecIndex {
     private final ReentrantLock mu = new ReentrantLock();
     private final ReentrantLock work = new ReentrantLock();
     private volatile View view;
+    /** replaced views that a search may still be scanning (their reader count was not zero at the swap); guarded by mu */
+    private final List<View> held = new ArrayList<>();
+    /** a merge swap could not clean the floor map completely (a search holds an old view, or a seal is running): the worker finishes it */
+    private volatile boolean floorDue;
     private final ConcurrentHashMap<Long, Long> floor = new ConcurrentHashMap<>();
     private long counter; // guarded by mu
     private final AtomicInteger live = new AtomicInteger();
@@ -492,7 +499,29 @@ public final class TieredIndex implements VecIndex {
     private SearchResult searchImpl(float[] q, int k, LongPredicate allow, Freshness freshness, int efSearch) {
         if (q.length != dim) throw new IllegalArgumentException("dim " + q.length + " != " + dim);
         if (k <= 0) return new SearchResult(NONE, true, 0, 0);
-        View vw = view; // one read: a consistent set of segments and tails
+        View vw = enter();
+        try {
+            return searchView(vw, q, k, allow, freshness, efSearch);
+        } finally {
+            vw.readers.decrementAndGet();
+        }
+    }
+
+    /**
+     * The view a search scans, counted as read until the search leaves it. The count is raised first and the view is read again: when
+     * the view is still current, a swap has not happened yet, so the swap sees the count (it reads it after its volatile write); when
+     * it is not, the count is dropped and the search tries the new view. No lock, no thread, one atomic add each way.
+     */
+    private View enter() {
+        for (;;) {
+            View vw = view;
+            vw.readers.incrementAndGet();
+            if (view == vw) return vw;
+            vw.readers.decrementAndGet();
+        }
+    }
+
+    private SearchResult searchView(View vw, float[] q, int k, LongPredicate allow, Freshness freshness, int efSearch) {
         Segment[] segs = vw.segs;
         Hit[][] lists = new Hit[2 + segs.length][];
         int li = 0;
@@ -579,6 +608,29 @@ public final class TieredIndex implements VecIndex {
         return Arrays.copyOf(out, Math.min(k, n));
     }
 
+    /**
+     * under mu: the one place a new view replaces the current one. A search that holds the replaced view may still scan its segments, so
+     * the view is kept in {@code held} while its reader count is not zero. The count is read after the volatile write: a search that
+     * entered the view before the write is counted, one that comes later reads the new view (see {@link #enter}).
+     */
+    private void publish(View nv) {
+        View old = view;
+        view = nv;
+        if (old.readers.get() != 0) held.add(old);
+    }
+
+    /**
+     * under mu: a merge swap, or the worker later, removes what no search can need. A hidden copy in a segment of the current view or of
+     * a held view keeps its floor entry; the others go. While a seal is running (a frozen tail) or a held view still has readers, the
+     * work is not complete and {@code floorDue} stays set for the worker.
+     */
+    private void settleFloor() {
+        held.removeIf(h -> h.readers.get() == 0); // no search is in it, and none can enter it again
+        View v = view;
+        if (v.frozen == null) cleanupFloor(v.segs);
+        floorDue = v.frozen != null || !held.isEmpty();
+    }
+
     // ---- worker: seal and merge, one at a time ----
 
     private void workerLoop() {
@@ -586,6 +638,14 @@ public final class TieredIndex implements VecIndex {
             try {
                 wake.tryAcquire(50, TimeUnit.MILLISECONDS);
                 wake.drainPermits();
+                if (floorDue) {
+                    mu.lock();
+                    try {
+                        settleFloor();
+                    } finally {
+                        mu.unlock();
+                    }
+                }
                 while (!closed) {
                     boolean did = false;
                     work.lock();
@@ -685,7 +745,7 @@ public final class TieredIndex implements VecIndex {
                 if (v.frozen == null) {
                     if (v.active.raw.isEmpty()) return false;
                     if (!ignoreSmall && live.get() < cfg.smallLimit()) return false;
-                    view = new View(v.segs, v.active, new Tail(dim, metric, cfg.tailQuant()));
+                    publish(new View(v.segs, v.active, new Tail(dim, metric, cfg.tailQuant())));
                     frozen = v.active;
                 } else {
                     frozen = v.frozen;
@@ -708,7 +768,7 @@ public final class TieredIndex implements VecIndex {
                 mu.lock();
                 try {
                     View v = view;
-                    view = new View(v.segs, null, v.active);
+                    publish(new View(v.segs, null, v.active));
                 } finally {
                     mu.unlock();
                 }
@@ -735,7 +795,7 @@ public final class TieredIndex implements VecIndex {
                 countDead(seg);
                 Segment[] ns = Arrays.copyOf(v.segs, v.segs.length + 1);
                 ns[ns.length - 1] = seg;
-                view = new View(ns, null, v.active); // the atomic swap
+                publish(new View(ns, null, v.active)); // the atomic swap
             } finally {
                 mu.unlock();
             }
@@ -812,8 +872,8 @@ public final class TieredIndex implements VecIndex {
                     keep.add(merged);
                 }
                 Segment[] ns = keep.toArray(new Segment[0]);
-                view = new View(ns, v.frozen, v.active); // the atomic swap
-                if (v.frozen == null) cleanupFloor(ns);
+                publish(new View(ns, v.frozen, v.active)); // the atomic swap
+                settleFloor();
             } finally {
                 mu.unlock();
             }
@@ -841,19 +901,21 @@ public final class TieredIndex implements VecIndex {
         s.dead = d;
     }
 
-    /** under mu, with no frozen tail and no seal running: a floor entry is needed only while some segment holds a copy below it */
+    /** under mu, with no frozen tail and no seal running: a floor entry is needed only while some segment of the current view, or of a view a search still holds, has a copy below it */
     private void cleanupFloor(Segment[] segs) {
         for (Map.Entry<Long, Long> e : floor.entrySet()) {
-            boolean needed = false;
-            for (Segment s : segs) {
-                int ix = s.indexOf(e.getKey());
-                if (ix >= 0 && s.vers[ix] < e.getValue()) {
-                    needed = true;
-                    break;
-                }
-            }
+            boolean needed = holdsBelow(segs, e);
+            for (int h = 0; !needed && h < held.size(); h++) needed = holdsBelow(held.get(h).segs, e);
             if (!needed) floor.remove(e.getKey());
         }
+    }
+
+    private static boolean holdsBelow(Segment[] segs, Map.Entry<Long, Long> e) {
+        for (Segment s : segs) {
+            int ix = s.indexOf(e.getKey());
+            if (ix >= 0 && s.vers[ix] < e.getValue()) return true;
+        }
+        return false;
     }
 
     /** build and seal a graph over n rows (ids[i], src.vec(i)); throttle: apply the merge rate cap */
@@ -1009,6 +1071,7 @@ public final class TieredIndex implements VecIndex {
             if (v.frozen != null || !v.active.raw.isEmpty()) {
                 throw new IllegalStateException("checkpoint needs an empty tail: call sealNow() first (this version persists segments only)");
             }
+            if (floorDue) settleFloor(); // a merge that overlapped searches may have left entries that no search needs any more
             if (!floor.isEmpty()) {
                 throw new IllegalStateException("checkpoint needs an empty floor map, " + floor.size() + " ids have a replaced or deleted copy in a segment (this version persists no tombstones)");
             }

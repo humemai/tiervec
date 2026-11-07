@@ -21,8 +21,8 @@ import org.junit.jupiter.api.Test;
  * still scanning an old segment then finds no floor entry and sees the hidden copy as valid.
  *
  * <p>The test holds the search inside its first call of the allow predicate, runs {@code mergeNow()} on the test thread, and lets the search go on. Only the
- * public API is used. The check is on the real class and must pass once the floor entries outlive every search that can still read an old view. Until then it
- * fails, which is why it is tagged slow.
+ * public API is used. The check is on the real class: the floor entry outlives the search that still reads the old view, and it is gone a short time after
+ * that search ends (a leaked entry would keep a hidden copy hidden for ever and fail the last assertion).
  */
 @Tag("slow")
 class RidReuseSwapRaceTest {
@@ -84,6 +84,9 @@ class RidReuseSwapRaceTest {
                 assertTrue(h.id() != TARGET, "id " + TARGET + " was deleted before the search started, yet the search returned it with score " + h.score()
                         + " after a merge swapped in a new segment and dropped the floor entry (floor entries now: " + ix.stats().floorEntries() + ")");
             }
+            long end = System.nanoTime() + 10_000_000_000L; // the worker drops the entry once no search holds the old view
+            while (ix.stats().floorEntries() != 0 && System.nanoTime() < end) Thread.sleep(10);
+            assertEquals(0, ix.stats().floorEntries(), "the floor entry was not dropped after the last search of the old view ended");
         } finally {
             ix.close();
         }

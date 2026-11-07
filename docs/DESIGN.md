@@ -73,7 +73,7 @@ A vector is always in the frozen tail, in the segment, or in both for an instant
 
 ### Atomic swap of the segment list
 
-The segment list, the active tail, and the frozen tail live in one immutable view. A seal or a merge builds its result off to the side and publishes a new view with a single volatile write. A search reads the view once and finishes on it, so a search that started before a swap still sees everything it needs and the old segments stay valid for it.
+The segment list, the active tail, and the frozen tail live in one immutable view. A seal or a merge builds its result off to the side and publishes a new view with a single volatile write. A search reads the view once and finishes on it, so a search that started before a swap still sees everything it needs and the old segments stay valid for it. To keep that true for hidden copies, each view counts the searches running on it: a search raises the count, reads the view again to check that it is still current, and lowers the count when it is done (one atomic add each way, no lock). A view that a swap replaces while its count is not zero is held until the count reaches zero.
 
 ### Tombstones and the version floor
 
@@ -85,7 +85,7 @@ A search scans the tails exactly, searches every segment, drops hidden ids, appl
 
 ### Merge
 
-When the segment count exceeds `maxSegments`, or one segment is `deadFraction` hidden, the worker rebuilds the smallest segments (or the dead one) into one segment from their valid vectors only, throttled to `mergeRatePerSec` inserts per second so the cores that serve queries are not starved, and swaps it in. Floor entries whose stale copies are gone are dropped at the swap. The optional size-ratio trigger (`mergeTriggerRatio`) is described with the knobs.
+When the segment count exceeds `maxSegments`, or one segment is `deadFraction` hidden, the worker rebuilds the smallest segments (or the dead one) into one segment from their valid vectors only, throttled to `mergeRatePerSec` inserts per second so the cores that serve queries are not starved, and swaps it in. Floor entries whose stale copies are gone are dropped at the swap, except those that a segment of a held view still needs: a search that started before the swap can still be scanning an old segment, and without the entry its hidden copy would be valid again. The worker drops the rest when the searches of the held views are done, within about 50 ms. The optional size-ratio trigger (`mergeTriggerRatio`) is described with the knobs.
 
 ### Bounds and threads
 

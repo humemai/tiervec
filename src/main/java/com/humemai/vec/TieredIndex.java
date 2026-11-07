@@ -1017,7 +1017,10 @@ public final class TieredIndex implements VecIndex {
     /**
      * Rebuild everything from raw vectors, as the engine would after a crash (records are the truth): tail, segments and floor map are
      * replaced. n below smallLimit: the vectors go to the exact tail; otherwise one segment is built from all of them. Writers wait for
-     * the duration; searches keep using the old state until the swap. A later duplicate id replaces an earlier one.
+     * the duration; searches keep using the old state until the swap. The swap is the one a merge uses: a search that is still running on the old view
+     * after it keeps the floor entries that its segments need, and they are dropped when those searches are done (by the worker, or by awaitIdle,
+     * mergeNow, sealNow or checkpoint on the calling thread). With no such search the floor map is empty when this method returns. A later duplicate id
+     * replaces an earlier one.
      */
     public void rebuildFrom(Iterable<IdVector> src) {
         work.lock();
@@ -1048,8 +1051,8 @@ public final class TieredIndex implements VecIndex {
             } else {
                 for (int j = 0; j < n; j++) nt.put(ids[j], new Rec(vecs[j].clone(), ++counter));
             }
-            floor.clear();
-            view = new View(segs, null, nt);
+            publish(new View(segs, null, nt)); // the one swap: a search that still reads the old view makes it held
+            settleFloor(); // every rebuilt copy is newer than every floor entry: the entries go now, or when the searches of the old view end
             live.set(n);
         } finally {
             mu.unlock();

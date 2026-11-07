@@ -30,7 +30,7 @@ Decisions and tests that the rest of the work depends on.
 
 Library work that follows from the items above. CI already runs the fast and the slow tests on JDK 21 and 25, so there is no separate item for that.
 
-- [#9](https://github.com/humemai/tiervec/issues/9): Serialize sealed segments with a manifest, and reopen without a full rebuild
+- [#9](https://github.com/humemai/tiervec/issues/9): Serialize sealed segments with a manifest, and reopen without a full rebuild. First cut: [SEGMENT-FORMAT.md](SEGMENT-FORMAT.md). Memory-mapped readers, non-empty tombstones, tail replay, and lazy verification are not in it.
 - [#10](https://github.com/humemai/tiervec/issues/10): Atomic apply(batch): adds and deletes become visible together
 - [#11](https://github.com/humemai/tiervec/issues/11): Search context with a deadline and cancellation
 - [#12](https://github.com/humemai/tiervec/issues/12): Allowed-id filters: measure the selectivity range and add fast paths

@@ -124,12 +124,12 @@ The id models, their consequences, and the open questions are in [ID-EPOCH-AND-R
 - Rebuild from records: always available, and always correct, because the vectors in the host's records are the truth. It is the answer to every integrity failure.
 - Flush, close, drop, clear, and verify: as in the operations table.
 - Files: a host may keep the library's files outside its own storage. The library never registers a file with the host's storage manager, writes only inside the directory it is given, and treats a restored or replicated copy that has no files as a cold index. `planned` ([#9]).
-- Persistence: the format is specified in `docs/SEGMENT-FORMAT.md` once [#6] lands. The first implementation is [#9], and the tests for damaged files and crashes are [#17].
+- Persistence: the format, as the first cut writes it, is in [SEGMENT-FORMAT.md](SEGMENT-FORMAT.md). A settled tier is written by `TieredIndex.checkpoint` and read by `TieredIndex.open`. The tests for damaged files and crashes at scale are [#17].
 
 ## Recovery
 
 - After a restart the host replays what the persisted state lacks, and the library reconciles what the host deleted or never made durable. The steps, the high-water id, the liveness check, and the durable-prefix rule are in [ID-EPOCH-AND-REPLAY.md](ID-EPOCH-AND-REPLAY.md). `planned` ([#7], [#9]).
-- Any integrity failure at open throws `CorruptStateException`, and the host calls `rebuildFrom`. A second failure is a host error. `planned` ([#9], [#18]).
+- Any integrity failure at open throws, and the host calls `rebuildFrom`. A second failure is a host error. `partly`: `TieredIndex.open` throws `SegmentFormat.CorruptException`, a checked `IOException` (and `UnsupportedException`, `MismatchException`, `NoSuchFileException`), and an overload that takes a rebuild source does the fallback. The unchecked `CorruptStateException` of the error classes is [#18].
 - The claim: a process kill leaves the last published generation or the one before it. No claim is made about power loss until a test says otherwise. `planned` ([#17]).
 
 ## Resources
@@ -203,8 +203,8 @@ Rows marked `exists today` or `partly` name the class and method, and the test t
 | Size hint and live count for the allowed-id predicate | `planned` | | | [#12] |
 | Host executor, build permit, memory budget, no own threads | `planned` | | | [#13] |
 | Epoch, high-water id, replay, liveness check, durable prefix | `planned` | | | [#7] |
-| Segment file and manifest specification | `planned` | | | [#6] |
-| Persistence, open, flush, drop, clear, verify | `planned` | | | [#9] |
+| Segment file and manifest specification | `partly` | [SEGMENT-FORMAT.md](SEGMENT-FORMAT.md) (the format as the first cut writes it) | `SegmentFormatTest.sectionBytesMatchTheInMemoryCounter` (size formulas against the in-memory counter) | Review of the format: [#6] |
+| Persistence, open, flush, drop, clear, verify | `partly` | `TieredIndex.checkpoint`, `TieredIndex.open`, `SealedGraph.serialize`, `SealedGraph.load` | `TierReopenTest`, `ManifestCrashTest`, `SegmentFormatTest` | A settled tier only, no tail replay, no non-empty tombstones, no memory mapping. `flush`, `drop`, `clear`, `verify`, epoch and high-water id: [#7], [#9] follow-ups |
 | Corruption and crash tests | `planned` | | | [#17] |
 | Configuration map, fingerprint, capabilities, contract version, error classes, health | `planned` | | | [#18] |
 | Scalar twin of the graph kernel | `planned` | | | [#14] |

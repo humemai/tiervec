@@ -1,5 +1,9 @@
 package com.humemai.vec;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.NoSuchFileException;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
@@ -14,6 +18,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.LockSupport;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.LongPredicate;
+import java.util.function.Supplier;
 
 /**
  * Tiered vector index for agent memory: a bounded exact TAIL in front of immutable graph SEGMENTS (the LSM shape of the 2026-11-07
@@ -68,6 +73,10 @@ import java.util.function.LongPredicate;
  *
  * <p>Thread safety: add and delete take the write lock {@code mu} (short: one flat add, a few binary searches); searches take no
  * lock. {@link #rebuildFrom} and {@link #sealNow} and {@link #mergeNow} take the work lock.
+ *
+ * <p>Persistence (first cut). A settled tier (empty tail, no hidden copies) can be written to a directory with {@link #checkpoint} and
+ * read back with {@link #open}: segment files, a tombstone file and a manifest per generation, see docs/SEGMENT-FORMAT.md. The records
+ * stay the truth; when {@code open} cannot read the directory, the host rebuilds from its records as above.
  */
 public final class TieredIndex implements VecIndex {
 
@@ -213,6 +222,7 @@ public final class TieredIndex implements VecIndex {
         final long[] ids;  // sorted
         final long[] vers; // aligned with ids
         volatile int dead; // copies hidden by the floor map; written under mu
+        volatile long fileId = -1; // id of the segment file this segment was written to or loaded from (seg-<id>.tvs), -1 when it has none; written under the work lock
 
         Segment(SealedGraph g, long[] idsIn, long[] versIn) {
             this.g = g;
@@ -226,6 +236,22 @@ public final class TieredIndex implements VecIndex {
                 ids[i] = idsIn[ord[i]];
                 vers[i] = versIn[ord[i]];
             }
+        }
+
+        /** a segment read from a file: the id order comes with the graph (no sort) and versByRow is aligned with the graph's rows */
+        Segment(SealedGraph g, long[] versByRow) {
+            this.g = g;
+            this.n = g.n;
+            this.ids = g.sortedIds;
+            this.vers = new long[n];
+            for (int i = 0; i < n; i++) vers[i] = versByRow[g.sortedRows[i]];
+        }
+
+        /** the version of each row of the graph, in row order (the order a segment file stores them in) */
+        long[] versByRow() {
+            long[] r = new long[n];
+            for (int row = 0; row < n; row++) r[row] = vers[Arrays.binarySearch(ids, g.ids[row])];
+            return r;
         }
 
         int indexOf(long id) {
@@ -293,6 +319,9 @@ public final class TieredIndex implements VecIndex {
     private volatile boolean closed;
     private volatile int activity; // 0 idle, 1 sealing, 2 merging
     private volatile Throwable lastError;
+    private Path persistedDir;           // the directory of the last checkpoint or open, guarded by mu
+    private Manifest persistedManifest;  // the generation that directory holds, guarded by mu
+    private volatile Throwable fallbackCause; // why open fell back to a rebuild, null when the segments were read from files
     private volatile Runnable hookBeforePublish;
     private volatile Runnable hookAfterPublish;
     private final AtomicLong seals = new AtomicLong(), merges = new AtomicLong(), sealNanos = new AtomicLong(), mergeNanos = new AtomicLong();
@@ -953,6 +982,172 @@ public final class TieredIndex implements VecIndex {
             mu.unlock();
             work.unlock();
         }
+    }
+
+    // ---- persistence (first cut: a settled tier, segments only) ----
+
+    /**
+     * Writes the settled tier into a directory as a new generation: one file per segment (a segment that an earlier checkpoint or open
+     * already put in this directory is not written again), a tombstone file and a manifest, in the publish order of {@link Manifest#publish}.
+     * A process kill at any point leaves the previous generation or this one, never a mixture. Files that the new generation no longer
+     * names are deleted afterwards.
+     *
+     * <p>This first cut persists segments only, so it refuses a tier that holds anything else, with an {@link IllegalStateException}: a
+     * non-empty tail (call {@link #sealNow} first), an entry in the floor map, or a segment with hidden copies. Writers and the seal and
+     * merge worker wait while it runs. One process owns a directory at a time; nothing here locks it.
+     */
+    public void checkpoint(Path dir) throws IOException {
+        checkpoint(dir, FaultHook.NONE);
+    }
+
+    /** {@link #checkpoint(Path)} with a hook between the publish steps, for the crash tests */
+    void checkpoint(Path dir, FaultHook hook) throws IOException {
+        work.lock();
+        mu.lock();
+        try {
+            View v = view;
+            if (v.frozen != null || !v.active.raw.isEmpty()) {
+                throw new IllegalStateException("checkpoint needs an empty tail: call sealNow() first (this version persists segments only)");
+            }
+            if (!floor.isEmpty()) {
+                throw new IllegalStateException("checkpoint needs an empty floor map, " + floor.size() + " ids have a replaced or deleted copy in a segment (this version persists no tombstones)");
+            }
+            for (Segment s : v.segs) {
+                if (s.dead != 0) throw new IllegalStateException("checkpoint needs segments without hidden copies (this version persists no tombstones)");
+            }
+            Files.createDirectories(dir);
+            Manifest cur = dir.equals(persistedDir) ? persistedManifest : null;
+            if (cur == null) {
+                try {
+                    Manifest.readLatest(dir); // throws when the directory holds a format this version does not understand: it is not overwritten
+                } catch (SegmentFormat.CorruptException damaged) {
+                    // damaged files are replaced by the new generation and deleted by the cleanup below
+                }
+            }
+            long[] hi = Manifest.highestOnDisk(dir);
+            long gen = Math.max(hi[0], cur != null ? cur.generation() : 0L) + 1;
+            long nextSeg = Math.max(hi[1] + 1, cur != null ? cur.nextSegId() : 1L);
+            List<Manifest.Entry> entries = new ArrayList<>();
+            long[] fileIds = new long[v.segs.length];
+            for (int i = 0; i < v.segs.length; i++) {
+                Segment s = v.segs[i];
+                Manifest.Entry reuse = null;
+                if (cur != null && s.fileId >= 0) {
+                    for (Manifest.Entry e : cur.entries()) {
+                        if (e.segId() == s.fileId) reuse = e;
+                    }
+                }
+                if (reuse != null) {
+                    entries.add(reuse);
+                    fileIds[i] = reuse.segId();
+                    continue;
+                }
+                long id = nextSeg++;
+                SegmentInfo si = SegmentWriter.write(s.g, s.versByRow(), dir.resolve(Manifest.segName(id)));
+                entries.add(new Manifest.Entry(id, si.n(), si.fileLength(), si.headerCrc(), si.verMin(), si.verMax()));
+                fileIds[i] = id;
+            }
+            GraphIndex.Params gp = cfg.graph();
+            Manifest.Fingerprint fp = new Manifest.Fingerprint(dim, metric, gp.M(), gp.efConstruction(), gp.sq8());
+            Manifest m = new Manifest(gen, Manifest.NONE, Manifest.NONE, counter, nextSeg, fp, entries, 0L, 0L, 0);
+            Manifest done = Manifest.publish(dir, m, hook);
+            for (int i = 0; i < v.segs.length; i++) v.segs[i].fileId = fileIds[i];
+            persistedDir = dir;
+            persistedManifest = done;
+            Manifest.gc(dir, done);
+        } finally {
+            mu.unlock();
+            work.unlock();
+        }
+    }
+
+    /**
+     * Opens the tier that {@link #checkpoint} wrote. Takes the newest manifest that validates, checks its fingerprint against the
+     * configuration, reads every segment with every section checksummed, deletes files that the manifest does not name, and restores the
+     * version counter. The dimension and the metric come from the manifest. Any failure throws: {@link SegmentFormat.CorruptException}
+     * for damage, {@link SegmentFormat.UnsupportedException} for a newer format, {@link SegmentFormat.MismatchException} when the files
+     * belong to another index definition, {@link NoSuchFileException} when the directory has no manifest. A caller that holds the
+     * records falls back to {@link #rebuildFrom}, or uses the overload with a rebuild source that does it. A null config means the defaults.
+     */
+    public static TieredIndex open(Path dir, Config cfg) throws IOException {
+        Config c = cfg != null ? cfg : Config.defaults();
+        Manifest m = Manifest.readLatest(dir);
+        if (m == null) throw new NoSuchFileException(dir.toString(), null, "no manifest in the directory");
+        return restore(dir, m, m.fingerprint().dim(), m.fingerprint().metric(), c);
+    }
+
+    /**
+     * Like {@link #open(Path, Config)} for a caller that knows the index definition and holds the records: on any failure to read the
+     * directory (damage, a newer format, another fingerprint, no manifest) it builds the tier from {@code rebuildSource} with
+     * {@link #rebuildFrom}, which is always correct and costs a build. The directory is not touched in that case; the next
+     * {@link #checkpoint} replaces what is in it. {@link #openFallbackCause()} tells which failure it was.
+     */
+    public static TieredIndex open(Path dir, int dim, Metric metric, Config cfg, Supplier<? extends Iterable<IdVector>> rebuildSource) {
+        Config c = cfg != null ? cfg : Config.defaults();
+        Throwable cause;
+        try {
+            Manifest m = Manifest.readLatest(dir);
+            if (m != null) return restore(dir, m, dim, metric, c);
+            cause = new NoSuchFileException(dir.toString(), null, "no manifest in the directory");
+        } catch (IOException e) {
+            cause = e;
+        }
+        TieredIndex t = new TieredIndex(dim, metric, c);
+        try {
+            t.rebuildFrom(rebuildSource.get());
+        } catch (RuntimeException e) {
+            t.close();
+            throw e;
+        }
+        t.fallbackCause = cause;
+        return t;
+    }
+
+    /** why {@link #open(Path, int, Metric, Config, Supplier)} rebuilt instead of reading files, or null when the segments came from files */
+    public Throwable openFallbackCause() {
+        return fallbackCause;
+    }
+
+    private static TieredIndex restore(Path dir, Manifest m, int dim, Metric metric, Config cfg) throws IOException {
+        Manifest.Fingerprint fp = m.fingerprint();
+        GraphIndex.Params gp = cfg.graph();
+        if (fp.dim() != dim || fp.metric() != metric || fp.M() != gp.M() || fp.efConstruction() != gp.efConstruction() || fp.sq8() != gp.sq8()) {
+            throw new SegmentFormat.MismatchException("the persisted segments were built for " + fp + ", not for dim " + dim + " " + metric + " M "
+                    + gp.M() + " efConstruction " + gp.efConstruction() + " sq8 " + gp.sq8());
+        }
+        List<Segment> segs = new ArrayList<>();
+        long total = 0;
+        long maxVer = 0;
+        for (Manifest.Entry e : m.entries()) {
+            SegmentReader.Loaded l = SegmentReader.readFull(dir.resolve(Manifest.segName(e.segId())), true);
+            SegmentInfo si = l.info();
+            if (l.vers() == null) throw new SegmentFormat.CorruptException("segment " + e.segId() + " has no version section", "VERS");
+            if (si.n() != e.n() || si.fileLength() != e.fileLength() || si.headerCrc() != e.headerCrc()) {
+                throw new SegmentFormat.CorruptException("segment " + e.segId() + " changed since the manifest was read", "MANIFEST");
+            }
+            Segment s = new Segment(l.graph(), l.vers());
+            s.fileId = e.segId();
+            segs.add(s);
+            total += s.n;
+            maxVer = Math.max(maxVer, si.verMax());
+        }
+        if (maxVer > m.versionCounter()) throw new SegmentFormat.CorruptException("a segment holds version " + maxVer + " above the manifest's counter " + m.versionCounter(), "MANIFEST");
+        int live = Math.toIntExact(total);
+        Manifest.gc(dir, m); // orphans: files of a crashed publish, older generations
+        TieredIndex t = new TieredIndex(dim, metric, cfg);
+        t.work.lock();
+        t.mu.lock();
+        try {
+            t.view = new View(segs.toArray(new Segment[0]), null, t.view.active);
+            t.counter = m.versionCounter();
+            t.live.set(live);
+            t.persistedDir = dir;
+            t.persistedManifest = m;
+        } finally {
+            t.mu.unlock();
+            t.work.unlock();
+        }
+        return t;
     }
 
     // ---- reports ----

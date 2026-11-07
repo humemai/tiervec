@@ -11,7 +11,7 @@ Each part has the test programs of the experiment, wrapped as JUnit 5 tests that
 | Flat tier | `FlatIndex` with `NONE`, `SQ8`, and `BINARY` scans, compaction, `serialize` and `load`, scalar twin kernels | Correctness program, threaded program (5 s fast, 20 s and 60 s slow), correctness again with the scalar twins |
 | Graph tier | `GraphIndex` (concurrent HNSW, delete, `consolidate`, optional SQ8), `SealedGraph`, `seal` and `fromSealed` in memory, `SealedGraph.serialize` and `load` (one segment file, CRC32C per section) | Functional program (quick mode), threaded program with background consolidate (5 s fast, 60 s slow for fp32 and SQ8), latency during consolidate (slow), segment round trip and damage tests, the functional, threaded, and segment programs again with the scalar twins, a differential test of the vector and scalar graph kernels, and a test that builds and searches a tier in a JVM without the Vector API module |
 | IVF | `IvfIndex` as a standalone index: lazy training, background retrain with atomic swap, drift detection, compaction | Single-threaded program at n = 6000 (fast, vector and scalar) and n = 20000 (slow), drift program (slow), threaded program (5 s fast, 10 s slow) |
-| Tier | `TieredIndex`: exact tail, sealed graph segments, merge, tombstones with a version floor, `rebuildFrom`, `checkpoint` and `open` for a settled tier (segments plus a manifest per generation, [format](SEGMENT-FORMAT.md)) | The tier program, one test at a time (fast), the 10 s threaded test (slow), reopen, manifest and crash-step tests (fast), the record-id reuse tests (see below) |
+| Tier | `TieredIndex`: exact tail, sealed graph segments, merge, tombstones with a version floor, `apply(batch)` and `awaitCapacity`, `rebuildFrom`, `checkpoint` and `open` for a settled tier (segments plus a manifest per generation, [format](SEGMENT-FORMAT.md)) | The tier program, one test at a time (fast), the 10 s threaded test (slow), reopen, manifest and crash-step tests (fast), the record-id reuse tests (see below), the batch tests (see below) |
 
 The wrappers assert two things per program: zero failed checks, and at least the number of checks the program reported in earlier runs of the experiment. The program code itself is not changed in a way that weakens an assertion.
 
@@ -48,6 +48,14 @@ A probe that cannot fail is not a test, so the mutant tests check that it fails 
 | M1 | `add` removes the floor entry of the id instead of raising it | `staleHits` above 0, in `b_sealed` |
 | M2 | `delete` takes a version but writes no floor entry | `lostDeletes` above 0, in `b_sealed` |
 | M3 | `cleanupFloor` drops every entry after a merge | a wrong answer in `c2_delete_in_merge` |
+
+## Atomic batches
+
+`TieredIndex.apply(batch)` applies the adds and then the deletes of one host transaction under one hold of the write lock, and a search sees all of the batch or none of it ([#10](https://github.com/humemai/tiervec/issues/10)). Applying the same batch again changes nothing visible. `awaitCapacity(deadlineNanos)` is the separate back pressure check: `apply` never waits for the worker and does not look at the hard tail limit, so one batch can take the tail above it.
+
+The tail and the floor map change in place, so one volatile write of a new view cannot cover a batch. A batch counter does: it is odd while a batch is applied and even otherwise. A search waits while it is odd and reads it again after its scan, and when it changed, the scan is thrown away and run again. The query path still takes no lock and creates no thread: one volatile read before the scan, one fence and one read after it. A search that meets a batch waits for it (the length of one batch), and a stream of batches that follow each other faster than one scan takes can starve a search.
+
+The tests are `ApplyBatchTest` (fast) and `ApplyStressTest` (slow). `ApplyBatchTest` checks that the whole batch is visible after `apply` returns, that a batch with a bad vector changes nothing, that applying a batch again changes nothing visible (also after a seal), that a search held inside its first allow call while a batch is applied answers from the state before the batch or the state after it and never from a mixture (once with the old id in the tail and once with the old id in a segment), that `apply` does not wait for a worker that is inside a seal, and the behavior of `awaitCapacity` at the hard tail limit. `ApplyStressTest` runs updater threads that move groups of ids from one generation to the next in batches while searcher threads check that a group always shows exactly its ids of one generation, on a tail and on a tier that seals and merges all the time.
 
 ## What does not exist yet
 

@@ -1,0 +1,8 @@
+target/
+build/
+out/
+*.class
+*.jfr
+.idea/
+.vscode/
+.notes/

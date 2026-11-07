@@ -1,6 +1,7 @@
 package com.humemai.vec;
 
 import java.io.IOException;
+import java.lang.invoke.VarHandle;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
@@ -73,8 +74,13 @@ import java.util.function.Supplier;
  * to n on the query path (per query: the hit lists and a hash table of size about twice the hits). Back pressure: when the active tail
  * holds {@code hardTailFactor * max(tailLimit, smallLimit)} vectors, writers wait (bounded, 10 s) for the worker.
  *
- * <p>Thread safety: add and delete take the write lock {@code mu} (short: one flat add, a few binary searches); searches take no
- * lock (each does one atomic add and one atomic subtract on the reader count of the view it reads). {@link #rebuildFrom} and {@link #sealNow} and {@link #mergeNow} take the work lock.
+ * <p>Batches. {@link #apply} applies the adds and then the deletes of one host transaction under one hold of the write lock, and a
+ * search sees all of the batch or none of it (a batch counter that a search validates, see {@link #apply}). {@link #awaitCapacity} is the
+ * separate back pressure pre-check: {@code apply} never waits for the worker.
+ *
+ * <p>Thread safety: add and delete take the write lock {@code mu} (short: one flat add, a few binary searches), and apply takes it once
+ * for the whole batch; searches take no lock (each does one atomic add and one atomic subtract on the reader count of the view it
+ * reads, and one volatile read of the batch counter before and after the scan). {@link #rebuildFrom} and {@link #sealNow} and {@link #mergeNow} take the work lock.
  *
  * <p>Persistence (first cut). A settled tier (empty tail, no hidden copies) can be written to a directory with {@link #checkpoint} and
  * read back with {@link #open}: segment files, a tombstone file and a manifest per generation, see docs/SEGMENT-FORMAT.md. The records
@@ -327,6 +333,8 @@ public final class TieredIndex implements VecIndex {
     private final ReentrantLock mu = new ReentrantLock();
     private final ReentrantLock work = new ReentrantLock();
     private volatile View view;
+    /** odd while apply is changing the tail and the floor map, even otherwise; written only under mu (see {@link #apply}) */
+    private volatile long batchSeq;
     /** replaced views that a search may still be scanning (their reader count was not zero at the swap); guarded by mu */
     private final List<View> held = new ArrayList<>();
     /** a merge swap could not clean the floor map completely (a search holds an old view, or a seal is running): the worker finishes it */
@@ -448,59 +456,115 @@ public final class TieredIndex implements VecIndex {
         boolean wakeUp;
         mu.lock();
         try {
-            long ver = ++counter;
-            addsCount++;
-            View vw = view;
-            Probe p = probe(vw, id);
-            vw.active.put(id, new Rec(copy, ver));            // 1. the new version becomes visible
-            if (p.phys() || p.inFrozen()) floor.put(id, ver); // 2. older copies in segments (or in a frozen tail that is being sealed) stop counting
-            if (p.valid() != null) p.valid().dead = p.valid().dead + 1;
-            if (p.inFrozen()) vw.frozen.remove(id);           // 3. the old frozen copy goes
-            if (!(p.inActive() || p.inFrozen() || p.valid() != null)) live.incrementAndGet();
-            wakeUp = vw.active.raw.size() >= cfg.tailLimit();
+            wakeUp = addLocked(id, copy);
         } finally {
             mu.unlock();
         }
         if (wakeUp && wake.availablePermits() == 0) wake.release();
     }
 
+    /** under mu: the body of add (copy is the tier's own copy of the vector); true when the active tail has reached tailLimit */
+    private boolean addLocked(long id, float[] copy) {
+        long ver = ++counter;
+        addsCount++;
+        View vw = view;
+        Probe p = probe(vw, id);
+        vw.active.put(id, new Rec(copy, ver));            // 1. the new version becomes visible
+        if (p.phys() || p.inFrozen()) floor.put(id, ver); // 2. older copies in segments (or in a frozen tail that is being sealed) stop counting
+        if (p.valid() != null) p.valid().dead = p.valid().dead + 1;
+        if (p.inFrozen()) vw.frozen.remove(id);           // 3. the old frozen copy goes
+        if (!(p.inActive() || p.inFrozen() || p.valid() != null)) live.incrementAndGet();
+        return vw.active.raw.size() >= cfg.tailLimit();
+    }
+
     @Override
     public boolean delete(long id) {
         mu.lock();
         try {
-            View vw = view;
-            Probe p = probe(vw, id);
-            if (!(p.inActive() || p.inFrozen() || p.valid() != null)) return false;
-            if (p.inActive()) vw.active.remove(id);
-            if (p.inFrozen()) vw.frozen.remove(id);
-            if (p.phys() || p.inFrozen()) floor.put(id, ++counter);
-            if (p.valid() != null) p.valid().dead = p.valid().dead + 1;
-            live.decrementAndGet();
-            return true;
+            return deleteLocked(id);
         } finally {
             mu.unlock();
         }
     }
 
-    /** NAIVE first cut, only so that the tests of issue 10 compile and can be shown to fail: one call at a time, nothing atomic, no capacity check. */
-    public void apply(Batch batch) {
-        for (IdVector a : batch.adds()) add(a.id(), a.v());
-        for (long d : batch.deletes()) delete(d);
-    }
-
-    /** NAIVE first cut, see {@link #apply}: never waits and always says there is room. */
-    public boolean awaitCapacity(long deadlineNanos) {
+    /** under mu: the body of delete; true when the id was live */
+    private boolean deleteLocked(long id) {
+        View vw = view;
+        Probe p = probe(vw, id);
+        if (!(p.inActive() || p.inFrozen() || p.valid() != null)) return false;
+        if (p.inActive()) vw.active.remove(id);
+        if (p.inFrozen()) vw.frozen.remove(id);
+        if (p.phys() || p.inFrozen()) floor.put(id, ++counter);
+        if (p.valid() != null) p.valid().dead = p.valid().dead + 1;
+        live.decrementAndGet();
         return true;
     }
 
-    private void awaitBackpressure() {
-        if (view.active.raw.size() < hardTail) return;
-        long deadline = System.nanoTime() + 10_000_000_000L;
-        while (view.active.raw.size() >= hardTail && !closed && worker.isAlive() && System.nanoTime() < deadline) {
+    /**
+     * Applies the changes of one committed transaction so that a search sees all of them or none of them: the adds first (in list order), then the deletes.
+     * After the call returns, a search that starts later sees the adds and not the deletes. Applying the same batch again changes nothing visible, because an
+     * add of a held id replaces it with the same vector and a delete of an absent id changes nothing (the host guarantees that an id denotes one vector).
+     *
+     * <p>The call takes the write lock once for the whole batch. It never waits for the worker (a seal or a merge that is running), and it does not look at
+     * the hard tail limit: a batch may take the tail above it, and the host asks {@link #awaitCapacity} before the call when it wants back pressure. A vector
+     * of a wrong dimension throws {@link IllegalArgumentException} before anything is applied.
+     *
+     * <p>How it is atomic. The tail and the floor map change in place, so one volatile write of a new view cannot cover a batch. A batch counter does:
+     * {@code batchSeq} is odd while a batch is being applied and even otherwise (it changes only under the write lock). A search reads it before it scans,
+     * waits while it is odd, and reads it again after the scan; when it changed, a batch was applied while the search scanned, the answer may mix the state
+     * before the batch with the state after it, and the search is discarded and run again. A search that returns therefore ran with no batch in progress
+     * for the whole of its scan: it saw every batch that was applied before it started, whole, and no part of any other. A search that was running when the
+     * batch was applied answers from the state before it when its scan ended before the batch began, and from the state after it otherwise (the first
+     * answer is thrown away). The reader needs no lock and no thread: per search one
+     * volatile read before the scan and an acquire fence and a volatile read after it, and a second scan only when a batch overlapped the first.
+     * While a batch is in progress, searches wait for it (spin, then park for 20 microseconds), so a search can be delayed by the length of one batch, and
+     * a stream of batches that follow each other faster than one scan takes can starve a search. A single {@link #add} or {@link #delete} does not open
+     * the window: each is atomic by itself.
+     */
+    public void apply(Batch batch) {
+        int na = batch.adds().size();
+        float[][] copies = new float[na][];
+        for (int i = 0; i < na; i++) {
+            float[] v = batch.adds().get(i).v();
+            if (v.length != dim) throw new IllegalArgumentException("dim " + v.length + " != " + dim);
+            copies[i] = v.clone();
+        }
+        boolean wakeUp;
+        mu.lock();
+        try {
+            batchSeq = batchSeq + 1;     // odd: a batch is in progress
+            VarHandle.storeStoreFence(); // the odd value is visible before the first change of the batch
+            try {
+                for (int i = 0; i < na; i++) addLocked(batch.adds().get(i).id(), copies[i]);
+                for (long id : batch.deletes()) deleteLocked(id);
+            } finally {
+                batchSeq = batchSeq + 1; // even: the batch is whole, a volatile write after all of its changes
+            }
+            wakeUp = view.active.raw.size() >= cfg.tailLimit();
+        } finally {
+            mu.unlock();
+        }
+        if (wakeUp && wake.availablePermits() == 0) wake.release();
+    }
+
+    /**
+     * Back pressure as a pre-check for {@link #apply}. When the active tail holds {@code hardTailFactor * max(tailLimit, smallLimit)} vectors or more, waits
+     * (it wakes the worker and parks) until the tail has room, and returns {@code false} when the deadline passes first, when the tier is closed, or when the
+     * worker is dead. Returns {@code true} at once when there is room. The deadline is on the {@link System#nanoTime()} clock. A call that is waiting returns
+     * {@code true} as soon as a seal or a delete makes room. {@link #apply} never calls it; {@link #add} calls it with a deadline 10 s away and adds anyway.
+     */
+    public boolean awaitCapacity(long deadlineNanos) {
+        while (view.active.raw.size() >= hardTail) {
+            if (closed || !worker.isAlive() || deadlineNanos - System.nanoTime() <= 0L) return false;
             backpressure.incrementAndGet();
             if (wake.availablePermits() == 0) wake.release();
             LockSupport.parkNanos(200_000L);
         }
+        return true;
+    }
+
+    private void awaitBackpressure() {
+        awaitCapacity(System.nanoTime() + 10_000_000_000L);
     }
 
     // ---- search ----
@@ -522,11 +586,22 @@ public final class TieredIndex implements VecIndex {
     private SearchResult searchImpl(float[] q, int k, LongPredicate allow, Freshness freshness, int efSearch) {
         if (q.length != dim) throw new IllegalArgumentException("dim " + q.length + " != " + dim);
         if (k <= 0) return new SearchResult(NONE, true, 0, 0);
-        View vw = enter();
-        try {
-            return searchView(vw, q, k, allow, freshness, efSearch);
-        } finally {
-            vw.readers.decrementAndGet();
+        for (int spins = 0;;) {
+            long seq = batchSeq;
+            if ((seq & 1L) != 0L) { // a batch is in progress (see apply): a scan across it would be thrown away, so wait for it
+                if (++spins < 64) Thread.onSpinWait();
+                else LockSupport.parkNanos(20_000L);
+                continue;
+            }
+            View vw = enter();
+            SearchResult r;
+            try {
+                r = searchView(vw, q, k, allow, freshness, efSearch);
+            } finally {
+                vw.readers.decrementAndGet();
+            }
+            VarHandle.acquireFence(); // the reads of the scan stay before the second read of the counter
+            if (batchSeq == seq) return r; // no batch began or ended during the scan
         }
     }
 

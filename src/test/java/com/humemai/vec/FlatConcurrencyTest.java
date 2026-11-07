@@ -126,6 +126,7 @@ public final class FlatConcurrencyTest {
                     while (!stop.get() && System.nanoTime() < deadline) {
                         float[] q = FlatCorrectnessTest.unit(r, DIM);
                         int c = dseq.get();
+                        int sizeBefore = idx.size(); // the short-result check below needs the index to be large for the whole search, not only after it
                         Hit[] h = idx.search(q, 10, null);
                         reads.incrementAndGet();
                         Set<Long> seen = new HashSet<>();
@@ -135,7 +136,12 @@ public final class FlatConcurrencyTest {
                             Integer d = deletedAt.get(h[i].id());
                             if (d != null && d < c) errors.add("reader " + ri + ": returned id " + h[i].id() + " deleted before the search began");
                         }
-                        if (idx.size() > 100 && h.length < 10) errors.add("reader " + ri + ": short result " + h.length + " with size " + idx.size());
+                        // At startup the writers fill an empty index: a search that began with 4 vectors correctly returns 4 hits, and size() read after the
+                        // search can already be above 100. A short result is a violation only when the index held more than 100 vectors both before and after.
+                        int sizeAfter = idx.size();
+                        if (sizeBefore > 100 && sizeAfter > 100 && h.length < 10) {
+                            errors.add("reader " + ri + ": short result " + h.length + " with size " + sizeBefore + " before and " + sizeAfter + " after the search");
+                        }
                     }
                 } catch (Throwable t) {
                     errors.add("reader " + ri + ": " + t);

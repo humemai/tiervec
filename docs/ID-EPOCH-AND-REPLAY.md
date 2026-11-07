@@ -74,7 +74,7 @@ Rebuild while the host keeps writing: the host passes a snapshot position, which
 
 Because of this, the host may start a replay at or below the true position. A replay that starts too early is slower, never wrong. This is what lets the high-water id lag, and what makes a crash in the middle of a replay harmless.
 
-`exists today` for single calls: `TieredIndex.add`, `TieredIndex.delete`. A test that re-applies whole batches is `planned` ([#10]).
+`exists today` for single calls: `TieredIndex.add`, `TieredIndex.delete`. `exists today` for whole batches: `TieredIndex.apply`, tested by `ApplyBatchTest.applyingTheSameBatchAgainChangesNothingVisible`.
 
 ## The durable-prefix rule
 

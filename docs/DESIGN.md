@@ -59,7 +59,7 @@ IVF has no serialization yet, and it is not used by `TieredIndex`.
 
 ### Exact tail
 
-`add` puts the vector into the active tail, a `FlatIndex` (fp32 or SQ8), and a raw copy next to it. The raw copy is what a seal and a rebuild read. The vector is visible to the next search in any thread before `add` returns. `delete` removes it from the tails and hides every segment copy at once.
+`add` puts the vector into the active tail, a `FlatIndex` (fp32 or SQ8), and a raw copy next to it. The raw copy is what a seal and a rebuild read. The vector is visible to the next search in any thread before `add` returns. `delete` removes it from the tails and hides every segment copy at once. `apply` does both for a whole batch (see Batches).
 
 ### Sealed HNSW segments
 
@@ -75,6 +75,14 @@ A vector is always in the frozen tail, in the segment, or in both for an instant
 
 The segment list, the active tail, and the frozen tail live in one immutable view. A seal or a merge builds its result off to the side and publishes a new view with a single volatile write. A search reads the view once and finishes on it, so a search that started before a swap still sees everything it needs and the old segments stay valid for it. To keep that true for hidden copies, each view counts the searches running on it: a search raises the count, reads the view again to check that it is still current, and lowers the count when it is done (one atomic add each way, no lock). A view that a swap replaces while its count is not zero is held until the count reaches zero.
 
+### Batches
+
+`apply(batch)` is the write path of a host transaction: the adds, then the deletes, under one hold of the write lock. The tail and the floor map change in place, so a new view cannot make a batch visible at one instant. A batch counter does: it is odd while a batch is applied and even otherwise, and only the writer that holds the lock changes it. A search reads it before it scans and waits while it is odd. After the scan it reads it again, behind an acquire fence. When the value changed, a batch was applied during the scan, the answer may mix the state before the batch with the state after it, and the search runs again on the current view. A search that returns therefore saw no batch in progress from the start of its scan to its end: all of every earlier batch and nothing of any later one. A single `add` or `delete` does not touch the counter, because each is atomic by itself.
+
+A search that is in the middle of a scan when a batch opens finishes the scan on the view it holds, which is still valid memory, and discards the answer. A search that starts inside the batch waits for it. A search that starts after the batch sees all of it, because the closing write of the counter comes after every change of the batch.
+
+The query path pays one volatile read before the scan and one fence and one volatile read after it, plus a second scan when a batch overlapped the first. A search that meets a batch waits for the length of the batch (a short spin, then parks of 20 microseconds). A stream of batches that follow each other faster than one scan takes can starve a search, so the rate of `apply` calls is the bound.
+
 ### Tombstones and the version floor
 
 Versions come from one counter under the write lock. The floor map says "a segment copy of `id` is valid only when its version is at least `floor[id]`". Replace and delete raise the floor, but only when a segment or the frozen tail holds a copy of the id, so the map stays small. Searches filter segments through the floor inside the beam, so a deleted or replaced vector never appears and nothing waits for a merge. Each segment counts its hidden copies, and a segment with none is searched with the plain filter. Because the floor is a version and not a flag, an id that the host reuses after a delete is added with a newer version, so the new vector is visible while the old copies stay hidden.
@@ -89,7 +97,7 @@ When the segment count exceeds `maxSegments`, or one segment is `deadFraction` h
 
 ### Bounds and threads
 
-One worker thread runs one task at a time (a seal or a merge). There is a cap on segments. No allocation proportional to `n` happens on the query path. Back pressure: when the active tail holds `hardTailFactor * max(tailLimit, smallLimit)` vectors, writers wait for the worker, bounded to 10 s. `add` and `delete` take one write lock for a short time. Searches take no lock.
+One worker thread runs one task at a time (a seal or a merge). There is a cap on segments. No allocation proportional to `n` happens on the query path. Back pressure: when the active tail holds `hardTailFactor * max(tailLimit, smallLimit)` vectors, `add` waits for the worker, bounded to 10 s. `awaitCapacity(deadline)` is the same wait as a pre-check for `apply`: it waits for room in the tail and returns `false` at the deadline. `apply` never waits for the worker and does not look at the limit, so one batch can take the tail above it. `add` and `delete` take one write lock for a short time, and `apply` takes it once for the whole batch. Searches take no lock.
 
 ## Kernels and the scalar twin
 

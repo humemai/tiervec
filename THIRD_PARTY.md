@@ -7,3 +7,6 @@ Sources of jvector, Lucene HNSW and hnswlib (Apache-2.0 or MIT) may be read, and
 | Malkov and Yashunin, HNSW (paper) | arXiv 1603.09320 | n/a (paper) | graph tier | multi-layer graph, level draw with mL = 1/ln(M), neighbor-selection heuristic, beam search per layer |
 | Subramanya et al., DiskANN / Vamana (paper) | NeurIPS 2019 | n/a (paper) | graph tier | alpha robust prune; delete consolidation (repair of in-neighbors using the deleted node's out-neighbors) |
 | jvector, Lucene HNSW, hnswlib | not read | Apache-2.0 / MIT | none | no code or structure copied so far; the graph tier was written from the papers. If a piece is adapted later, add a row here and an attribution comment in that file. |
+| Sivic and Zisserman, inverted file (paper) | ICCV 2003 | n/a (paper) | IVF index | inverted file over k-means centroids |
+| Jegou, Douze and Schmid, product quantization, IVFADC (paper) | TPAMI 2011 | n/a (paper) | IVF index | the IVF part only; no product quantization or residual codes |
+| Arthur and Vassilvitskii, k-means++ (paper) | SODA 2007 | n/a (paper) | IVF index | seeding of the Lloyd k-means iterations; no third-party source was read or adapted |

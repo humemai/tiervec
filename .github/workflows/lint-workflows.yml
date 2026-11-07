@@ -1,0 +1,24 @@
+# Workflow hygiene: every action reference must be pinned to a full commit SHA. A floating tag is a supply-chain hole, because the
+# tag's owner can repoint it at any commit. Same check as humemai/dbbench.
+name: Lint Workflows
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sha-pinned-actions:
+    name: Ensure SHA pinned actions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Ensure SHA pinned actions
+        uses: zgosalvez/github-actions-ensure-sha-pinned-actions@3db98c0363e2fa5df3e1c4c471777a7c10b24cc9 # v5.0.5

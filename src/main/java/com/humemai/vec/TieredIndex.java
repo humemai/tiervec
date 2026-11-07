@@ -97,6 +97,17 @@ public final class TieredIndex implements VecIndex {
     public record IdVector(long id, float[] v) {}
 
     /**
+     * The changes of one committed host transaction: adds first (in list order, a later add of an id replaces an earlier one), then deletes.
+     * An update is an add of a new id plus a delete of the old id. The lists are copied at construction.
+     */
+    public record Batch(List<IdVector> adds, List<Long> deletes) {
+        public Batch {
+            adds = List.copyOf(adds);
+            deletes = List.copyOf(deletes);
+        }
+    }
+
+    /**
      * Parameters. tailLimit: seal when the active tail has this many vectors (default 2000). tailAgeMs: also seal when the oldest tail
      * vector is older than this (0 = never by age). smallLimit: below this many live vectors never build a graph (default 1000).
      * maxSegments: merge when exceeded (default 8). mergeFan: smallest segments merged at once (default 4). deadFraction: compact a
@@ -469,6 +480,17 @@ public final class TieredIndex implements VecIndex {
         } finally {
             mu.unlock();
         }
+    }
+
+    /** NAIVE first cut, only so that the tests of issue 10 compile and can be shown to fail: one call at a time, nothing atomic, no capacity check. */
+    public void apply(Batch batch) {
+        for (IdVector a : batch.adds()) add(a.id(), a.v());
+        for (long d : batch.deletes()) delete(d);
+    }
+
+    /** NAIVE first cut, see {@link #apply}: never waits and always says there is room. */
+    public boolean awaitCapacity(long deadlineNanos) {
+        return true;
     }
 
     private void awaitBackpressure() {

@@ -15,6 +15,10 @@ Each part has the test programs of the experiment, wrapped as JUnit 5 tests that
 
 The wrappers assert two things per program: zero failed checks, and at least the number of checks the program reported in earlier runs of the experiment. The program code itself is not changed in a way that weakens an assertion.
 
+## Known failing
+
+- `GraphConcurrencySq8LongTest` (the 60 s threaded graph program with SQ8 vectors) fails in the slow CI job on JDK 21 and 25. `GraphIndex.consolidate()` throws `ArrayIndexOutOfBoundsException` when a concurrent `add` makes a node that was allocated after the scan started the entry point. Tracked in [#3](https://github.com/humemai/tiervec/issues/3). The test is not weakened, so the slow job stays red until the issue is fixed.
+
 ## What does not exist yet
 
 - Serialization of the graph, IVF, and tier. Only `FlatIndex` has `serialize` and `load`. The tier is meant to be rebuilt from the host's records with `rebuildFrom`.

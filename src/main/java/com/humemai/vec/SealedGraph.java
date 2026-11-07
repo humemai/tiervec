@@ -1,5 +1,7 @@
 package com.humemai.vec;
 
+import java.io.IOException;
+import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLongArray;
@@ -15,23 +17,44 @@ public final class SealedGraph implements VecIndex {
     final float[] vec; final byte[] codes; final float[] qbase, qdelta, qnorm; final long[] ids; final byte[] level;
     final int[] off0, edges0, upIdx, upOff, upEdges; final int entryRow, maxLevel;
     private final int mode;
-    private final long[] sortedIds; private final int[] sortedRows;
+    final long[] sortedIds; final int[] sortedRows; // ids in increasing order, and the row of each (the BYID section of a segment file)
     private final AtomicLongArray dead; private final AtomicInteger live;
     private final ThreadLocal<Sc> tl = ThreadLocal.withInitial(Sc::new);
 
     SealedGraph(int dim, Metric metric, GraphIndex.Params params, int n, float[] vec, byte[] codes, float[] qbase, float[] qdelta, float[] qnorm,
                 long[] ids, byte[] level, int[] off0, int[] edges0, int[] upIdx, int[] upOff, int[] upEdges, int entryRow, int maxLevel) {
+        this(dim, metric, params, n, vec, codes, qbase, qdelta, qnorm, ids, level, off0, edges0, upIdx, upOff, upEdges, entryRow, maxLevel, sortRows(ids, n));
+    }
+
+    /** the same graph with the id order given: {@code byId[i]} is the row of the i-th smallest id. A segment file stores it, so a load skips the sort. */
+    SealedGraph(int dim, Metric metric, GraphIndex.Params params, int n, float[] vec, byte[] codes, float[] qbase, float[] qdelta, float[] qnorm,
+                long[] ids, byte[] level, int[] off0, int[] edges0, int[] upIdx, int[] upOff, int[] upEdges, int entryRow, int maxLevel, int[] byId) {
         this.dim = dim; this.metric = metric; this.params = params; this.n = n; this.vec = vec; this.codes = codes;
         this.qbase = qbase; this.qdelta = qdelta; this.qnorm = qnorm; this.ids = ids; this.level = level;
         this.off0 = off0; this.edges0 = edges0; this.upIdx = upIdx; this.upOff = upOff; this.upEdges = upEdges;
         this.entryRow = entryRow; this.maxLevel = maxLevel;
         this.mode = metric == Metric.L2 ? GraphIndex.L2 : metric == Metric.COSINE ? GraphIndex.COS : GraphIndex.DOT;
-        Integer[] order = new Integer[n]; for (int i = 0; i < n; i++) order[i] = i;
-        Arrays.sort(order, (a, b) -> Long.compare(ids[a], ids[b]));
-        sortedIds = new long[n]; sortedRows = new int[n];
-        for (int i = 0; i < n; i++) { sortedRows[i] = order[i]; sortedIds[i] = ids[order[i]]; }
+        sortedRows = byId; sortedIds = new long[n];
+        for (int i = 0; i < n; i++) sortedIds[i] = ids[byId[i]];
         dead = new AtomicLongArray((n + 63) / 64); live = new AtomicInteger(n);
     }
+
+    private static int[] sortRows(long[] ids, int n) {
+        Integer[] order = new Integer[n]; for (int i = 0; i < n; i++) order[i] = i;
+        Arrays.sort(order, (a, b) -> Long.compare(ids[a], ids[b]));
+        int[] rows = new int[n]; for (int i = 0; i < n; i++) rows[i] = order[i];
+        return rows;
+    }
+
+    /**
+     * Writes this graph as one segment file (see docs/SEGMENT-FORMAT.md): fp32 vectors, the graph, the stored id order, SQ8 codes when
+     * present, a CRC32C per section. The file is new (an existing one is never overwritten) and flushed before this returns. A graph with
+     * soft-deleted rows is refused: this version stores no tombstones inside a segment.
+     */
+    public void serialize(Path file) throws IOException { SegmentWriter.write(this, null, file); }
+
+    /** Reads a file written by {@link #serialize}. Every section is checksummed; any damage throws {@link SegmentFormat.CorruptException}. */
+    public static SealedGraph load(Path file) throws IOException { return SegmentReader.read(file, true); }
 
     static final class Sc {
         int[] stamp = new int[0]; int gen; final Heap cand = new Heap(), res = new Heap();

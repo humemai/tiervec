@@ -18,9 +18,9 @@ Every index implements `VecIndex`, over `float[]` vectors with a `long` id and o
 |---|---|
 | `FlatIndex` | Exact or quantized scan over every live vector. No graph. Has `serialize` and `load`. |
 | `GraphIndex` | Mutable, concurrent HNSW-style graph. `seal()` turns it into a `SealedGraph`, `fromSealed` turns it back. |
-| `SealedGraph` | Immutable compact graph. The only mutation is a soft delete through a bitset. |
+| `SealedGraph` | Immutable compact graph. The only mutation is a soft delete through a bitset. Has `serialize` and `load` (one segment file, see [SEGMENT-FORMAT.md](SEGMENT-FORMAT.md)). |
 | `IvfIndex` | Standalone inverted-file index with k-means lists and a background retrain. Not a segment type of `TieredIndex`. |
-| `TieredIndex` | The tier: an exact tail in front of sealed graph segments. |
+| `TieredIndex` | The tier: an exact tail in front of sealed graph segments. A settled tier can be written with `checkpoint` and read with `open`. |
 | `Kernels`, `VKernels`, `Kern` | Distance kernels. `Kernels` picks vector or scalar code once per JVM. |
 
 ### Flat index

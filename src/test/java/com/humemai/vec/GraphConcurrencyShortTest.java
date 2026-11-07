@@ -14,6 +14,6 @@ class GraphConcurrencyShortTest {
     void fiveSeconds() throws Exception {
         int c0 = GraphT.checks, f0 = GraphT.failures;
         GraphConcurrencyTest.main(new String[] {"5"});
-        Checks.clean("GraphConcurrencyTest 5 s", GraphT.checks - c0, GraphT.failures - f0, 11);
+        Checks.clean("GraphConcurrencyTest 5 s", GraphT.checks - c0, GraphT.failures - f0, 12);
     }
 }

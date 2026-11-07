@@ -16,6 +16,6 @@ class GraphConcurrencySq8LongTest {
     void sixtySecondsSq8() throws Exception {
         int c0 = GraphT.checks, f0 = GraphT.failures;
         GraphConcurrencyTest.main(new String[] {"60", "sq8"});
-        Checks.clean("GraphConcurrencyTest 60 s sq8", GraphT.checks - c0, GraphT.failures - f0, 11);
+        Checks.clean("GraphConcurrencyTest 60 s sq8", GraphT.checks - c0, GraphT.failures - f0, 12);
     }
 }

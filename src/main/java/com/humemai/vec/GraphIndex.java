@@ -762,5 +762,15 @@ public final class GraphIndex implements VecIndex {
     }
 
     int liveCountForTest() { return live.get(); }
+    /**
+     * Exact membership of an id, for tests: the id-to-ordinal map holds the id and the node it points to is LIVE and stores that id.
+     * It does not search the graph, so an approximate-search miss cannot change the answer.
+     */
+    boolean containsForTest(long id) {
+        Integer o = idMap.get(id);
+        if (o == null) return false;
+        Chunk c = chunk(o); int off = o & MASK;
+        return stateOf(c, off) == LIVE && c.ids[off] == id;
+    }
     int ordinalsAllocated() { return nextOrd.get(); }
 }

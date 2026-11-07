@@ -37,7 +37,7 @@ Library work that follows from the items above. CI already runs the fast and the
 - [#13](https://github.com/humemai/tiervec/issues/13): Host-owned executor, build permits, and memory budget instead of own threads
 - [#18](https://github.com/humemai/tiervec/issues/18): Configuration map, fingerprint, capability bits, and contract version
 - [#14](https://github.com/humemai/tiervec/issues/14): Scalar twin of the graph kernel. `Kern` follows the same once-per-JVM switch as the flat kernels, so the graph and the tier also run without the Vector API module.
-- [#15](https://github.com/humemai/tiervec/issues/15): Native-image build and smoke test in CI
+- [#15](https://github.com/humemai/tiervec/issues/15): Native-image build and smoke test in CI. The job `native image smoke` builds an image of the library with a small program that covers the flat, IVF, graph, and tiered indexes without the Vector API and compares every answer with an exact scan. Segment files and concurrent writers are not in it.
 - [#16](https://github.com/humemai/tiervec/issues/16): Merge by insertion into the largest segment
 - [#17](https://github.com/humemai/tiervec/issues/17): Crash and corruption tests for the segment format
 

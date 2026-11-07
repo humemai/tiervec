@@ -11,7 +11,6 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.LongPredicate;
-import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -24,7 +23,6 @@ import org.junit.jupiter.api.Test;
  * public API is used. The check is on the real class: the floor entry outlives the search that still reads the old view, and it is gone a short time after
  * that search ends (a leaked entry would keep a hidden copy hidden for ever and fail the last assertion).
  */
-@Tag("slow")
 class RidReuseSwapRaceTest {
     static final int DIM = 32, ROWS = 1000, TARGET = 1500;
 

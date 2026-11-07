@@ -37,6 +37,8 @@ The tests are the test programs of the experiment, wrapped as JUnit 5 tests. A w
 ## Documentation
 
 - [docs/DESIGN.md](docs/DESIGN.md): the architecture and the knobs of the tier configuration.
+- [docs/PROVIDER-CONTRACT.md](docs/PROVIDER-CONTRACT.md): what a host database must provide and what the library guarantees, with the status of each line.
+- [docs/ID-EPOCH-AND-REPLAY.md](docs/ID-EPOCH-AND-REPLAY.md): how ids are numbered, the epoch rule, and replay after a restart.
 - [docs/STATUS.md](docs/STATUS.md): what exists, what does not exist yet.
 - [docs/ROADMAP.md](docs/ROADMAP.md): what is planned and in what order, with the open issues, and the non-goals.
 

@@ -13,7 +13,7 @@ The design follows the workload of an agent's memory: many small and medium coll
 - **Exact tail.** Recent writes sit in a bounded buffer that is scanned exactly, so a write is visible to the next query without waiting for an index build.
 - **Sealed segments.** Older vectors live in immutable HNSW graph segments. Below a size threshold no graph is built and every search is an exact scan. Segments are merged in the background and swapped in atomically.
 - **Tombstones with a version floor** handle deletes and updates, including ids that a database reuses after a delete.
-- **Scalar twins of the flat-tier kernels**, chosen once per JVM, so the flat and IVF indexes also run without the Vector API module. The graph kernels use the Vector API directly and have no scalar twin yet.
+- **Scalar twins of every kernel** (flat, IVF, and graph), chosen once per JVM, so every index, the graph tier and the tiered index included, also runs without the Vector API module.
 - **Pure Java**, no native dependencies.
 
 The repository also holds a standalone IVF (inverted file) index, which is not a tier segment yet. The host engine would own persistence, transactions and recovery: the tier can rebuild all of its derived state from the raw vectors. Serialization exists for the flat index and, as a first cut, for a settled tier: segment files with a manifest, written by `TieredIndex.checkpoint` and read by `TieredIndex.open` ([docs/SEGMENT-FORMAT.md](docs/SEGMENT-FORMAT.md)). [docs/DESIGN.md](docs/DESIGN.md) describes what the code does.
@@ -31,7 +31,7 @@ The tests are the test programs of the experiment, wrapped as JUnit 5 tests. A w
 
 - JDK 21 or newer. CI builds and tests with Temurin 21 and 25.
 - Maven 3.9 or newer.
-- The Vector API is an incubator module in these JDKs. Compile and run with `--add-modules jdk.incubator.vector`; the `pom.xml` sets it for the compiler and for the test JVMs. The graph and tier code need the module at run time. The flat and IVF kernels fall back to scalar code when it is missing, or when `-Dhumemai.vec.scalar=true` is set.
+- The Vector API is an incubator module in these JDKs. Compile with `--add-modules jdk.incubator.vector`, and run with it to get the Vector API kernels; the `pom.xml` sets it for the compiler and for the test JVMs. At run time the module is optional: every kernel (flat, IVF, and graph) falls back to its scalar twin when the module is missing, or when `-Dhumemai.vec.scalar=true` is set.
 - Nothing else at run time. JUnit 5 is a test dependency.
 
 ## Documentation

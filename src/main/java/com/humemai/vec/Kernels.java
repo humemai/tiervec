@@ -1,8 +1,8 @@
 package com.humemai.vec;
 
 /**
- * Distance kernels: a run-time choice between the Java Vector API ({@link VKernels}) and a scalar twin of every kernel. The scalar twins
- * are used when -Dhumemai.vec.scalar=true, inside a GraalVM native image (the engine forces scalar code there), or when the
+ * Distance kernels: a run-time choice between the Java Vector API ({@link VKernels}, and {@link VKern} for the graph kernels in {@link Kern})
+ * and a scalar twin of every kernel. The scalar twins are used when -Dhumemai.vec.scalar=true, inside a GraalVM native image (the engine forces scalar code there), or when the
  * jdk.incubator.vector module is absent. All take (array, offset) pairs so a scan reads straight out of a chunk array without copying.
  * Any length n is fine. A float kernel result depends only on n and the mode, never on offsets, so two calls on equal data are bitwise
  * equal within one mode; the scalar and the vector mode can differ by rounding (the int8 kernel is exact in both).
@@ -17,9 +17,9 @@ final class Kernels {
     static final boolean VECTOR = decide();
 
     /**
-     * The Vector API holder class is initialized HERE, inside a try: if it cannot load or initialize (module missing, unsupported
-     * species, native image) the index falls back to the scalar twins instead of failing on the first search. With
-     * -Dhumemai.vec.scalar=true VKernels is never touched.
+     * The Vector API holder classes are initialized HERE, inside a try: if one of them cannot load or initialize (module missing,
+     * unsupported species, native image) every index (flat, IVF, graph, tier) falls back to the scalar twins instead of failing on the
+     * first search, so one run never mixes the two modes. With -Dhumemai.vec.scalar=true neither holder is touched.
      */
     private static boolean decide() {
         if (Boolean.getBoolean("humemai.vec.scalar")) {
@@ -32,6 +32,7 @@ final class Kernels {
         }
         try {
             Class.forName("com.humemai.vec.VKernels", true, Kernels.class.getClassLoader());
+            Class.forName("com.humemai.vec.VKern", true, Kernels.class.getClassLoader());
             return true;
         } catch (Throwable t) {
             scalarReason = "Vector API unavailable: " + t;

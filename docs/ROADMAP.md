@@ -36,7 +36,7 @@ Library work that follows from the items above. CI already runs the fast and the
 - [#12](https://github.com/humemai/tiervec/issues/12): Allowed-id filters: measure the selectivity range and add fast paths
 - [#13](https://github.com/humemai/tiervec/issues/13): Host-owned executor, build permits, and memory budget instead of own threads
 - [#18](https://github.com/humemai/tiervec/issues/18): Configuration map, fingerprint, capability bits, and contract version
-- [#14](https://github.com/humemai/tiervec/issues/14): Scalar twin of the graph kernel
+- [#14](https://github.com/humemai/tiervec/issues/14): Scalar twin of the graph kernel. `Kern` follows the same once-per-JVM switch as the flat kernels, so the graph and the tier also run without the Vector API module.
 - [#15](https://github.com/humemai/tiervec/issues/15): Native-image build and smoke test in CI
 - [#16](https://github.com/humemai/tiervec/issues/16): Merge by insertion into the largest segment
 - [#17](https://github.com/humemai/tiervec/issues/17): Crash and corruption tests for the segment format

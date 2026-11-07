@@ -21,7 +21,7 @@ Every index implements `VecIndex`, over `float[]` vectors with a `long` id and o
 | `SealedGraph` | Immutable compact graph. The only mutation is a soft delete through a bitset. Has `serialize` and `load` (one segment file, see [SEGMENT-FORMAT.md](SEGMENT-FORMAT.md)). |
 | `IvfIndex` | Standalone inverted-file index with k-means lists and a background retrain. Not a segment type of `TieredIndex`. |
 | `TieredIndex` | The tier: an exact tail in front of sealed graph segments. A settled tier can be written with `checkpoint` and read with `open`. |
-| `Kernels`, `VKernels`, `Kern` | Distance kernels. `Kernels` picks vector or scalar code once per JVM. |
+| `Kernels`, `VKernels`, `Kern`, `VKern` | Distance kernels. `Kernels` picks vector or scalar code once per JVM, for the flat, IVF, and graph kernels. |
 
 ### Flat index
 
@@ -95,7 +95,9 @@ One worker thread runs one task at a time (a seal or a merge). There is a cap on
 
 `Kernels` holds the flat-tier distance kernels: float dot and L2, int8 dot, and Hamming. Each has a Vector API version in `VKernels` and a scalar twin. The choice is made once, when `Kernels` is initialized: scalar when `-Dhumemai.vec.scalar=true`, scalar inside a GraalVM native image, scalar when `VKernels` cannot load (for example without the `jdk.incubator.vector` module), vector otherwise. `Kernels.VECTOR` says which one is in use. `IvfIndex` uses the same kernels.
 
-The graph kernels in `Kern` use the Vector API directly and have no scalar twin yet, so `GraphIndex`, `SealedGraph`, and `TieredIndex` need the `jdk.incubator.vector` module at run time.
+`Kern` holds the graph kernels: float dot, squared L2, and the dot of a float query with SQ8 codes. Its Vector API versions are in `VKern`, and its scalar twins are the scalar twins of `Kernels`. `Kern` follows `Kernels.VECTOR`, and `Kernels` initializes both holder classes inside its `try`, so one run never mixes the two modes and a failure to load either holder selects the scalar twins for every index. `GraphIndex`, `SealedGraph`, and `TieredIndex` need no incubator class in that case.
+
+A scalar result and a vector result of the same float kernel can differ by rounding. `KernDiffTest` states the tolerance (1e-5 times the sum of the absolute terms) and compares exactly representable data bit for bit. `NoIncubatorTest` starts a JVM without the module and builds and searches a tier in it. The graph, segment, and tier tests also run with the scalar twins, in the surefire execution `scalar-twin`.
 
 ## Tier configuration
 

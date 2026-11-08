@@ -150,6 +150,78 @@ public final class GraphTest {
         GraphT.check(idx.search(g.vec(1), 10, id -> false).length == 0, "reject-all filter returns nothing");
     }
 
+    interface Searcher { Hit[] run(float[] q, java.util.function.LongPredicate allow); }
+
+    /**
+     * filterScanBelow: with the option on and a small allowed share, a filtered search calls the predicate at most SAMPLE times for the
+     * estimate (a slot that is not live is not asked) and once per live id for the scan (no walk before it), and equals brute force; a share above the threshold walks as
+     * before and returns the same hits as with the option off; the option is validated; the default is off.
+     */
+    static void testFilterScanBelow() {
+        int n = 10000; GraphT.Gen g = new GraphT.Gen(DIM, 31, 40, 0.4f); float[][] d = data(g, n);
+        GraphIndex idx = new GraphIndex(DIM, Metric.COSINE);
+        for (int i = 0; i < n; i++) idx.add(i, d[i]);
+        for (int i = 0; i < n; i += 9) idx.delete(i); // slots that are not live must not be sampled as live
+        boolean[] del = new boolean[n];
+        for (int i = 0; i < n; i += 9) del[i] = true;
+        int live = idx.size();
+        GraphT.check(idx.filterScanBelow() == 0.0, "filterScanBelow is off by default");
+        SealedGraph sg = idx.seal();
+        GraphT.check(sg.filterScanBelow() == 0.0, "sealed filterScanBelow is off by default");
+        for (double bad : new double[] { -0.1, 1.5, Double.NaN }) {
+            try { idx.filterScanBelow(bad); GraphT.check(false, "filterScanBelow " + bad + " must throw"); } catch (IllegalArgumentException ok) { }
+            try { sg.filterScanBelow(bad); GraphT.check(false, "sealed filterScanBelow " + bad + " must throw"); } catch (IllegalArgumentException ok) { }
+            try { idx.search(g.vec(1), 10, id -> true, 100, bad); GraphT.check(false, "search with " + bad + " must throw"); } catch (IllegalArgumentException ok) { }
+        }
+        String[] names = { "mutable", "sealed" };
+        for (int which = 0; which < 2; which++) {
+            final int w = which;
+            Searcher on = (q, allow) -> w == 0 ? idx.search(q, 10, allow, 100, 0.05) : sg.search(q, 10, allow, 100, 0.05);
+            Searcher off = (q, allow) -> w == 0 ? idx.search(q, 10, allow, 100) : sg.search(q, 10, allow, 100);
+            for (int mod : new int[] { 100, 1000 }) { // shares 0.01 and 0.001, below 0.05
+                long[] calls = { 0 };
+                java.util.function.LongPredicate allow = id -> { calls[0]++; return id % mod == 0; };
+                int nq = 20; double r = 0; int shortQ = 0; boolean badIds = false;
+                for (int i = 0; i < nq; i++) {
+                    float[] q = g.vec(800000 + i);
+                    calls[0] = 0;
+                    Hit[] h = on.run(q, allow);
+                    long c = calls[0];
+                    GraphT.check(c > live && c <= live + FilterPlan.SAMPLE, names[w] + " 1/" + mod + ": one estimate and one scan, " + c + " predicate calls for " + live + " live ids");
+                    long[] t = GraphT.brute(d, del, q, 10, id -> id % mod == 0, Metric.COSINE);
+                    r += GraphT.recall(h, t);
+                    if (h.length != t.length) shortQ++;
+                    for (Hit x : h) if (x.id() % mod != 0 || del[(int) x.id()]) badIds = true;
+                }
+                r /= nq;
+                GraphT.check(r >= 0.995 && shortQ == 0, names[w] + " 1/" + mod + ": scan-first equals brute force up to float ties, recall " + r + ", short " + shortQ);
+                GraphT.check(!badIds, names[w] + " 1/" + mod + ": only allowed live ids");
+            }
+            // above the threshold: the walk, same hits as with the option off, fewer predicate calls than a scan
+            long[] calls = { 0 };
+            java.util.function.LongPredicate half = id -> { calls[0]++; return id % 2 == 0; };
+            boolean same = true; boolean walked = true;
+            for (int i = 0; i < 10; i++) {
+                float[] q = g.vec(900000 + i);
+                calls[0] = 0; Hit[] a = on.run(q, half); long ca = calls[0];
+                Hit[] b = off.run(q, half);
+                if (ca >= live) walked = false;
+                if (a.length != b.length) same = false;
+                else for (int j = 0; j < a.length; j++) if (a[j].id() != b[j].id()) same = false;
+            }
+            GraphT.check(same, names[w] + " share 0.5 with the option on returns the same hits as with it off");
+            GraphT.check(walked, names[w] + " share 0.5 walks (fewer predicate calls than live ids)");
+        }
+        // the instance setting is what the 4-argument search uses
+        idx.filterScanBelow(0.05);
+        long[] calls = { 0 };
+        Hit[] h = idx.search(g.vec(5), 10, id -> { calls[0]++; return id % 500 == 0; }, 100);
+        GraphT.check(calls[0] > live && calls[0] <= live + FilterPlan.SAMPLE && h.length > 0, "instance setting is used by search(q, k, allow, ef): " + calls[0] + " calls");
+        idx.filterScanBelow(0.0);
+        GraphT.check(idx.search(g.vec(5), 10, id -> id % 500 == 0, 100).length > 0, "option off again");
+        GraphT.check(idx.search(g.vec(5), 10, id -> false, 100, 0.05).length == 0, "reject-all with scan-first returns nothing");
+    }
+
     static void testReplace() {
         GraphT.Gen g = new GraphT.Gen(DIM, 17, 20, 0.4f); GraphIndex idx = new GraphIndex(DIM, Metric.COSINE);
         for (int i = 0; i < 2000; i++) idx.add(i, g.vec(i));
@@ -259,6 +331,7 @@ public final class GraphTest {
             GraphT.run("replace", GraphTest::testReplace);
             GraphT.run("L2 and DOT", GraphTest::testL2Dot);
             GraphT.run("filter", GraphTest::testFilter);
+            GraphT.run("filter scan-first", GraphTest::testFilterScanBelow);
             GraphT.run("delete + consolidate", GraphTest::testDeleteConsolidate);
             GraphT.run("seal + fromSealed", GraphTest::testSealAndRoundTrip);
             if (mode.equals("all")) GraphT.run("recall curve n=20000", GraphTest::testRecall);

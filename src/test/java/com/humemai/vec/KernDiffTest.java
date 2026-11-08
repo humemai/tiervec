@@ -151,6 +151,108 @@ class KernDiffTest {
         }
     }
 
+    // ---- NKernels: the fp32 kernels of a native image, tested here on the JVM against the scalar twins ----
+
+    /** relative tolerance of NKernels against the scalar twin and the exact value, times the sum of the absolute terms, plus an absolute floor */
+    static final double N_REL_TOL = 1e-4, N_ABS_FLOOR = 1e-6;
+
+    static int[] nDims() {
+        Set<Integer> s = new TreeSet<>(List.of(0, 1, 7, 8, 9, 100, 128, 770));
+        int l = NKernels.L;
+        for (int d : new int[] {l - 1, l, l + 1, 2 * l - 1, 2 * l, 2 * l + 1, 4 * l + 3}) s.add(d);
+        return s.stream().mapToInt(Integer::intValue).toArray();
+    }
+
+    static void withinN(double x, double y, double scale, String what) {
+        double tol = N_REL_TOL * scale + N_ABS_FLOOR;
+        assertTrue(Math.abs(x - y) <= tol, what + ": " + x + " against " + y + ", scale " + scale + ", tolerance " + tol);
+    }
+
+    @Test
+    void nKernelsSpeciesIsChosenFromTheArchitecture() {
+        assertTrue(NKernels.S != null, "NKernels has no species: " + NKernels.ERROR);
+        String arch = System.getProperty("os.arch", "");
+        boolean arm = arch.equals("aarch64") || arch.equals("arm64");
+        assertEquals(arm ? 4 : 8, NKernels.L, "lanes for os.arch " + arch);
+        assertEquals(NKernels.S.length(), NKernels.L, "lanes of the species");
+    }
+
+    @Test
+    void nKernelsIntegerDataAgreesBitForBit() {
+        Random r = new Random(21);
+        for (int n : nDims()) {
+            // values outside the window are large, so a read past the window or before its offset changes the sum
+            float[] a = new float[AO + n + 2], b = new float[BO + n + 2];
+            Arrays.fill(a, 1000f);
+            Arrays.fill(b, 1000f);
+            long dot = 0, l2 = 0;
+            for (int i = 0; i < n; i++) {
+                int x = r.nextInt(17) - 8, y = r.nextInt(17) - 8;
+                a[AO + i] = x;
+                b[BO + i] = y;
+                dot += (long) x * y;
+                l2 += (long) (x - y) * (x - y);
+            }
+            String m = " n=" + n;
+            assertEquals((float) dot, NKernels.dot(a, AO, b, BO, n), 0f, "NKernels dot" + m);
+            assertEquals((float) l2, NKernels.l2sq(a, AO, b, BO, n), 0f, "NKernels l2sq" + m);
+        }
+    }
+
+    @Test
+    void nKernelsRandomDataAgreesWithinTolerance() {
+        Random r = new Random(22);
+        for (int n : nDims()) {
+            for (int rep = 0; rep < 20; rep++) {
+                float[] a = rnd(r, n), b = rnd(r, n);
+                double dot = 0, dotAbs = 0, l2 = 0;
+                for (int i = 0; i < n; i++) {
+                    dot += (double) a[i] * b[i];
+                    dotAbs += Math.abs((double) a[i] * b[i]);
+                    double d = (double) a[i] - b[i];
+                    l2 += d * d;
+                }
+                String m = " n=" + n;
+                float nd = NKernels.dot(a, 0, b, 0, n), sd = Kernels.dotScalar(a, 0, b, 0, n);
+                withinN(nd, sd, dotAbs, "dot, NKernels against scalar" + m);
+                withinN(nd, dot, dotAbs, "dot, NKernels against exact" + m);
+                float nl = NKernels.l2sq(a, 0, b, 0, n), sl = Kernels.l2sqScalar(a, 0, b, 0, n);
+                withinN(nl, sl, l2, "l2sq, NKernels against scalar" + m);
+                withinN(nl, l2, l2, "l2sq, NKernels against exact" + m);
+                // a call on equal data at another offset gives the same bits
+                float[] a2 = new float[n + 3], b2 = new float[n + 5];
+                System.arraycopy(a, 0, a2, 3, n);
+                System.arraycopy(b, 0, b2, 5, n);
+                assertEquals(Float.floatToIntBits(nd), Float.floatToIntBits(NKernels.dot(a2, 3, b2, 5, n)), "dot at offsets" + m);
+                assertEquals(Float.floatToIntBits(nl), Float.floatToIntBits(NKernels.l2sq(a2, 3, b2, 5, n)), "l2sq at offsets" + m);
+            }
+        }
+    }
+
+    @Test
+    void nKernelsZeroVectorsGiveZero() {
+        Random r = new Random(23);
+        for (int n : nDims()) {
+            float[] z = new float[n], x = rnd(r, n);
+            double xx = 0;
+            for (float f : x) xx += (double) f * f;
+            String m = " n=" + n;
+            assertEquals(0f, NKernels.dot(z, 0, x, 0, n), 0f, "NKernels dot, zero first" + m);
+            assertEquals(0f, NKernels.l2sq(z, 0, z, 0, n), 0f, "NKernels l2sq of two zero vectors" + m);
+            withinN(NKernels.l2sq(z, 0, x, 0, n), xx, xx, "NKernels l2sq of a zero vector and x" + m);
+        }
+    }
+
+    @Test
+    void inAJvmTheKernelsDoNotUseNKernels() {
+        // on a JVM Kernels and Kern use VKernels and VKern, bit for bit
+        assertTrue(!Kernels.IN_IMAGE && Kernels.JVM_VECTOR, "this test runs on a JVM with the Vector API");
+        Random r = new Random(24);
+        float[] a = rnd(r, 770), b = rnd(r, 770);
+        assertEquals(Float.floatToIntBits(VKernels.dot(a, 0, b, 0, 770)), Float.floatToIntBits(Kernels.dot(a, 0, b, 0, 770)), "Kernels.dot");
+        assertEquals(Float.floatToIntBits(VKernels.l2sq(a, 0, b, 0, 770)), Float.floatToIntBits(Kernels.l2sq(a, 0, b, 0, 770)), "Kernels.l2sq");
+    }
+
     /** the k best by the score (smaller is better), ties by position */
     static int[] top(float[] score, int k) {
         Integer[] idx = IntStream.range(0, score.length).boxed().toArray(Integer[]::new);

@@ -14,7 +14,7 @@ The design follows the workload of an agent's memory: many small and medium coll
 - **Sealed segments.** Older vectors live in immutable HNSW graph segments. Below a size threshold no graph is built and every search is an exact scan. Segments are merged in the background and swapped in atomically.
 - **Tombstones with a version floor** handle deletes and updates, including ids that a database reuses after a delete.
 - **Scalar twins of every kernel** (flat, IVF, and graph), chosen once per JVM, so every index, the graph tier and the tiered index included, also runs without the Vector API module.
-- **Pure Java**, no native dependencies.
+- **Pure Java**, no native dependencies. It also builds into a GraalVM native image, where the fp32 dot and squared L2 use the Vector API too (see [Native image](#native-image)).
 
 The repository also holds a standalone IVF (inverted file) index, which is not a tier segment yet. The host engine would own persistence, transactions and recovery: the tier can rebuild all of its derived state from the raw vectors. Serialization exists for the flat index and, as a first cut, for a settled tier: segment files with a manifest, written by `TieredIndex.checkpoint` and read by `TieredIndex.open` ([docs/SEGMENT-FORMAT.md](docs/SEGMENT-FORMAT.md)). [docs/DESIGN.md](docs/DESIGN.md) describes what the code does.
 
@@ -26,6 +26,17 @@ mvn -B -ntp verify -Pslow     # the long concurrency and stress tests (tag "slow
 ```
 
 The tests are the test programs of the experiment, wrapped as JUnit 5 tests. A wrapper runs the program, asserts that no check failed, and asserts that at least the expected number of checks ran.
+
+## Native image
+
+The library runs in a GraalVM native image. The CI job `native image smoke` builds the scalar image, and the jobs `native image smoke (vector, ...)` build the vector image on x86-64 and arm64 Linux (GraalVM Community 25.0.2).
+
+- In an image the fp32 `dot` and `l2sq` (flat, IVF, and graph) use the Vector API through `NKernels`, with a species fixed when the image is built: 256 bits on x86-64, 128 bits on aarch64. The Vector API kernels of the JVM are more than 10 times slower than scalar code in an image, so the image does not use them; `NKernels` is the form that the image compiles to SIMD code.
+- The other kernels (SQ8, int8, block16, and hamming) stay scalar in an image. They are not measured in an image yet.
+- A result in an image can differ from a result on a JVM by rounding, because the lane sum of `NKernels` has the order of the instruction. Results are still bitwise equal between two calls on equal data within one image.
+- To build an image with the Vector API kernels, give the image builder `--add-modules jdk.incubator.vector -H:+VectorAPISupport`. The jar carries `META-INF/native-image/com.humemai/tiervec/native-image.properties`, which sets `--initialize-at-build-time=com.humemai.vec.NKernels` for an application that has the jar on its class path; the species must be fixed at build time, or the kernels are slow. `-H:+VectorAPISupport` is an experimental option of GraalVM 25, and it needs GraalVM 25 or newer.
+- Without `--add-modules jdk.incubator.vector` the image has the scalar twins for every kernel. `-Dhumemai.vec.scalar=true` forces the scalar twins in an image as well, when the property is set before the library is first used (an image takes `-D` options on its command line).
+- The smoke program prints one line, `SPEED`, with the median time of 1,000,000 `Kernels.dot` calls on 768 dimensions next to the scalar twin. It is informational, not a bar.
 
 ## Requirements
 

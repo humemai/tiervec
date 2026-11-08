@@ -141,7 +141,7 @@ The id models, their consequences, and the open questions are in [ID-EPOCH-AND-R
 - Throttle. The insert rate of a merge build is capped (`Config.mergeRatePerSec`). It is a politeness limit for the threads that serve queries, not a substitute for a permit. `partly`: built, and no dedicated test checks the cap.
 - Back pressure is a pre-check (`awaitCapacity`), and the tail is bounded. `partly`: `TieredIndex.awaitCapacity` is built and tested. The bound is soft: `apply` does not look at it, so one batch can take the tail above the hard limit, and `TieredIndex.add` adds after its own wait of up to 10 s.
 - No search-time thread creation, and no allocation proportional to the collection size on the query path. `partly`: built in `TieredIndex.search`, and no dedicated test checks it.
-- The graph kernels need the `jdk.incubator.vector` module at run time. The graph kernels have a scalar twin that is used when the module is absent, `exists today`: `KernDiffTest` compares the vector and the scalar kernel, and `NoIncubatorTest` builds and searches a tier in a JVM without the module. A native-image build of the library and a smoke program is checked by the workflow `native-image.yml` (the job `native image smoke`), `exists today`, not a required check.
+- The graph kernels need the `jdk.incubator.vector` module at run time. The graph kernels have a scalar twin that is used when the module is absent, `exists today`: `KernDiffTest` compares the vector and the scalar kernel, and `NoIncubatorTest` builds and searches a tier in a JVM without the module. A native-image build of the library and a smoke program is checked by the workflow `native-image.yml` (the job `native image smoke`, and the vector variant `native image smoke (vector, ...)` on x86-64 and arm64 Linux), `exists today`, not a required check. In a native image the fp32 graph kernels (dot and squared L2) use the Vector API through `NKernels` with a build-time species, the SQ8 dot stays scalar, and a score can differ from the JVM by rounding.
 
 ## Configuration
 
@@ -210,7 +210,7 @@ Rows marked `exists today` or `partly` name the class and method, and the test t
 | Corruption and crash tests | `planned` | | | [#17] |
 | Configuration map, fingerprint, capabilities, contract version, error classes, health | `planned` | | | [#18] |
 | Scalar twin of the graph kernel | `exists today` | `Kern`, `VKern` | `KernDiffTest`, `NoIncubatorTest` | |
-| Native-image build and smoke test | `exists today` | `src/smoke` (`NativeSmoke`) | the workflow `native-image.yml`, job `native image smoke` | Segment files and concurrent writers are not in it; not a required check |
+| Native-image build and smoke test | `exists today` | `src/smoke` (`NativeSmoke`) | the workflow `native-image.yml`, jobs `native image smoke` and `native image smoke (vector, ...)` | Segment files and concurrent writers are not in it; not a required check |
 | Public scorer for one pair of vectors | `planned` | | | no issue filed yet |
 | Suspend and resume of background maintenance | `planned` | | | no issue filed yet |
 

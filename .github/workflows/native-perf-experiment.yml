@@ -1,0 +1,141 @@
+# Experiment (branch native-perf-experiment only, never merged): speed of the distance kernels in four arms on ONE GitHub-hosted runner
+# (a: JVM Vector API, b: JVM scalar twins, c: native image scalar twins, d: native image with the Vector API called directly).
+# Only ratios between arms inside one run are meaningful; the runner CPU is printed. The native steps of arm d may fail.
+name: Native Perf Experiment
+
+on:
+  push:
+    branches:
+      - native-perf-experiment
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  perf:
+    name: kernel bench
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      CLASSES: target/bench/classes
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Runner
+        run: |
+          mkdir -p target/bench
+          grep -m1 'model name' /proc/cpuinfo
+          echo "nproc $(nproc)"
+          for f in avx avx2 fma avx512f avx512bw avx512vl avx512_vnni; do if grep -q -w "$f" /proc/cpuinfo; then echo "flag $f"; fi; done
+          free -m | head -2
+          find src/main/java src/smoke/java -name '*.java' > target/bench/sources.txt
+      # ---- JVM arms a and b, on two JDKs ----
+      - uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
+        with:
+          distribution: temurin
+          java-version: "25"
+      - name: JVM 25, arms a and b
+        run: |
+          java -version 2>&1 | head -3
+          rm -rf "$CLASSES" && mkdir -p "$CLASSES"
+          javac -d "$CLASSES" --add-modules jdk.incubator.vector @target/bench/sources.txt
+          java -Xmx2g --add-modules jdk.incubator.vector -cp "$CLASSES" com.humemai.vec.KernelBench a | tee target/bench/jvm25-a.log
+          java -Xmx2g -Dhumemai.vec.scalar=true -cp "$CLASSES" com.humemai.vec.KernelBench b | tee target/bench/jvm25-b.log
+      - uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: JVM 21, arms a and b
+        run: |
+          java -version 2>&1 | head -3
+          rm -rf "$CLASSES" && mkdir -p "$CLASSES"
+          javac -d "$CLASSES" --add-modules jdk.incubator.vector @target/bench/sources.txt
+          java -Xmx2g --add-modules jdk.incubator.vector -cp "$CLASSES" com.humemai.vec.KernelBench a | tee target/bench/jvm21-a.log
+          java -Xmx2g -Dhumemai.vec.scalar=true -cp "$CLASSES" com.humemai.vec.KernelBench b | tee target/bench/jvm21-b.log
+      # ---- native image, GraalVM Community 21.0.2 (the setup of the smoke job), arm c ----
+      - uses: graalvm/setup-graalvm@f70bc8032f90a104502824a54bcb94b6f01715bc # v1.6.8
+        with:
+          distribution: graalvm-community
+          java-version: "21.0.2"
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: CE 21.0.2, arm c
+        run: |
+          native-image --version
+          rm -rf "$CLASSES" && mkdir -p "$CLASSES"
+          javac -d "$CLASSES" --add-modules jdk.incubator.vector @target/bench/sources.txt
+          native-image -cp "$CLASSES" --no-fallback -o target/bench/bench-ce21-c com.humemai.vec.KernelBench
+          target/bench/bench-ce21-c c | tee target/bench/ce21-c.log
+      # ---- native image, GraalVM Community 25.0.2 (graal 25.0, JDK 25 LTS): arm c and arm d ----
+      - uses: graalvm/setup-graalvm@f70bc8032f90a104502824a54bcb94b6f01715bc # v1.6.8
+        with:
+          distribution: graalvm-community
+          java-version: "25.0.2"
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: CE 25.0.2, arm c
+        continue-on-error: true
+        run: |
+          native-image --version
+          rm -rf "$CLASSES" && mkdir -p "$CLASSES"
+          javac -d "$CLASSES" --add-modules jdk.incubator.vector @target/bench/sources.txt
+          native-image -cp "$CLASSES" --no-fallback -o target/bench/bench-ce25-c com.humemai.vec.KernelBench
+          target/bench/bench-ce25-c c | tee target/bench/ce25-c.log
+      - name: CE 25.0.2, arm d
+        continue-on-error: true
+        run: |
+          native-image -cp "$CLASSES" --no-fallback --add-modules jdk.incubator.vector -H:+VectorAPISupport -o target/bench/bench-ce25-d com.humemai.vec.KernelBench 2>&1 | tee target/bench/ce25-d-build.log
+          target/bench/bench-ce25-d d | tee target/bench/ce25-d.log
+      # ---- native image, GraalVM Community 25 innovation release 5 (graal 25.5), downloaded from graalvm-ce-builds ----
+      - name: Install CE 25i5
+        continue-on-error: true
+        run: |
+          tag=graal-25.5.5.0.3
+          f=graalvm-community-jdk-25i5-25.0.5.0.3_linux-x64_bin.tar.gz
+          mkdir -p "$RUNNER_TEMP/ce25i5" && cd "$RUNNER_TEMP/ce25i5"
+          curl -fsSLO "https://github.com/graalvm/graalvm-ce-builds/releases/download/$tag/$f"
+          curl -fsSLO "https://github.com/graalvm/graalvm-ce-builds/releases/download/$tag/$f.sha256"
+          echo "$(cat "$f.sha256")  $f" | sha256sum -c -
+          tar xzf "$f"
+          dir=$(ls -d graalvm-community-openjdk-*/ | head -1)
+          echo "CE25I5=$RUNNER_TEMP/ce25i5/${dir%/}" >> "$GITHUB_ENV"
+      - name: CE 25i5, arms c and d
+        continue-on-error: true
+        run: |
+          export JAVA_HOME="$CE25I5" PATH="$CE25I5/bin:$PATH"
+          java -version 2>&1 | head -3
+          native-image --version
+          rm -rf "$CLASSES" && mkdir -p "$CLASSES"
+          javac -d "$CLASSES" --add-modules jdk.incubator.vector @target/bench/sources.txt
+          native-image -cp "$CLASSES" --no-fallback -o target/bench/bench-ce25i5-c com.humemai.vec.KernelBench
+          target/bench/bench-ce25i5-c c | tee target/bench/ce25i5-c.log
+          native-image -cp "$CLASSES" --no-fallback --add-modules jdk.incubator.vector -o target/bench/bench-ce25i5-d com.humemai.vec.KernelBench 2>&1 | tee target/bench/ce25i5-d-build.log
+          target/bench/bench-ce25i5-d d | tee target/bench/ce25i5-d.log
+      # ---- native image, Oracle GraalVM 25 (GFTC licence, no sign-in) ----
+      - uses: graalvm/setup-graalvm@f70bc8032f90a104502824a54bcb94b6f01715bc # v1.6.8
+        continue-on-error: true
+        with:
+          distribution: graalvm
+          java-version: "25"
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Oracle GraalVM 25, arms c and d
+        continue-on-error: true
+        run: |
+          java -version 2>&1 | head -3
+          native-image --version
+          rm -rf "$CLASSES" && mkdir -p "$CLASSES"
+          javac -d "$CLASSES" --add-modules jdk.incubator.vector @target/bench/sources.txt
+          native-image -cp "$CLASSES" --no-fallback -o target/bench/bench-ora25-c com.humemai.vec.KernelBench
+          target/bench/bench-ora25-c c | tee target/bench/ora25-c.log
+          native-image -cp "$CLASSES" --no-fallback --add-modules jdk.incubator.vector -o target/bench/bench-ora25-d com.humemai.vec.KernelBench 2>&1 | tee target/bench/ora25-d-build.log
+          target/bench/bench-ora25-d d | tee target/bench/ora25-d.log
+      - name: Summary
+        if: always()
+        run: |
+          ls target/bench/*.log
+          grep -h -E '^(ID|KERNELS|VKERNELS|ARM)' target/bench/*.log || true
+          for f in target/bench/*.log; do echo "== $f"; grep -E '^(RESULT|ARM|Error|.*rror:)' "$f" | head -40; done

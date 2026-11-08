@@ -95,6 +95,41 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
+  # Experiment (issue #46): the fast tests on Windows x64. Nothing has run on Windows before, so a failure is information: the job has
+  # continue-on-error: true and is not a required check; its name differs from the required "fast tests (JDK 21)" and "fast tests (JDK 25)".
+  # windows-2025 is a standard GitHub-hosted runner (x64). The command is the one of the fast job above.
+  fast-windows:
+    name: fast tests (Windows x64, JDK 21)
+    runs-on: windows-2025
+    continue-on-error: true
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+      - name: Toolchain
+        shell: bash
+        run: |
+          uname -m
+          java -version
+          mvn -B -ntp -version
+      - name: Build and test
+        shell: bash
+        run: mvn -B -ntp verify
+      - name: Upload test reports
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: surefire-reports-fast-windows-jdk21
+          path: target/surefire-reports
+          retention-days: 7
+          if-no-files-found: ignore
+
   slow:
     name: slow tests (JDK ${{ matrix.java }})
     runs-on: ubuntu-latest

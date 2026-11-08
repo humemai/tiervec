@@ -2,7 +2,7 @@
 
 A tiered vector index for agent-memory databases on the JVM.
 
-**Status: experimental and private.** The sources of the first experiment are imported and build with Maven, and their tests run in CI on JDK 21 and 25, and the fast tests also on arm64 (Linux and macOS). There is no release, the API is not stable, nothing is wired into a database engine yet, and no measurements are published. See [docs/STATUS.md](docs/STATUS.md).
+**Status: experimental and private.** The sources of the first experiment are imported and build with Maven, and their tests run in CI on JDK 21 and 25, and the fast tests also on arm64 (Linux and macOS) and, as an experiment, on Windows x64. There is no release, the API is not stable, nothing is wired into a database engine yet, and no measurements are published. See [docs/STATUS.md](docs/STATUS.md).
 
 ## What it is
 
@@ -29,7 +29,7 @@ The tests are the test programs of the experiment, wrapped as JUnit 5 tests. A w
 
 ## Native image
 
-The library runs in a GraalVM native image. The CI job `native image smoke` builds the scalar image, and the jobs `native image smoke (vector, ...)` build the vector image on x86-64 and arm64 Linux (GraalVM Community 25.0.2).
+The library runs in a GraalVM native image. The CI job `native image smoke` builds the scalar image, and the jobs `native image smoke (vector, ...)` build the vector image on x86-64 and arm64 Linux and on macOS arm64 (GraalVM Community 25.0.2). The scalar image also builds on arm64 Linux (`native image smoke (arm64 Linux)`) and on macOS arm64 (`native image smoke (macOS arm64)`). The job `native image smoke (vector, Windows x64)` is an experiment: it is not known whether the Vector API image works on Windows, the job has `continue-on-error: true`, and it may fail without blocking anything.
 
 - In an image every kernel that has a Vector API form uses it through `NKernels` (flat, IVF, and graph): the fp32 `dot` and `l2sq`, the int8 dot, the SQ8 dots, and `block16`. The species is fixed when the image is built: 256 bits on x86-64, 128 bits on aarch64 (where the Vector API has no 32-bit byte species, so the byte kernels load 64 or 128 bits of bytes and split them into parts). The Vector API kernels of the JVM are more than 10 times slower than scalar code in an image, so the image does not use them; `NKernels` is the form that the image compiles to SIMD code.
 - `hamming` has no Vector API form and stays scalar, in an image and on a JVM. AVX-512 and SVE are not used (the species stay 256 and 128 bits until measured).
@@ -40,7 +40,7 @@ The library runs in a GraalVM native image. The CI job `native image smoke` buil
 
 ## Requirements
 
-- JDK 21 or newer. CI builds and tests with Temurin 21 and 25 on x86-64 Linux, and runs the fast tests on arm64 Linux (JDK 21 and 25) and arm64 macOS (JDK 21).
+- JDK 21 or newer. CI builds and tests with Temurin 21 and 25 on x86-64 Linux, and runs the fast tests on arm64 Linux (JDK 21 and 25) and arm64 macOS (JDK 21). The experimental job `fast tests (Windows x64, JDK 21)` runs the fast tests on Windows x64; it has `continue-on-error: true` and may fail without blocking anything.
 - Maven 3.9 or newer.
 - The Vector API is an incubator module in these JDKs. Compile with `--add-modules jdk.incubator.vector`, and run with it to get the Vector API kernels; the `pom.xml` sets it for the compiler and for the test JVMs. At run time the module is optional: every kernel (flat, IVF, and graph) falls back to its scalar twin when the module is missing, or when `-Dhumemai.vec.scalar=true` is set.
 - On a JVM with the Vector API, x86-64 vectorizes the fp32 `dot` and `l2sq`, the int8 dot, the SQ8 dots, and `block16`. On aarch64 (NEON, 128-bit float lanes) the fp32 `dot` and `l2sq` use the JVM kernels and the int8 dot, the SQ8 dots, and `block16` use the 128-bit forms of `NKernels`. `hamming` is scalar everywhere. A JVM with 128-bit lanes that is not aarch64 runs those four as scalar code. AVX-512 and SVE are not used ([#52](https://github.com/humemai/tiervec/issues/52)).

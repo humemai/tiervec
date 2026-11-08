@@ -95,13 +95,12 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
-  # Experiment (issue #46): the fast tests on Windows x64. Nothing has run on Windows before, so a failure is information: the job has
-  # continue-on-error: true and is not a required check; its name differs from the required "fast tests (JDK 21)" and "fast tests (JDK 25)".
-  # windows-2025 is a standard GitHub-hosted runner (x64). The command is the one of the fast job above.
+  # The fast tests on Windows x64 (issue #46). The job is not a required check; its name differs from the required "fast tests (JDK 21)" and
+  # "fast tests (JDK 25)". windows-2025 is a standard GitHub-hosted runner (x64). The command is the one of the fast job above; the slow
+  # tests do not run here. Steps run in bash (Git for Windows).
   fast-windows:
     name: fast tests (Windows x64, JDK 21)
     runs-on: windows-2025
-    continue-on-error: true
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

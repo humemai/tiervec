@@ -170,8 +170,10 @@ class ApplyStressTest {
 
             if (error.get() != null) fail("a thread failed (" + label + ")", error.get());
             assertNull(bad.get(), "a search saw a batch half applied (" + label + "): " + bad.get());
-            assertTrue(batches.get() >= 500, "the updaters applied only " + batches.get() + " batches (" + label + ")");
-            assertTrue(searches.get() >= 500, "the searchers finished only " + searches.get() + " searches (" + label + ")");
+            // Proof that updaters and searchers really overlapped, not a throughput floor: CI VMs differ by 10x in speed and this test is about
+            // atomicity of apply(), not speed.
+            assertTrue(batches.get() >= 50, "the updaters applied only " + batches.get() + " batches (" + label + ")");
+            assertTrue(searches.get() >= 50, "the searchers finished only " + searches.get() + " searches (" + label + ")");
 
             ix.awaitIdle(60_000);
             Set<Long> expect = new HashSet<>();

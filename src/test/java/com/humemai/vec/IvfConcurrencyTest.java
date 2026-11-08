@@ -77,7 +77,9 @@ public final class IvfConcurrencyTest {
             if (shown++ < 15) System.out.println("  ERROR " + e);
         }
         IvfT.check(retrains.get() >= 1, "at least one retrain completed under load, got " + retrains.get());
-        IvfT.check(writes.get() > 1000 && reads.get() > 1000, "enough work done");
+        // Proof that writers and readers really overlapped (some of each, plus the retrain above), not a throughput floor: CI VMs differ by 10x in speed
+        // and this test is about correctness under concurrency, not speed. 249 reads in 5 s was seen on a GitHub-hosted Windows runner.
+        IvfT.check(writes.get() > 100 && reads.get() > 50, "writers and readers both ran, writes " + writes.get() + ", reads " + reads.get());
         IvfT.check(lastChecked.get() > 0, "the last-100-inserts check ran, checked " + lastChecked.get());
         IvfT.check(lastMissing.get() == 0, "every writer found its last 100 inserts, missing " + lastMissing.get());
 

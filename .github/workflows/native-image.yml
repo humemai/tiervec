@@ -240,6 +240,7 @@ jobs:
   # native-image needs; setup-graalvm sets up the MSVC environment itself on Windows. Steps run in bash (Git for Windows). There is no `timeout`
   # command that is safe to call there (Windows has its own timeout.exe), so the steps use `timeout-minutes`. The class path separator on
   # Windows is `;`, the files of the build come from `git ls-files` (the Windows `find` is another program), and the image is `*.exe`.
+  # The builder is `native-image.cmd` there: Git Bash does not find the bare name (the first run printed "native-image: command not found").
   smoke-windows-vector:
     name: native image smoke (vector, Windows x64)
     runs-on: windows-2025
@@ -261,7 +262,7 @@ jobs:
         run: |
           uname -m
           java -version
-          native-image --version
+          native-image.cmd --version
           java --list-modules | grep incubator
       - name: Compile the library and the smoke program
         run: |
@@ -277,7 +278,7 @@ jobs:
       - name: Build the native image with the Vector API
         run: |
           start=$(date +%s)
-          native-image -cp "target/smoke/classes;src/main/resources" --no-fallback --add-modules jdk.incubator.vector -H:+VectorAPISupport -o target/smoke/tiervec-smoke-vector com.humemai.vec.NativeSmoke
+          native-image.cmd -cp "target/smoke/classes;src/main/resources" --no-fallback --add-modules jdk.incubator.vector -H:+VectorAPISupport -o target/smoke/tiervec-smoke-vector com.humemai.vec.NativeSmoke
           echo "native-image build: $(( $(date +%s) - start )) s"
           ls -l target/smoke/tiervec-smoke-vector.exe
       - name: Run the native image with the Vector API

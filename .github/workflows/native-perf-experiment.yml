@@ -1,3 +1,5 @@
+# Round 4 reduction: only the v1 arm (Vector API, build-time init) on CE 25.0.2 and Oracle 25 (plus the JVM job); the flag arms, scalar images and
+# the 25.5 job of round 2 are dropped to save runner minutes. BenchV now carries the L/A/M variants and dimensions 100 and 770.
 # Experiment round 2 (branch native-perf-experiment only, never merged): why is the native image with the Vector API slow, and which
 # flags or code shapes make kernels fast in a native image. One job per toolchain, all on ubuntu-latest; only ratios between arms inside
 # ONE job are meaningful (the runner CPU is printed in every job). Every native build is tolerant: a failed build prints BUILD-FAILED.
@@ -59,24 +61,8 @@ jobs:
           .github/perf/prep.sh
           native-image --version
           native-image --expert-options-all 2>&1 | grep -i -E 'vector' | cut -c1-250 | sed 's/^/EXPERT /' || true
-      - name: A, Vector API in the image (runtime init, build-time init, march)
-        run: |
-          S=.github/perf/nb.sh
-          $S ce25 BenchV v0 $VEC $VAPI
-          $S ce25 BenchV v1 $VEC $VAPI $BT
-          $S ce25 BenchV v2 $VEC $VAPI $BT -march=native
-          $S ce25 BenchV v3 $VEC $VAPI $BT -march=x86-64-v3
-          $S ce25 BenchV v4 $VEC $VAPI $BT -march=x86-64-v4
-      - name: B, scalar images (no module)
-        run: |
-          S=.github/perf/nb.sh
-          $S ce25 BenchS s0
-          $S ce25 BenchS sO3 -O3
-          $S ce25 BenchS sN -march=native
-          $S ce25 BenchS sO3N -O3 -march=native
-      - name: A and B, O3 with march native, Vector API
-        run: |
-          .github/perf/nb.sh ce25 BenchV v1O3N $VEC $VAPI $BT -O3 -march=native
+      - name: A, Vector API in the image (build-time init), round 4 variants
+        run: .github/perf/nb.sh ce25 BenchV v1 $VEC $VAPI $BT
 
   ora25:
     name: oracle graalvm 25
@@ -96,61 +82,5 @@ jobs:
           .github/perf/prep.sh
           native-image --version
           native-image --expert-options-all 2>&1 | grep -i -E 'vector' | cut -c1-250 | sed 's/^/EXPERT /' || true
-      - name: A, Vector API in the image
-        run: |
-          S=.github/perf/nb.sh
-          $S ora25 BenchV v0 $VEC $VAPI
-          $S ora25 BenchV v1 $VEC $VAPI $BT
-          $S ora25 BenchV v2 $VEC $VAPI $BT -march=native
-          $S ora25 BenchV v1O3N $VEC $VAPI $BT -O3 -march=native
-      - name: B, scalar images (no module)
-        run: |
-          S=.github/perf/nb.sh
-          $S ora25 BenchS s0
-          $S ora25 BenchS sO3 -O3
-          $S ora25 BenchS sN -march=native
-          $S ora25 BenchS sO3N -O3 -march=native
-
-  ce25i5:
-    name: graalvm ce 25.5 (innovation release)
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Install CE 25.5 from graalvm-ce-builds
-        run: |
-          tag=graal-25.5.5.0.3
-          f=graalvm-community-jdk-25i5-25.0.5.0.3_linux-x64_bin.tar.gz
-          mkdir -p "$RUNNER_TEMP/ce25i5" && cd "$RUNNER_TEMP/ce25i5"
-          curl -fsSLO "https://github.com/graalvm/graalvm-ce-builds/releases/download/$tag/$f"
-          curl -fsSLO "https://github.com/graalvm/graalvm-ce-builds/releases/download/$tag/$f.sha256"
-          echo "$(cat "$f.sha256")  $f" | sha256sum -c -
-          tar xzf "$f"
-          ls -la
-          ni=$(find "$PWD" -maxdepth 4 -path '*/bin/native-image' | head -1)
-          test -n "$ni"
-          home=$(dirname "$(dirname "$ni")")
-          echo "FOUND_HOME $home"
-          ls "$home/bin"
-          echo "JAVA_HOME=$home" >> "$GITHUB_ENV"
-          echo "$home/bin" >> "$GITHUB_PATH"
-      - name: Prepare
-        run: |
-          .github/perf/prep.sh
-          native-image --version
-          native-image --expert-options-all 2>&1 | grep -i -E 'vector' | cut -c1-250 | sed 's/^/EXPERT /' || true
-      - name: A, Vector API in the image
-        run: |
-          S=.github/perf/nb.sh
-          $S ce25i5 BenchV v0 $VEC
-          $S ce25i5 BenchV v0f $VEC $VAPI
-          $S ce25i5 BenchV v1 $VEC $BT
-          $S ce25i5 BenchV v2 $VEC $BT -march=native
-      - name: B, scalar images (no module)
-        run: |
-          S=.github/perf/nb.sh
-          $S ce25i5 BenchS s0
-          $S ce25i5 BenchS sN -march=native
-          $S ce25i5 BenchS sO3N -O3 -march=native
+      - name: A, Vector API in the image (build-time init), round 4 variants
+        run: .github/perf/nb.sh ora25 BenchV v1 $VEC $VAPI $BT

@@ -10,7 +10,8 @@ import java.util.Random;
  * several variants of dot and l2sq in ONE process. Arguments: a label, then optionally variant names (default: all of this class).
  * Variants: vk (tiervec VKernels, preferred species), h256 and t256 and t512 (Vc, static final species, two accumulators; h256 with the
  * slice-based horizontal sum, t256 and t512 with reduceLanes), s1 and s4 and s8 (Sc, plain loops with 1, 4 and 8 accumulators).
- * Dimensions 128 and 768, 4096 vectors per pass. Before timing, the first 64 results of every variant are compared with a double
+ * Round 4 variants (Vc, 256-bit species): L256 (horizontal sum as a pairwise tree over v.lane(i)), A256 (v.intoArray into a per-call float[], then the tree), M256 (reduceLanes, masked tail).
+ * Dimensions 128, 100, 768 and 770 (100 and 770 are not multiples of the lane count, so the tail runs), 4096 vectors per pass. Before timing, the first 64 results of every variant are compared with a double
  * reference (tolerance 1e-5 times the sum of absolute terms, as KernDiffTest); a failure prints CHECK-FAIL.
  */
 public final class BenchV {
@@ -18,9 +19,10 @@ public final class BenchV {
 
     static final int N = 4096, WARM_PASSES = 3, TIMED_PASSES = 20, CHECKED = 64;
     static final long WARM_NS = 1_000_000_000L;
-    static final int[] DIMS = {128, 768};
+    static final int[] DIMS = {128, 100, 768, 770};
     static final String[] NAMES = {"dot", "l2sq"};
-    static final String[] ALL = {"vk", "h256", "t256", "t512", "s1", "s4", "s8"};
+    static final String[] ALL = {"vk", "h256", "t256", "t512", "s1", "s4", "s8", "L256", "A256", "M256"};
+    static final String[] NEWV = {"L256", "A256", "M256"};
     static double sink;
 
     static float one(String v, int kernel, float[] q, float[] d, int off, int dim) {
@@ -32,6 +34,9 @@ public final class BenchV {
             case "s1": return kernel == 0 ? Sc.dot1(q, 0, d, off, dim) : Sc.l2sq1(q, 0, d, off, dim);
             case "s4": return kernel == 0 ? Sc.dot4(q, 0, d, off, dim) : Sc.l2sq4(q, 0, d, off, dim);
             case "s8": return kernel == 0 ? Sc.dot8(q, 0, d, off, dim) : Sc.l2sq8(q, 0, d, off, dim);
+            case "L256": return kernel == 0 ? Vc.dotL256(q, 0, d, off, dim) : Vc.l2sqL256(q, 0, d, off, dim);
+            case "A256": return kernel == 0 ? Vc.dotA256(q, 0, d, off, dim) : Vc.l2sqA256(q, 0, d, off, dim);
+            case "M256": return kernel == 0 ? Vc.dotM256(q, 0, d, off, dim) : Vc.l2sqM256(q, 0, d, off, dim);
             default: throw new IllegalStateException(v);
         }
     }
@@ -120,6 +125,42 @@ public final class BenchV {
         return s;
     }
 
+    static double pass_L256_0(float[] q, float[] data, int dim) {
+        double s = 0;
+        for (int i = 0; i < N; i++) s += Vc.dotL256(q, 0, data, i * dim, dim);
+        return s;
+    }
+
+    static double pass_L256_1(float[] q, float[] data, int dim) {
+        double s = 0;
+        for (int i = 0; i < N; i++) s += Vc.l2sqL256(q, 0, data, i * dim, dim);
+        return s;
+    }
+
+    static double pass_A256_0(float[] q, float[] data, int dim) {
+        double s = 0;
+        for (int i = 0; i < N; i++) s += Vc.dotA256(q, 0, data, i * dim, dim);
+        return s;
+    }
+
+    static double pass_A256_1(float[] q, float[] data, int dim) {
+        double s = 0;
+        for (int i = 0; i < N; i++) s += Vc.l2sqA256(q, 0, data, i * dim, dim);
+        return s;
+    }
+
+    static double pass_M256_0(float[] q, float[] data, int dim) {
+        double s = 0;
+        for (int i = 0; i < N; i++) s += Vc.dotM256(q, 0, data, i * dim, dim);
+        return s;
+    }
+
+    static double pass_M256_1(float[] q, float[] data, int dim) {
+        double s = 0;
+        for (int i = 0; i < N; i++) s += Vc.l2sqM256(q, 0, data, i * dim, dim);
+        return s;
+    }
+
     static double pass(String v, int kernel, float[] q, float[] data, int dim) {
         switch (v) {
             case "vk": return kernel == 0 ? pass_vk_0(q, data, dim) : pass_vk_1(q, data, dim);
@@ -129,8 +170,51 @@ public final class BenchV {
             case "s1": return kernel == 0 ? pass_s1_0(q, data, dim) : pass_s1_1(q, data, dim);
             case "s4": return kernel == 0 ? pass_s4_0(q, data, dim) : pass_s4_1(q, data, dim);
             case "s8": return kernel == 0 ? pass_s8_0(q, data, dim) : pass_s8_1(q, data, dim);
+            case "L256": return kernel == 0 ? pass_L256_0(q, data, dim) : pass_L256_1(q, data, dim);
+            case "A256": return kernel == 0 ? pass_A256_0(q, data, dim) : pass_A256_1(q, data, dim);
+            case "M256": return kernel == 0 ? pass_M256_0(q, data, dim) : pass_M256_1(q, data, dim);
             default: throw new IllegalStateException(v);
         }
+    }
+
+    static boolean isNew(String v) {
+        for (String n : NEWV) if (n.equals(v)) return true;
+        return false;
+    }
+
+    /** round 4: every new variant must agree with the scalar loop (Sc.dot1 and Sc.l2sq1) within 1e-3 relative (plus 1e-5 of the sum of absolute terms as float noise floor); prints MISMATCH name and exits nonzero otherwise */
+    static void selfCheck(String[] variants) {
+        int checked = 0;
+        for (int dim : DIMS) {
+            Random rnd = new Random(7000 + dim);
+            int m = 16;
+            float[] q = new float[dim];
+            float[] d = new float[m * dim];
+            for (int i = 0; i < d.length; i++) d[i] = 2f * rnd.nextFloat() - 1f;
+            for (int i = 0; i < dim; i++) q[i] = 2f * rnd.nextFloat() - 1f;
+            for (String v : variants) {
+                if (!isNew(v)) continue;
+                for (int kernel = 0; kernel < 2; kernel++) {
+                    for (int i = 0; i < m; i++) {
+                        float ref = kernel == 0 ? Sc.dot1(q, 0, d, i * dim, dim) : Sc.l2sq1(q, 0, d, i * dim, dim);
+                        double sa = 0;
+                        for (int j = 0; j < dim; j++) {
+                            double a = q[j], b = d[i * dim + j];
+                            sa += Math.abs(kernel == 0 ? a * b : (a - b) * (a - b));
+                        }
+                        float got = one(v, kernel, q, d, i * dim, dim);
+                        double err = Math.abs((double) got - ref);
+                        if (!(err <= 1e-3 * Math.abs(ref) + 1e-5 * sa)) {
+                            System.out.println("MISMATCH " + v + " kernel=" + NAMES[kernel] + " dim=" + dim + " got=" + got + " scalar=" + ref);
+                            System.out.flush();
+                            System.exit(1);
+                        }
+                        checked++;
+                    }
+                }
+            }
+        }
+        System.out.println("SELFCHECK-OK new_variant_checks=" + checked);
     }
 
     static String cpu() {
@@ -155,6 +239,7 @@ public final class BenchV {
             System.out.println("ARM-VKERNELS-FAILED " + t);
             System.exit(1);
         }
+        selfCheck(variants);
         boolean allOk = true;
         for (int dim : DIMS) {
             Random rnd = new Random(1000 + dim);

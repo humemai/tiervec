@@ -1,3 +1,5 @@
+# Round 4 reduction: only the v1 arm (Vector API, build-time init) per toolchain and OS; the march native arm and the scalar image are dropped to
+# save runner minutes. BenchA now carries the L/A/M variants and dimensions 100 and 770.
 # Experiment round 3 (branch native-perf-experiment only, never merged): which Vector API species is fast on ARM64, in the JVM and in a native image.
 # Linux arm64 (ubuntu-24.04-arm) and macOS arm64 (macos-15), one job per toolchain and OS. Only ratios between arms inside ONE job are meaningful
 # (the runner CPU is printed in every job). Every native build is tolerant: a failed build prints BUILD-FAILED.
@@ -72,14 +74,8 @@ jobs:
           native-image --version
           native-image --expert-options-all 2>&1 | grep -i -E 'vector|march' | cut -c1-250 | sed 's/^/EXPERT /' || true
           native-image -march=list 2>&1 | head -20 | sed 's/^/MARCHLIST /' || true
-      - name: A, Vector API in the image (build-time init; plus march native)
-        run: |
-          S=.github/perf/nba.sh
-          $S ce25 BenchA v1 $VEC $VAPI $BT
-          $S ce25 BenchA v2 $VEC $VAPI $BT -march=native
-      - name: B, scalar image (no module)
-        run: |
-          .github/perf/nba.sh ce25 BenchS s0
+      - name: A, Vector API in the image (build-time init), round 4 variants
+        run: .github/perf/nba.sh ce25 BenchA v1 $VEC $VAPI $BT
 
   ora25:
     name: oracle graalvm 25 (${{ matrix.os }})
@@ -104,11 +100,5 @@ jobs:
           native-image --version
           native-image --expert-options-all 2>&1 | grep -i -E 'vector|march' | cut -c1-250 | sed 's/^/EXPERT /' || true
           native-image -march=list 2>&1 | head -20 | sed 's/^/MARCHLIST /' || true
-      - name: A, Vector API in the image (build-time init; plus march native)
-        run: |
-          S=.github/perf/nba.sh
-          $S ora25 BenchA v1 $VEC $VAPI $BT
-          $S ora25 BenchA v2 $VEC $VAPI $BT -march=native
-      - name: B, scalar image (no module)
-        run: |
-          .github/perf/nba.sh ora25 BenchS s0
+      - name: A, Vector API in the image (build-time init), round 4 variants
+        run: .github/perf/nba.sh ora25 BenchA v1 $VEC $VAPI $BT

@@ -1,6 +1,7 @@
 package com.humemai.vec;
 
 import jdk.incubator.vector.FloatVector;
+import jdk.incubator.vector.VectorMask;
 import jdk.incubator.vector.VectorOperators;
 import jdk.incubator.vector.VectorSpecies;
 
@@ -217,5 +218,141 @@ final class VcA {
             s += d * d;
         }
         return s;
+    }
+
+    // ---- round 4: fixed-order horizontal sums (L, A) with a scalar tail, and reduceLanes with a masked tail (M); all on the 128-bit species ----
+
+    /** round 4: fixed-order horizontal sum, explicit pairwise tree over v.lane(i) */
+    static float hsumL128(FloatVector v) {
+        return ((v.lane(0) + v.lane(1)) + (v.lane(2) + v.lane(3)));
+    }
+
+    /** round 4: fixed-order horizontal sum, v.intoArray into a per-call float[] (escape analysis may remove it), then the same pairwise tree in scalar code */
+    static float hsumA128(FloatVector v) {
+        float[] t = new float[4];
+        v.intoArray(t, 0);
+        return ((t[0] + t[1]) + (t[2] + t[3]));
+    }
+
+    static float dotL128(float[] a, int ao, float[] b, int bo, int n) {
+        FloatVector a0 = FloatVector.zero(S128), a1 = FloatVector.zero(S128);
+        int i = 0;
+        int end2 = n - (n % (2 * L128));
+        for (; i < end2; i += 2 * L128) {
+            a0 = FloatVector.fromArray(S128, a, ao + i).fma(FloatVector.fromArray(S128, b, bo + i), a0);
+            a1 = FloatVector.fromArray(S128, a, ao + i + L128).fma(FloatVector.fromArray(S128, b, bo + i + L128), a1);
+        }
+        int end1 = n - (n % L128);
+        for (; i < end1; i += L128) {
+            a0 = FloatVector.fromArray(S128, a, ao + i).fma(FloatVector.fromArray(S128, b, bo + i), a0);
+        }
+        float s = hsumL128(a0.add(a1));
+        for (; i < n; i++) s += a[ao + i] * b[bo + i];
+        return s;
+    }
+
+    static float l2sqL128(float[] a, int ao, float[] b, int bo, int n) {
+        FloatVector a0 = FloatVector.zero(S128), a1 = FloatVector.zero(S128);
+        int i = 0;
+        int end2 = n - (n % (2 * L128));
+        for (; i < end2; i += 2 * L128) {
+            FloatVector d0 = FloatVector.fromArray(S128, a, ao + i).sub(FloatVector.fromArray(S128, b, bo + i));
+            FloatVector d1 = FloatVector.fromArray(S128, a, ao + i + L128).sub(FloatVector.fromArray(S128, b, bo + i + L128));
+            a0 = d0.fma(d0, a0);
+            a1 = d1.fma(d1, a1);
+        }
+        int end1 = n - (n % L128);
+        for (; i < end1; i += L128) {
+            FloatVector d0 = FloatVector.fromArray(S128, a, ao + i).sub(FloatVector.fromArray(S128, b, bo + i));
+            a0 = d0.fma(d0, a0);
+        }
+        float s = hsumL128(a0.add(a1));
+        for (; i < n; i++) {
+            float d = a[ao + i] - b[bo + i];
+            s += d * d;
+        }
+        return s;
+    }
+
+    static float dotA128(float[] a, int ao, float[] b, int bo, int n) {
+        FloatVector a0 = FloatVector.zero(S128), a1 = FloatVector.zero(S128);
+        int i = 0;
+        int end2 = n - (n % (2 * L128));
+        for (; i < end2; i += 2 * L128) {
+            a0 = FloatVector.fromArray(S128, a, ao + i).fma(FloatVector.fromArray(S128, b, bo + i), a0);
+            a1 = FloatVector.fromArray(S128, a, ao + i + L128).fma(FloatVector.fromArray(S128, b, bo + i + L128), a1);
+        }
+        int end1 = n - (n % L128);
+        for (; i < end1; i += L128) {
+            a0 = FloatVector.fromArray(S128, a, ao + i).fma(FloatVector.fromArray(S128, b, bo + i), a0);
+        }
+        float s = hsumA128(a0.add(a1));
+        for (; i < n; i++) s += a[ao + i] * b[bo + i];
+        return s;
+    }
+
+    static float l2sqA128(float[] a, int ao, float[] b, int bo, int n) {
+        FloatVector a0 = FloatVector.zero(S128), a1 = FloatVector.zero(S128);
+        int i = 0;
+        int end2 = n - (n % (2 * L128));
+        for (; i < end2; i += 2 * L128) {
+            FloatVector d0 = FloatVector.fromArray(S128, a, ao + i).sub(FloatVector.fromArray(S128, b, bo + i));
+            FloatVector d1 = FloatVector.fromArray(S128, a, ao + i + L128).sub(FloatVector.fromArray(S128, b, bo + i + L128));
+            a0 = d0.fma(d0, a0);
+            a1 = d1.fma(d1, a1);
+        }
+        int end1 = n - (n % L128);
+        for (; i < end1; i += L128) {
+            FloatVector d0 = FloatVector.fromArray(S128, a, ao + i).sub(FloatVector.fromArray(S128, b, bo + i));
+            a0 = d0.fma(d0, a0);
+        }
+        float s = hsumA128(a0.add(a1));
+        for (; i < n; i++) {
+            float d = a[ao + i] - b[bo + i];
+            s += d * d;
+        }
+        return s;
+    }
+
+    static float dotM128(float[] a, int ao, float[] b, int bo, int n) {
+        FloatVector a0 = FloatVector.zero(S128), a1 = FloatVector.zero(S128);
+        int i = 0;
+        int end2 = n - (n % (2 * L128));
+        for (; i < end2; i += 2 * L128) {
+            a0 = FloatVector.fromArray(S128, a, ao + i).fma(FloatVector.fromArray(S128, b, bo + i), a0);
+            a1 = FloatVector.fromArray(S128, a, ao + i + L128).fma(FloatVector.fromArray(S128, b, bo + i + L128), a1);
+        }
+        int end1 = n - (n % L128);
+        for (; i < end1; i += L128) {
+            a0 = FloatVector.fromArray(S128, a, ao + i).fma(FloatVector.fromArray(S128, b, bo + i), a0);
+        }
+        if (i < n) {
+            VectorMask<Float> m = S128.indexInRange(i, n);
+            a0 = FloatVector.fromArray(S128, a, ao + i, m).fma(FloatVector.fromArray(S128, b, bo + i, m), a0);
+        }
+        return a0.add(a1).reduceLanes(VectorOperators.ADD);
+    }
+
+    static float l2sqM128(float[] a, int ao, float[] b, int bo, int n) {
+        FloatVector a0 = FloatVector.zero(S128), a1 = FloatVector.zero(S128);
+        int i = 0;
+        int end2 = n - (n % (2 * L128));
+        for (; i < end2; i += 2 * L128) {
+            FloatVector d0 = FloatVector.fromArray(S128, a, ao + i).sub(FloatVector.fromArray(S128, b, bo + i));
+            FloatVector d1 = FloatVector.fromArray(S128, a, ao + i + L128).sub(FloatVector.fromArray(S128, b, bo + i + L128));
+            a0 = d0.fma(d0, a0);
+            a1 = d1.fma(d1, a1);
+        }
+        int end1 = n - (n % L128);
+        for (; i < end1; i += L128) {
+            FloatVector d0 = FloatVector.fromArray(S128, a, ao + i).sub(FloatVector.fromArray(S128, b, bo + i));
+            a0 = d0.fma(d0, a0);
+        }
+        if (i < n) {
+            VectorMask<Float> m = S128.indexInRange(i, n);
+            FloatVector d0 = FloatVector.fromArray(S128, a, ao + i, m).sub(FloatVector.fromArray(S128, b, bo + i, m));
+            a0 = d0.fma(d0, a0);
+        }
+        return a0.add(a1).reduceLanes(VectorOperators.ADD);
     }
 }

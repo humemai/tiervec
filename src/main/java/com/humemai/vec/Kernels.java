@@ -7,10 +7,10 @@ package com.humemai.vec;
  * Any length n is fine. A float kernel result depends only on n and the mode, never on offsets, so two calls on equal data are bitwise
  * equal within one mode; the scalar and the vector mode can differ by rounding (the int8 kernel is exact in both).
  *
- * <p>Inside a GraalVM native image ({@link #IN_IMAGE}) the Vector API kernels of {@link VKernels} are far slower than scalar code (a masked tail
- * and a slice-based sum send the kernel through a slow path), so an image uses {@link NKernels} for the fp32 dot and squared L2 when the module
- * is present, and the scalar twins otherwise. The SQ8, int8, block16 and hamming kernels stay scalar in an image: they use convertShape, and no
- * measurement of them in an image exists yet (see {@link #JVM_VECTOR}). A result in an image can differ from a result on a JVM by rounding.
+ * <p>Inside a GraalVM native image ({@link #IN_IMAGE}) the float Vector API kernels of {@link VKernels} are far slower than scalar code (a masked tail
+ * and a slice-based sum send the kernel through a slow path), so an image uses {@link NKernels} for every kernel that has a Vector API form (fp32 dot and
+ * squared L2, int8 dot, the SQ8 dots, block16) when the module is present, and the scalar twins otherwise. Only hamming is scalar in an image, as it
+ * is on a JVM (it has no Vector API form). A result in an image can differ from a result on a JVM by rounding.
  */
 final class Kernels {
     private Kernels() {}
@@ -22,16 +22,16 @@ final class Kernels {
     static final boolean IN_IMAGE = System.getProperty("org.graalvm.nativeimage.imagecode") != null;
 
     /**
-     * true when the Vector API kernels are used: on a JVM all of them, in a native image only the fp32 dot and squared L2 of {@link NKernels}.
+     * true when the Vector API kernels are used: on a JVM those of {@link VKernels}, in a native image those of {@link NKernels}.
      * (initialized after {@link #IN_IMAGE}, and before everything that reads it)
      */
     static final boolean VECTOR = decide();
 
-    /**
-     * true when the full set of Vector API kernels ({@link VKernels}, {@link VKern}) is in use: {@link #VECTOR} on a JVM, never in a native image.
-     * The kernels that convert byte lanes (SQ8, int8, block16) are guarded by this flag, not by {@link #VECTOR}.
-     */
+    /** true when the Vector API kernels of {@link VKernels} and {@link VKern} are in use: {@link #VECTOR} on a JVM, never in a native image */
     static final boolean JVM_VECTOR = VECTOR && !IN_IMAGE;
+
+    /** true when the Vector API kernels of {@link NKernels} are in use: {@link #VECTOR} in a native image, never on a JVM */
+    static final boolean NATIVE_VECTOR = VECTOR && IN_IMAGE;
 
     /**
      * The Vector API holder classes are initialized HERE, inside a try: if one of them cannot load or initialize (module missing,
@@ -77,22 +77,26 @@ final class Kernels {
 
     /** int8 dot with an int32 accumulator; codes must be in [-127, 127] */
     static int dotI8(byte[] a, int ao, byte[] b, int bo, int n) {
-        return JVM_VECTOR ? VKernels.dotI8(a, ao, b, bo, n) : dotI8Scalar(a, ao, b, bo, n);
+        if (JVM_VECTOR) return VKernels.dotI8(a, ao, b, bo, n);
+        return NATIVE_VECTOR ? NKernels.dotI8(a, ao, b, bo, n) : dotI8Scalar(a, ao, b, bo, n);
     }
 
     /** float query against int8 codes, one accumulator */
     static float dotF8(float[] q, int qo, byte[] c, int co, int n) {
-        return JVM_VECTOR && VKernels.F8_OK ? VKernels.dotF8(q, qo, c, co, n) : dotF8Scalar(q, qo, c, co, n);
+        if (JVM_VECTOR && VKernels.F8_OK) return VKernels.dotF8(q, qo, c, co, n);
+        return NATIVE_VECTOR ? NKernels.dotF8(q, qo, c, co, n) : dotF8Scalar(q, qo, c, co, n);
     }
 
     /** float query against int8 codes, four accumulators */
     static float dotF8x4(float[] q, int qo, byte[] c, int co, int n) {
-        return JVM_VECTOR && VKernels.F8_OK ? VKernels.dotF8x4(q, qo, c, co, n) : dotF8Scalar(q, qo, c, co, n);
+        if (JVM_VECTOR && VKernels.F8_OK) return VKernels.dotF8x4(q, qo, c, co, n);
+        return NATIVE_VECTOR ? NKernels.dotF8x4(q, qo, c, co, n) : dotF8Scalar(q, qo, c, co, n);
     }
 
     /** 16 dot products at once over a dimension-major block (element (j, lane) at base + j*16 + lane); out receives 16 sums */
     static void block16(float[] q, int qo, byte[] c, int base, int n, float[] out) {
         if (JVM_VECTOR && VKernels.BLOCK_OK) VKernels.block16(q, qo, c, base, n, out);
+        else if (NATIVE_VECTOR) NKernels.block16(q, qo, c, base, n, out);
         else block16Scalar(q, qo, c, base, n, out);
     }
 

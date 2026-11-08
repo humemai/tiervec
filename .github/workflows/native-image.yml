@@ -16,9 +16,8 @@
 # `macOS arm64` of `native image smoke (vector, ...)`, GraalVM Community 25.0.2) run on macos-15 with the same commands as the Linux jobs. The macOS
 # runner has no `timeout` command, so a step puts GNU coreutils on the path first.
 #
-# Windows x64 (issue #46): the job `native image smoke (vector, Windows x64)` on windows-2025 is an experiment. It is not known whether the Vector API
-# image builds and runs on Windows, and the job has `continue-on-error: true`, so a failure is information and does not turn the run red. It is not
-# a required check.
+# Windows x64 (issue #46): the job `native image smoke (vector, Windows x64)` runs the vector image (GraalVM Community 25.0.2) on windows-2025. There
+# is no scalar image job on Windows. The job is not a required check.
 #
 # This job is not a required check. The GraalVM version is pinned (GraalVM Community 21.0.2, the last community release for JDK 21).
 name: Native Image Smoke
@@ -235,16 +234,14 @@ jobs:
           echo "native run: $(( $(date +%s) - start )) s"
           grep -q '^NATIVE-SMOKE OK (native)' target/smoke/native.log
 
-  # Experiment (issue #46): the Vector API image on Windows x64. It is not known whether this works. continue-on-error: true makes a failure
-  # information and not a red run; the job is not a required check. windows-2025 is a standard GitHub-hosted runner with Visual Studio, which
-  # native-image needs; setup-graalvm sets up the MSVC environment itself on Windows. Steps run in bash (Git for Windows). There is no `timeout`
+  # The Vector API image on Windows x64 (issue #46). The job is not a required check. windows-2025 is a standard GitHub-hosted runner with Visual
+  # Studio, which native-image needs; setup-graalvm sets up the MSVC environment itself on Windows. Steps run in bash (Git for Windows). There is no `timeout`
   # command that is safe to call there (Windows has its own timeout.exe), so the steps use `timeout-minutes`. The class path separator on
   # Windows is `;`, the files of the build come from `git ls-files` (the Windows `find` is another program), and the image is `*.exe`.
   # The builder is `native-image.cmd` there: Git Bash does not find the bare name (the first run printed "native-image: command not found").
   smoke-windows-vector:
     name: native image smoke (vector, Windows x64)
     runs-on: windows-2025
-    continue-on-error: true
     timeout-minutes: 60
     defaults:
       run:

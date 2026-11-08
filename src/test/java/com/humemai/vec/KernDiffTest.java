@@ -6,7 +6,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Random;
 import java.util.Set;
 import java.util.TreeSet;
@@ -19,6 +21,10 @@ import org.junit.jupiter.api.Test;
  * {@link Kernels#l2sqScalar}, {@link Kernels#dotF8Scalar}), for dot, squared L2 and the SQ8 dot (a float query against signed int8 codes).
  * Dimensions include 0, 1, every size around the lane width (so the masked-free tails of both versions run) and sizes that are not a
  * multiple of it. Runs in the default surefire execution, where the Vector API kernels are active.
+ *
+ * The kernels of a native image ({@link NKernels}: fp32 dot and squared L2, int8 dot, the SQ8 dots, block16) are tested here on the JVM against the same
+ * scalar twins: every form of each kernel (the one {@link NKernels#WIDE} selects and both explicit forms, so the 128-bit forms of aarch64 run on an x86
+ * host too), with the lengths of the native-image tests, exact for integer data and within {@link #N_REL_TOL} plus {@link #N_ABS_FLOOR} for random data.
  *
  * Documented tolerance, {@link #REL_TOL}: two float results agree when they differ by at most 1e-5 times the sum of the absolute
  * terms of the sum (so a dot product that cancels to nearly zero is not held to a relative error of its own value). A float sum of n
@@ -174,6 +180,7 @@ class KernDiffTest {
         String arch = System.getProperty("os.arch", "");
         boolean arm = arch.equals("aarch64") || arch.equals("arm64");
         assertEquals(arm ? 4 : 8, NKernels.L, "lanes for os.arch " + arch);
+        assertEquals(!arm, NKernels.WIDE, "wide form for os.arch " + arch);
         assertEquals(NKernels.S.length(), NKernels.L, "lanes of the species");
     }
 
@@ -251,6 +258,197 @@ class KernDiffTest {
         float[] a = rnd(r, 770), b = rnd(r, 770);
         assertEquals(Float.floatToIntBits(VKernels.dot(a, 0, b, 0, 770)), Float.floatToIntBits(Kernels.dot(a, 0, b, 0, 770)), "Kernels.dot");
         assertEquals(Float.floatToIntBits(VKernels.l2sq(a, 0, b, 0, 770)), Float.floatToIntBits(Kernels.l2sq(a, 0, b, 0, 770)), "Kernels.l2sq");
+    }
+
+    // ---- NKernels: the int8, SQ8 and block kernels of a native image (issue #48), tested here on the JVM against the scalar twins ----
+
+    interface I8Kernel { int apply(byte[] a, int ao, byte[] b, int bo, int n); }
+
+    interface F8Kernel { float apply(float[] q, int qo, byte[] c, int co, int n); }
+
+    interface BlockKernel { void apply(float[] q, int qo, byte[] c, int base, int n, float[] out); }
+
+    /** the lengths of the native-image tests: 1, 7, 8, 9, 15, 16, 17, 31, 32, 33, 100, 128 and 770, and 0 */
+    static final int[] Q_DIMS = {0, 1, 7, 8, 9, 15, 16, 17, 31, 32, 33, 100, 128, 770};
+    static final int[] BLOCK_DIMS = {0, 1, 2, 3, 7, 8, 9, 15, 16, 17, 33, 100, 128, 770};
+
+    static Map<String, I8Kernel> i8Forms() {
+        Map<String, I8Kernel> m = new LinkedHashMap<>();
+        m.put("NKernels.dotI8", NKernels::dotI8);
+        m.put("NKernels.dotI8W", NKernels::dotI8W);
+        m.put("NKernels.dotI8N", NKernels::dotI8N);
+        return m;
+    }
+
+    static Map<String, F8Kernel> f8Forms() {
+        Map<String, F8Kernel> m = new LinkedHashMap<>();
+        m.put("NKernels.dotF8", NKernels::dotF8);
+        m.put("NKernels.dotF8W", NKernels::dotF8W);
+        m.put("NKernels.dotF8N", NKernels::dotF8N);
+        m.put("NKernels.dotF8x4", NKernels::dotF8x4);
+        m.put("NKernels.dotF8x4W", NKernels::dotF8x4W);
+        m.put("NKernels.dotF8x4N", NKernels::dotF8x4N);
+        return m;
+    }
+
+    static Map<String, BlockKernel> blockForms() {
+        Map<String, BlockKernel> m = new LinkedHashMap<>();
+        m.put("NKernels.block16", NKernels::block16);
+        m.put("NKernels.block16W", NKernels::block16W);
+        m.put("NKernels.block16N", NKernels::block16N);
+        return m;
+    }
+
+    @Test
+    void nKernelsDotI8IsExact() {
+        Random r = new Random(31);
+        for (int n : Q_DIMS) {
+            // bytes outside the window are 127, so a read past the window or before its offset changes the sum
+            byte[] a = new byte[AO + n + 2], b = new byte[BO + n + 2];
+            Arrays.fill(a, (byte) 127);
+            Arrays.fill(b, (byte) 127);
+            for (int i = 0; i < n; i++) {
+                a[AO + i] = (byte) (r.nextInt(255) - 127);
+                b[BO + i] = (byte) (r.nextInt(255) - 127);
+            }
+            int ref = Kernels.dotI8Scalar(a, AO, b, BO, n);
+            for (Map.Entry<String, I8Kernel> e : i8Forms().entrySet()) assertEquals(ref, e.getValue().apply(a, AO, b, BO, n), e.getKey() + " n=" + n);
+            // the extremes: every product is -127 * 127, which fits a short
+            for (int i = 0; i < n; i++) {
+                a[AO + i] = (byte) 127;
+                b[BO + i] = (byte) -127;
+            }
+            for (Map.Entry<String, I8Kernel> e : i8Forms().entrySet()) assertEquals(-127 * 127 * n, e.getValue().apply(a, AO, b, BO, n), e.getKey() + " extreme n=" + n);
+        }
+    }
+
+    @Test
+    void nKernelsSq8IntegerDataAgreesBitForBit() {
+        Random r = new Random(32);
+        for (int n : Q_DIMS) {
+            float[] q = new float[AO + n + 2];
+            byte[] c = new byte[CO + n + 2];
+            Arrays.fill(q, 1000f);
+            Arrays.fill(c, (byte) 127);
+            long dq = 0;
+            for (int i = 0; i < n; i++) {
+                int w = r.nextInt(17) - 8, z = r.nextInt(256) - 128;
+                q[AO + i] = w;
+                c[CO + i] = (byte) z;
+                dq += (long) w * z;
+            }
+            for (Map.Entry<String, F8Kernel> e : f8Forms().entrySet()) assertEquals((float) dq, e.getValue().apply(q, AO, c, CO, n), 0f, e.getKey() + " n=" + n);
+            assertEquals((float) dq, Kernels.dotF8Scalar(q, AO, c, CO, n), 0f, "scalar twin n=" + n);
+        }
+    }
+
+    @Test
+    void nKernelsSq8RandomDataAgreesWithinTolerance() {
+        Random r = new Random(33);
+        for (int n : Q_DIMS) {
+            for (int rep = 0; rep < 20; rep++) {
+                float[] q = rnd(r, n);
+                byte[] c = codes(r, n);
+                double dq = 0, dqAbs = 0;
+                for (int i = 0; i < n; i++) {
+                    dq += (double) q[i] * c[i];
+                    dqAbs += Math.abs((double) q[i] * c[i]);
+                }
+                float sq = Kernels.dotF8Scalar(q, 0, c, 0, n);
+                float[] q2 = new float[n + 3];
+                byte[] c2 = new byte[n + 7];
+                System.arraycopy(q, 0, q2, 3, n);
+                System.arraycopy(c, 0, c2, 7, n);
+                for (Map.Entry<String, F8Kernel> e : f8Forms().entrySet()) {
+                    String m = e.getKey() + " n=" + n;
+                    float v = e.getValue().apply(q, 0, c, 0, n);
+                    withinN(v, sq, dqAbs, m + ", against scalar");
+                    withinN(v, dq, dqAbs, m + ", against exact");
+                    // a call on equal data at other offsets gives the same bits
+                    assertEquals(Float.floatToIntBits(v), Float.floatToIntBits(e.getValue().apply(q2, 3, c2, 7, n)), m + " at offsets");
+                }
+            }
+        }
+    }
+
+    @Test
+    void nKernelsBlock16IntegerAndRandomData() {
+        Random r = new Random(34);
+        int qo = 3, base = 5;
+        for (int n : BLOCK_DIMS) {
+            for (int rep = 0; rep < 10; rep++) {
+                boolean ints = rep < 3;
+                // outside the window q is 1000 and the codes are 127, so a read past the window or before its offset changes a sum
+                float[] q = new float[qo + n + 2];
+                byte[] c = new byte[base + n * 16 + 3];
+                Arrays.fill(q, 1000f);
+                Arrays.fill(c, (byte) 127);
+                for (int j = 0; j < n; j++) q[qo + j] = ints ? r.nextInt(17) - 8 : r.nextFloat() * 2f - 1f;
+                for (int i = 0; i < n * 16; i++) c[base + i] = (byte) (r.nextInt(255) - 127);
+                float[] ref = new float[16];
+                Kernels.block16Scalar(q, qo, c, base, n, ref);
+                for (Map.Entry<String, BlockKernel> e : blockForms().entrySet()) {
+                    float[] out = new float[16];
+                    Arrays.fill(out, 12345f); // every lane must be written
+                    e.getValue().apply(q, qo, c, base, n, out);
+                    for (int lane = 0; lane < 16; lane++) {
+                        double ex = 0, exAbs = 0;
+                        for (int j = 0; j < n; j++) {
+                            ex += (double) q[qo + j] * c[base + j * 16 + lane];
+                            exAbs += Math.abs((double) q[qo + j] * c[base + j * 16 + lane]);
+                        }
+                        String m = e.getKey() + " n=" + n + " lane " + lane + (ints ? " (integer data)" : "");
+                        if (ints) {
+                            assertEquals((float) ex, out[lane], 0f, m);
+                        } else {
+                            withinN(out[lane], ref[lane], exAbs, m + ", against scalar");
+                            withinN(out[lane], ex, exAbs, m + ", against exact");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
+    void nKernelsDispatchFollowsTheSpecies() {
+        Random r = new Random(35);
+        int n = 770;
+        float[] q = rnd(r, n);
+        byte[] c = codes(r, n), d = codes(r, n), blk = codes(r, n * 16);
+        assertEquals(NKernels.WIDE ? NKernels.dotI8W(c, 0, d, 0, n) : NKernels.dotI8N(c, 0, d, 0, n), NKernels.dotI8(c, 0, d, 0, n), "dotI8");
+        assertEquals(bits(NKernels.WIDE ? NKernels.dotF8W(q, 0, c, 0, n) : NKernels.dotF8N(q, 0, c, 0, n)), bits(NKernels.dotF8(q, 0, c, 0, n)), "dotF8");
+        assertEquals(bits(NKernels.WIDE ? NKernels.dotF8x4W(q, 0, c, 0, n) : NKernels.dotF8x4N(q, 0, c, 0, n)), bits(NKernels.dotF8x4(q, 0, c, 0, n)), "dotF8x4");
+        float[] o1 = new float[16], o2 = new float[16];
+        if (NKernels.WIDE) NKernels.block16W(q, 0, blk, 0, n, o1);
+        else NKernels.block16N(q, 0, blk, 0, n, o1);
+        NKernels.block16(q, 0, blk, 0, n, o2);
+        assertEquals(Arrays.toString(o1), Arrays.toString(o2), "block16");
+    }
+
+    @Test
+    void inAJvmTheQuantKernelsDoNotUseNKernels() {
+        // on a JVM Kernels uses VKernels for the int8, SQ8 and block kernels (the JVM path is unchanged), bit for bit
+        assertTrue(!Kernels.IN_IMAGE && Kernels.JVM_VECTOR && !Kernels.NATIVE_VECTOR, "this test runs on a JVM with the Vector API");
+        Random r = new Random(36);
+        int n = 770;
+        float[] q = rnd(r, n);
+        byte[] c = codes(r, n), d = codes(r, n), blk = codes(r, n * 16);
+        assertEquals(VKernels.dotI8(c, 0, d, 0, n), Kernels.dotI8(c, 0, d, 0, n), "Kernels.dotI8");
+        if (VKernels.F8_OK) {
+            assertEquals(bits(VKernels.dotF8(q, 0, c, 0, n)), bits(Kernels.dotF8(q, 0, c, 0, n)), "Kernels.dotF8");
+            assertEquals(bits(VKernels.dotF8x4(q, 0, c, 0, n)), bits(Kernels.dotF8x4(q, 0, c, 0, n)), "Kernels.dotF8x4");
+        }
+        if (VKernels.BLOCK_OK) {
+            float[] o1 = new float[16], o2 = new float[16];
+            VKernels.block16(q, 0, blk, 0, n, o1);
+            Kernels.block16(q, 0, blk, 0, n, o2);
+            assertEquals(Arrays.toString(o1), Arrays.toString(o2), "Kernels.block16");
+        }
+    }
+
+    static int bits(float f) {
+        return Float.floatToIntBits(f);
     }
 
     /** the k best by the score (smaller is better), ties by position */

@@ -3,8 +3,8 @@ package com.humemai.vec;
 /**
  * All distance kernels of the graph tier live here. Each one picks, once per JVM, between the Vector API version in {@link VKern} and a
  * scalar twin: {@link Kernels#VECTOR} is the one switch for the flat, the IVF and the graph kernels (-Dhumemai.vec.scalar=true or a missing
- * jdk.incubator.vector module give the scalar twins). In a native image only dot and l2 use the Vector API, through {@link NKernels}; the SQ8 dot
- * stays scalar there ({@link Kernels#JVM_VECTOR}). The scalar twins are the ones of {@link Kernels}
+ * jdk.incubator.vector module give the scalar twins). In a native image all three use the Vector API, through {@link NKernels} (the SQ8 dot is its dotF8).
+ * The scalar twins are the ones of {@link Kernels}
  * (dotScalar, l2sqScalar, dotF8Scalar), so the graph and the flat tier compute the same score for the same data in scalar mode.
  * VKern is touched only when Kernels.VECTOR is true, and nothing here has a Vector API type in a field or a signature, so loading this
  * class never loads jdk.incubator.vector classes.
@@ -27,7 +27,8 @@ final class Kern {
 
     /** sum over i of q[i] * codes[co + i] (codes are signed bytes) */
     static float dotQ8(float[] q, byte[] codes, int co, int n) {
-        return Kernels.JVM_VECTOR && VKern.Q8_OK ? VKern.dotQ8(q, codes, co, n) : Kernels.dotF8Scalar(q, 0, codes, co, n);
+        if (Kernels.JVM_VECTOR && VKern.Q8_OK) return VKern.dotQ8(q, codes, co, n);
+        return Kernels.NATIVE_VECTOR ? NKernels.dotF8(q, 0, codes, co, n) : Kernels.dotF8Scalar(q, 0, codes, co, n);
     }
 
     static float sum(float[] a, int n) { float s = 0; for (int i = 0; i < n; i++) s += a[i]; return s; }

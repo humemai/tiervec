@@ -16,13 +16,14 @@ import java.util.Set;
  * and that no class of the Vector API is present.</li>
  * <li>{@code native-vector}: the vector image, built with {@code --add-modules jdk.incubator.vector -H:+VectorAPISupport} and the properties file
  * of the jar on the class path. The program checks that {@code Kernels.VECTOR} is true in the image, that the species of {@code NKernels} was
- * fixed at image build time and has the lanes of the architecture, and that {@code Kernels.JVM_VECTOR} is false (the SQ8, int8 and block
- * kernels stay scalar in an image).</li>
+ * fixed at image build time and has the lanes of the architecture, that {@code Kernels.JVM_VECTOR} is false and {@code Kernels.NATIVE_VECTOR} is true, and that
+ * every kernel except hamming (fp32 dot and L2, int8 dot, the SQ8 dots, block16) returns the bits of its {@code NKernels} method and agrees with its scalar twin.</li>
  * <li>{@code jvm}: the control run on a JVM without the module (the same checks as {@code native} except for the kernel reason).</li>
  * <li>{@code jvm-vector}: the control run on a JVM with the module (the Vector API kernels of the JVM, no image).</li>
  * </ul>
- * Every mode then prints one informational line with the median time of 1,000,000 calls of {@code Kernels.dot} on 768 dimensions and of the scalar
- * twin; the line is never a pass or fail bar. Then the program builds a flat index (all three metrics, fp32 and SQ8), an IVF index (fp32 and SQ8), a graph index (fp32 and SQ8)
+ * Every mode then prints informational {@code SPEED} lines with the median time of 1,000,000 calls of {@code Kernels.dot} on 768 dimensions and of the scalar
+ * twin, and the same for {@code dotI8}, {@code dotF8}, {@code dotF8x4} and {@code block16} (per call on a block of 16 vectors); a line is never a pass or fail bar.
+ * Then the program builds a flat index (all three metrics, fp32, and SQ8 with each of the four SQ8 kernels), an IVF index (fp32 and SQ8), a graph index (fp32 and SQ8)
  * and a tier (fp32 and SQ8: add, background seal, tail, delete, seal, replace ids, merge, delete after the merge), and after every step
  * it compares the answers with an exact scan over a model of the live rows.
  *
@@ -226,13 +227,78 @@ public final class NativeSmoke {
         if (nat) {
             String arch = System.getProperty("os.arch", "");
             int lanes = arch.equals("aarch64") || arch.equals("arm64") ? 4 : 8;
-            check(!Kernels.JVM_VECTOR, "Kernels.JVM_VECTOR is true in an image, the SQ8, int8 and block kernels must be scalar there");
+            check(!Kernels.JVM_VECTOR, "Kernels.JVM_VECTOR is true in an image, the kernels of VKernels must not be in use there");
+            check(Kernels.NATIVE_VECTOR, "Kernels.NATIVE_VECTOR is false in an image with the Vector API, the kernels of NKernels must be in use");
             check("buildtime".equals(NKernels.INIT_IMAGECODE), "NKernels was initialized at " + NKernels.INIT_IMAGECODE + ", expected buildtime (is native-image.properties on the class path?)");
             check(NKernels.L == lanes, "NKernels has " + NKernels.L + " lanes, expected " + lanes + " for os.arch " + arch);
-            System.out.println("NKernels: species " + NKernels.S + ", lanes " + NKernels.L + ", initialized at " + NKernels.INIT_IMAGECODE);
+            check(NKernels.WIDE == (lanes == 8), "NKernels.WIDE is " + NKernels.WIDE + " for os.arch " + arch);
+            System.out.println("NKernels: species " + NKernels.S + ", lanes " + NKernels.L + ", wide " + NKernels.WIDE + ", initialized at " + NKernels.INIT_IMAGECODE);
         } else {
             check(Kernels.JVM_VECTOR, "Kernels.JVM_VECTOR is false on a JVM with the module");
+            check(!Kernels.NATIVE_VECTOR, "Kernels.NATIVE_VECTOR is true on a JVM");
         }
+    }
+
+    /**
+     * The kernels in use against their scalar twins on random data, for the lengths around the lane widths and the 768 and 770 of the speed lines. In an
+     * image (vector) each result must also be the exact bits of the NKernels method, which proves that Kernels routes to NKernels there. The integer
+     * kernel must agree exactly; a float kernel within 1e-4 times the sum of the absolute terms plus 1e-6.
+     */
+    static void kernelsAgree(String mode) {
+        boolean nat = mode.equals("native-vector");
+        Random r = new Random(31);
+        int[] dims = {1, 7, 8, 9, 15, 16, 17, 31, 32, 33, 100, 128, 768, 770};
+        for (int n : dims) {
+            String m = " n=" + n;
+            float[] q = new float[n];
+            byte[] a = new byte[n + 3], b = new byte[n + 5], blk = new byte[n * 16 + 7];
+            float[] c = new float[n], d = new float[n];
+            for (int i = 0; i < n; i++) {
+                q[i] = r.nextFloat() * 2f - 1f;
+                c[i] = r.nextFloat() * 2f - 1f;
+                d[i] = r.nextFloat() * 2f - 1f;
+            }
+            for (int i = 0; i < a.length; i++) a[i] = (byte) (r.nextInt(255) - 127);
+            for (int i = 0; i < b.length; i++) b[i] = (byte) (r.nextInt(255) - 127);
+            for (int i = 0; i < blk.length; i++) blk[i] = (byte) (r.nextInt(255) - 127);
+            check(Kernels.dotI8(a, 3, b, 5, n) == Kernels.dotI8Scalar(a, 3, b, 5, n), "dotI8 against the scalar twin" + m);
+            if (nat) check(Kernels.dotI8(a, 3, b, 5, n) == NKernels.dotI8(a, 3, b, 5, n), "dotI8 is not NKernels.dotI8" + m);
+            double dq = 0, dqAbs = 0, dd = 0, ddAbs = 0;
+            for (int i = 0; i < n; i++) {
+                dq += (double) q[i] * a[3 + i];
+                dqAbs += Math.abs((double) q[i] * a[3 + i]);
+                dd += (double) c[i] * d[i];
+                ddAbs += Math.abs((double) c[i] * d[i]);
+            }
+            float f8 = Kernels.dotF8(q, 0, a, 3, n), f84 = Kernels.dotF8x4(q, 0, a, 3, n), f8s = Kernels.dotF8Scalar(q, 0, a, 3, n);
+            float kd = Kernels.dot(c, 0, d, 0, n), kdS = Kernels.dotScalar(c, 0, d, 0, n);
+            double tolQ = 1e-4 * dqAbs + 1e-6, tolD = 1e-4 * ddAbs + 1e-6;
+            check(Math.abs(f8 - f8s) <= tolQ && Math.abs(f8 - dq) <= tolQ, "dotF8 against the scalar twin and the exact value" + m);
+            check(Math.abs(f84 - f8s) <= tolQ && Math.abs(f84 - dq) <= tolQ, "dotF8x4 against the scalar twin and the exact value" + m);
+            check(Math.abs(kd - kdS) <= tolD && Math.abs(kd - dd) <= tolD, "dot against the scalar twin and the exact value" + m);
+            float[] out = new float[16], outS = new float[16];
+            Kernels.block16(q, 0, blk, 5, n, out);
+            Kernels.block16Scalar(q, 0, blk, 5, n, outS);
+            for (int l = 0; l < 16; l++) {
+                double ex = 0, exAbs = 0;
+                for (int j = 0; j < n; j++) {
+                    ex += (double) q[j] * blk[5 + j * 16 + l];
+                    exAbs += Math.abs((double) q[j] * blk[5 + j * 16 + l]);
+                }
+                double tol = 1e-4 * exAbs + 1e-6;
+                check(Math.abs(out[l] - outS[l]) <= tol && Math.abs(out[l] - ex) <= tol, "block16 lane " + l + " against the scalar twin and the exact value" + m);
+            }
+            if (nat) {
+                check(Float.floatToIntBits(f8) == Float.floatToIntBits(NKernels.dotF8(q, 0, a, 3, n)), "dotF8 is not NKernels.dotF8" + m);
+                check(Float.floatToIntBits(f84) == Float.floatToIntBits(NKernels.dotF8x4(q, 0, a, 3, n)), "dotF8x4 is not NKernels.dotF8x4" + m);
+                check(Float.floatToIntBits(kd) == Float.floatToIntBits(NKernels.dot(c, 0, d, 0, n)), "dot is not NKernels.dot" + m);
+                float[] outN = new float[16];
+                NKernels.block16(q, 0, blk, 5, n, outN);
+                for (int l = 0; l < 16; l++) check(Float.floatToIntBits(out[l]) == Float.floatToIntBits(outN[l]), "block16 lane " + l + " is not NKernels.block16" + m);
+                check(Float.floatToIntBits(Kern.dotQ8(q, a, 3, n)) == Float.floatToIntBits(NKernels.dotF8(q, 0, a, 3, n)), "Kern.dotQ8 is not NKernels.dotF8" + m);
+            }
+        }
+        System.out.println("kernels agree with their scalar twins at " + dims.length + " lengths" + (nat ? ", and are the NKernels methods" : ""));
     }
 
     /**
@@ -272,15 +338,84 @@ public final class NativeSmoke {
                 + Kernels.VECTOR + ", sink " + sink);
     }
 
-    static void flat() {
-        for (Metric metric : Metric.values()) flatRun(metric, Quant.NONE, 1.0);
-        flatRun(Metric.COSINE, Quant.SQ8, MIN_RECALL);
+    /**
+     * Informational: one SPEED line each for dotI8, dotF8, dotF8x4 and block16 (per call on a block of 16 vectors) on 768 dimensions: median ns per
+     * call of the kernel in use and of its scalar twin, over {@code REPS} runs of {@code CALLS} calls (one run to warm up first). Never a bar.
+     */
+    static void speedQuant(String mode) {
+        final int dim = 768, pairs = 16, calls = 1_000_000, reps = 5;
+        Random r = new Random(6);
+        byte[][] ca = new byte[pairs][dim], cb = new byte[pairs][dim];
+        byte[][] blocks = new byte[pairs][dim * 16];
+        float[][] q = new float[pairs][dim];
+        for (int p = 0; p < pairs; p++) {
+            for (int j = 0; j < dim; j++) {
+                ca[p][j] = (byte) (r.nextInt(255) - 127);
+                cb[p][j] = (byte) (r.nextInt(255) - 127);
+                q[p][j] = r.nextFloat() * 2f - 1f;
+            }
+            for (int j = 0; j < blocks[p].length; j++) blocks[p][j] = (byte) (r.nextInt(255) - 127);
+        }
+        float[] out = new float[16];
+        double[][] t = new double[8][reps];
+        float sink = 0f;
+        for (int rep = -1; rep < reps; rep++) {
+            double[] ns = new double[8];
+            long t0 = System.nanoTime();
+            for (int c = 0; c < calls; c++) sink += Kernels.dotI8(ca[c % pairs], 0, cb[c % pairs], 0, dim);
+            ns[0] = (System.nanoTime() - t0) / (double) calls;
+            t0 = System.nanoTime();
+            for (int c = 0; c < calls; c++) sink += Kernels.dotI8Scalar(ca[c % pairs], 0, cb[c % pairs], 0, dim);
+            ns[1] = (System.nanoTime() - t0) / (double) calls;
+            t0 = System.nanoTime();
+            for (int c = 0; c < calls; c++) sink += Kernels.dotF8(q[c % pairs], 0, cb[c % pairs], 0, dim);
+            ns[2] = (System.nanoTime() - t0) / (double) calls;
+            t0 = System.nanoTime();
+            for (int c = 0; c < calls; c++) sink += Kernels.dotF8Scalar(q[c % pairs], 0, cb[c % pairs], 0, dim);
+            ns[3] = (System.nanoTime() - t0) / (double) calls;
+            t0 = System.nanoTime();
+            for (int c = 0; c < calls; c++) sink += Kernels.dotF8x4(q[c % pairs], 0, cb[c % pairs], 0, dim);
+            ns[4] = (System.nanoTime() - t0) / (double) calls;
+            t0 = System.nanoTime();
+            for (int c = 0; c < calls; c++) sink += Kernels.dotF8Scalar(q[c % pairs], 0, cb[c % pairs], 0, dim);
+            ns[5] = (System.nanoTime() - t0) / (double) calls;
+            t0 = System.nanoTime();
+            for (int c = 0; c < calls; c++) {
+                Kernels.block16(q[c % pairs], 0, blocks[c % pairs], 0, dim, out);
+                sink += out[c & 15];
+            }
+            ns[6] = (System.nanoTime() - t0) / (double) calls;
+            t0 = System.nanoTime();
+            for (int c = 0; c < calls; c++) {
+                Kernels.block16Scalar(q[c % pairs], 0, blocks[c % pairs], 0, dim, out);
+                sink += out[c & 15];
+            }
+            ns[7] = (System.nanoTime() - t0) / (double) calls;
+            if (rep >= 0) for (int i = 0; i < 8; i++) t[i][rep] = ns[i];
+        }
+        String[] names = {"dotI8", "dotF8", "dotF8x4", "block16"};
+        for (int k = 0; k < 4; k++) {
+            double[] kern = t[k * 2].clone(), scal = t[k * 2 + 1].clone();
+            Arrays.sort(kern);
+            Arrays.sort(scal);
+            double mk = kern[reps / 2], ms = scal[reps / 2];
+            System.out.println("SPEED (informational) mode " + mode + ", " + names[k] + " " + dim + " dims" + (k == 3 ? " (per call, a block of 16 vectors)" : "")
+                    + ", median of " + reps + " runs of " + calls + " calls: Kernels." + names[k] + " " + Math.round(mk * 10) / 10.0 + " ns, scalar twin "
+                    + Math.round(ms * 10) / 10.0 + " ns, scalar twin / Kernels." + names[k] + " " + Math.round(ms / mk * 100) / 100.0 + ", VECTOR " + Kernels.VECTOR
+                    + ", sink " + sink);
+        }
     }
 
-    static void flatRun(Metric metric, Quant quant, double minRecall) {
-        String label = "flat " + metric + " " + quant;
+    static void flat() {
+        for (Metric metric : Metric.values()) flatRun(metric, Quant.NONE, 1.0, Sq8Kernel.DEFAULT);
+        // every SQ8 kernel of the flat index: I8 (dotI8), F8 (dotF8), F8X4 (dotF8x4) and BLOCK (block16)
+        for (Sq8Kernel k : Sq8Kernel.values()) flatRun(Metric.COSINE, Quant.SQ8, MIN_RECALL, k);
+    }
+
+    static void flatRun(Metric metric, Quant quant, double minRecall, Sq8Kernel kernel) {
+        String label = "flat " + metric + " " + quant + (quant == Quant.SQ8 ? " " + kernel : "");
         Data d = new Data();
-        FlatIndex f = new FlatIndex(DIM, metric, quant);
+        FlatIndex f = new FlatIndex(DIM, metric, quant, 0, kernel);
         try {
             Searcher s = q -> f.search(q, K, null);
             for (int i = 0; i < N; i++) addRow(f, d, i);
@@ -462,7 +597,13 @@ public final class NativeSmoke {
         System.out.println("tiervec smoke program, mode " + mode + ", dim " + DIM + ", n " + N + ", k " + K + ", " + QUERIES + " queries, cpus " + Runtime.getRuntime().availableProcessors());
         System.out.println("covered: flat, ivf, graph, tier (seal, merge, delete, id reuse); not covered: segment files (checkpoint, open), rebuildFrom, threaded writers");
         phase("kernels", () -> kernels(mode));
-        phase("speed", () -> speed(mode));
+        phase("speed", () -> {
+            speed(mode);
+            speedQuant(mode);
+        });
+        phase("kernel agreement", () -> {
+            if (mode.endsWith("-vector")) kernelsAgree(mode);
+        });
         phase("flat", NativeSmoke::flat);
         phase("ivf", NativeSmoke::ivf);
         phase("graph", NativeSmoke::graph);

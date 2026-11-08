@@ -11,7 +11,8 @@ import java.util.concurrent.locks.LockSupport;
 
 /**
  * Rule G2: 8 writer threads plus 8 reader threads for DURATION seconds (default 60), with consolidate() running in a background thread
- * every few seconds. Pass criteria: zero exceptions; read-your-writes checks pass; deleted ids never returned by a search that started
+ * every few seconds. Pass criteria: zero exceptions; read-your-writes (exact membership of every probed id right after its insert) with zero
+ * misses, and the self-search recall check (see {@link Ryw}); deleted ids never returned by a search that started
  * after the delete returned; every writer finds its own last 100 inserts at the end; size() equals inserts minus deletes (no lost or
  * phantom vectors). Reports reader p50/p99/p999 with and without a consolidation running.
  * Bounded by time AND by op counts (at most 10000 inserts per writer, so at most 80000 vectors).
@@ -20,7 +21,8 @@ public final class GraphConcurrencyTest {
     static final int DIM = 128, WRITERS = 8, READERS = 8, MAX_PER_WRITER = 10000, LAT_CAP = 400_000;
     static final ConcurrentLinkedQueue<Throwable> errors = new ConcurrentLinkedQueue<>();
     static final ConcurrentHashMap<Long, Long> deletedAt = new ConcurrentHashMap<>();
-    static final AtomicLong inserts = new AtomicLong(), deletes = new AtomicLong(), rywChecks = new AtomicLong(), rywMiss = new AtomicLong(),
+    static final Ryw ryw = new Ryw();
+    static final AtomicLong inserts = new AtomicLong(), deletes = new AtomicLong(),
             phantoms = new AtomicLong(), queries = new AtomicLong(), orderViol = new AtomicLong(), dupViol = new AtomicLong(), filterViol = new AtomicLong();
     static volatile boolean stop;
     static volatile int phase; // 0 idle, 1 consolidating
@@ -50,9 +52,7 @@ public final class GraphConcurrencyTest {
                         idx.add(id, v); inserts.incrementAndGet();
                         lastIds[wi][seq % 100] = id; seq++; wInserted[wi] = seq;
                         if (seq % 20 == 0) {
-                            rywChecks.incrementAndGet();
-                            Hit[] h = idx.search(v, 10, null, 100); boolean f = false; for (Hit x : h) if (x.id() == id) f = true;
-                            if (!f) rywMiss.incrementAndGet();
+                            ryw.probe(idx, id, v);
                         }
                         if (seq % 5 == 0 && seq > 400) { // churn: delete an id older than the last 300
                             long victim = base + (seq - 300 - (seq / 5) % 50);
@@ -115,7 +115,10 @@ public final class GraphConcurrencyTest {
         for (String c : consolidations) System.out.println("  consolidate " + c);
         GraphT.check(errors.isEmpty(), "zero exceptions, got " + errors.size());
         for (Throwable e : errors) { System.out.println("  " + e); e.printStackTrace(System.out); }
-        GraphT.check(rywMiss.get() == 0, "read-your-writes: " + rywMiss.get() + " misses of " + rywChecks.get());
+        System.out.println(ryw.line());
+        GraphT.check(ryw.absent.get() == 0, "read-your-writes: id not present after insert (" + ryw.absent.get() + " of " + ryw.probes.get() + " probes)");
+        GraphT.check(ryw.selfMiss.get() <= Ryw.SELF_SEARCH_TOLERANCE, "self-search recall: " + ryw.selfMiss.get() + " misses of " + ryw.probes.get()
+                + " probes at ef " + ryw.ef(idx) + ", tolerance " + Ryw.SELF_SEARCH_TOLERANCE + " per run (see issue #38)");
         GraphT.check(phantoms.get() == 0, "deleted ids returned after delete: " + phantoms.get());
         GraphT.check(orderViol.get() == 0 && dupViol.get() == 0 && filterViol.get() == 0, "order/dup/filter violations " + orderViol + "/" + dupViol + "/" + filterViol);
         GraphT.check(idx.size() == inserts.get() - deletes.get(), "size " + idx.size() + " == inserts - deletes " + (inserts.get() - deletes.get()));
@@ -134,6 +137,43 @@ public final class GraphConcurrencyTest {
         }
         System.out.printf("RESULT checks=%d failures=%d%n", GraphT.checks, GraphT.failures);
         if (GraphT.exitOnFailure) System.exit(GraphT.failures == 0 ? 0 : 1);
+    }
+
+    /**
+     * The read-your-writes probe, in two parts with different strictness (issue #38).
+     * <p>
+     * Membership is exact and has no tolerance: right after add(id, v) returned, the index must hold the id. It is read through the
+     * index's id-to-ordinal map and the state of the node it points to ({@code GraphIndex.containsForTest}), not through a graph search, because the
+     * graph is approximate and a search can miss a vector that is in the index. A miss here is a bug every time.
+     * <p>
+     * Self-search is a recall check: search for the vector just inserted and look for its id in the top 10. The beam search at the default
+     * ef is approximate, and a query equal to an inserted vector is missed at a small rate that grows with the size of the index. Measured at
+     * the default ef on 100,000 to 200,000 vectors: 1.2e-4 to 4.0e-4 per probe (1,600,000 probes per mode, 188 to 636 misses); every miss was
+     * reachable and 1,254 of the 1,260 diagnosed ones were found at ef 1000. At the size of this program (below 67,000 vectors) 1 miss in 112 runs
+     * of 3,360 probes. The check therefore runs with ef raised to 10 times the default and allows at most {@link #SELF_SEARCH_TOLERANCE} miss per run.
+     * These are measurements of the default ef, not a guarantee of it.
+     */
+    static final class Ryw {
+        /** self-search runs at this multiple of the index's own efSearch */
+        static final int SELF_SEARCH_EF_FACTOR = 10;
+        /** most self-search misses a run may have (per run, 3,360 probes in the 60 s program) */
+        static final long SELF_SEARCH_TOLERANCE = 1;
+        final AtomicLong probes = new AtomicLong(), absent = new AtomicLong(), selfMiss = new AtomicLong();
+
+        int ef(GraphIndex idx) { return idx.params().efSearch() * SELF_SEARCH_EF_FACTOR; }
+
+        /** call right after idx.add(id, v) returned */
+        void probe(GraphIndex idx, long id, float[] v) {
+            probes.incrementAndGet();
+            if (!idx.containsForTest(id)) absent.incrementAndGet();
+            boolean f = false;
+            for (Hit x : idx.search(v, 10, null, ef(idx))) if (x.id() == id) f = true;
+            if (!f) selfMiss.incrementAndGet();
+        }
+
+        String line() {
+            return "RYW membership checks=" + probes.get() + " missing=" + absent.get() + " selfSearchMisses=" + selfMiss.get() + " of " + probes.get();
+        }
     }
 
     static void verify(GraphIndex idx, GraphT.Gen gen, long[][] lastIds, String label) {

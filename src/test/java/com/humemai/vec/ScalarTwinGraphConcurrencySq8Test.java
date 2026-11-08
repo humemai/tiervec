@@ -19,6 +19,6 @@ class ScalarTwinGraphConcurrencySq8Test {
     void fiveSecondsSq8() throws Exception {
         int c0 = GraphT.checks, f0 = GraphT.failures;
         GraphConcurrencyTest.main(new String[] {"5", "sq8"});
-        Checks.clean("GraphConcurrencyTest 5 s sq8 (scalar twin)", GraphT.checks - c0, GraphT.failures - f0, 11);
+        Checks.clean("GraphConcurrencyTest 5 s sq8 (scalar twin)", GraphT.checks - c0, GraphT.failures - f0, 12);
     }
 }

@@ -145,6 +145,8 @@ The manifest and the tombstone file carry their own `major.minor` under the same
 
 The rename is the only moment a generation becomes visible, and by then every byte it names was already flushed. Generation N is deleted only in step 8, after step 7, so an unfinished N+1 can exist only while N and all its files still exist. A manifest is never overwritten: publishing a generation that exists is an error.
 
+On Windows the directory flush of steps 3 and 7 does nothing, because Java cannot open a directory there (`FileChannel.open` is refused). File contents are still forced with `FileChannel.force`, so the bytes of every file are flushed before the rename. The directory entry (the new name, the rename) is not flushed by the library, so a power loss right after a rename can lose the rename on Windows. A process kill is covered on Windows as on Linux, because the claim above is about process kills only.
+
 ### What a crash leaves behind
 
 The table is for a process kill (the page cache survives). A crash after a step leaves:

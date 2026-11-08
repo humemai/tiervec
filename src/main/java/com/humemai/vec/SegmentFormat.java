@@ -162,8 +162,17 @@ public final class SegmentFormat {
         }
     }
 
-    /** flush a directory's entries to disk (new names, renames); Linux and macOS open a directory for reading, Windows does not */
+    /** true on Windows, decided once; the JDK cannot open a directory there, so a directory cannot be flushed from Java */
+    static final boolean WINDOWS = System.getProperty("os.name", "").startsWith("Windows");
+
+    /**
+     * flush a directory's entries to disk (new names, renames). Linux and macOS open a directory for reading and force it. On Windows
+     * {@code FileChannel.open} on a directory throws {@code AccessDeniedException} and no other way exists in the JDK, so this does nothing
+     * there: file contents are still forced by the callers with {@code FileChannel.force}, and the directory entry (the new name or the
+     * rename) is left to NTFS, so a power loss right after a rename can lose the rename. Every other failure on every platform is thrown.
+     */
     static void fsyncDir(Path dir) throws IOException {
+        if (WINDOWS) return;
         try (FileChannel ch = FileChannel.open(dir, StandardOpenOption.READ)) {
             ch.force(true);
         }

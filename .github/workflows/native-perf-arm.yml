@@ -1,0 +1,114 @@
+# Experiment round 3 (branch native-perf-experiment only, never merged): which Vector API species is fast on ARM64, in the JVM and in a native image.
+# Linux arm64 (ubuntu-24.04-arm) and macOS arm64 (macos-15), one job per toolchain and OS. Only ratios between arms inside ONE job are meaningful
+# (the runner CPU is printed in every job). Every native build is tolerant: a failed build prints BUILD-FAILED.
+name: Native Perf ARM
+
+on:
+  push:
+    branches:
+      - native-perf-experiment
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CLASSES: target/bench/classes
+  VEC: --add-modules jdk.incubator.vector
+  VAPI: -H:+VectorAPISupport
+  BT: --initialize-at-build-time=com.humemai.vec.VKernels,com.humemai.vec.VcA
+
+jobs:
+  jvm:
+    name: jvm 25 (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04-arm, macos-15]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
+        with:
+          distribution: temurin
+          java-version: "25"
+      - name: Prepare
+        run: .github/perf/prep-arm.sh
+      - name: JVM 25, all variants
+        run: |
+          "$JAVA_HOME/bin/java" -Xmx2g $VEC -cp "$CLASSES" com.humemai.vec.BenchA jvm25
+      - name: JVM 25, SVE off (Linux only, tolerant)
+        if: runner.os == 'Linux'
+        run: |
+          "$JAVA_HOME/bin/java" -Xmx2g -XX:UseSVE=0 $VEC -cp "$CLASSES" com.humemai.vec.BenchA jvm25nosve || echo "SVE-OFF-FAILED"
+
+  ce25:
+    name: graalvm ce 25.0.2 (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04-arm, macos-15]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: graalvm/setup-graalvm@f70bc8032f90a104502824a54bcb94b6f01715bc # v1.6.8
+        with:
+          distribution: graalvm-community
+          java-version: "25.0.2"
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Prepare
+        run: |
+          .github/perf/prep-arm.sh
+          native-image --version
+          native-image --expert-options-all 2>&1 | grep -i -E 'vector|march' | cut -c1-250 | sed 's/^/EXPERT /' || true
+          native-image -march=list 2>&1 | head -20 | sed 's/^/MARCHLIST /' || true
+      - name: A, Vector API in the image (build-time init; plus march native)
+        run: |
+          S=.github/perf/nba.sh
+          $S ce25 BenchA v1 $VEC $VAPI $BT
+          $S ce25 BenchA v2 $VEC $VAPI $BT -march=native
+      - name: B, scalar image (no module)
+        run: |
+          .github/perf/nba.sh ce25 BenchS s0
+
+  ora25:
+    name: oracle graalvm 25 (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04-arm, macos-15]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: graalvm/setup-graalvm@f70bc8032f90a104502824a54bcb94b6f01715bc # v1.6.8
+        with:
+          distribution: graalvm
+          java-version: "25"
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Prepare
+        run: |
+          .github/perf/prep-arm.sh
+          native-image --version
+          native-image --expert-options-all 2>&1 | grep -i -E 'vector|march' | cut -c1-250 | sed 's/^/EXPERT /' || true
+          native-image -march=list 2>&1 | head -20 | sed 's/^/MARCHLIST /' || true
+      - name: A, Vector API in the image (build-time init; plus march native)
+        run: |
+          S=.github/perf/nba.sh
+          $S ora25 BenchA v1 $VEC $VAPI $BT
+          $S ora25 BenchA v2 $VEC $VAPI $BT -march=native
+      - name: B, scalar image (no module)
+        run: |
+          .github/perf/nba.sh ora25 BenchS s0

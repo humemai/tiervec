@@ -12,6 +12,14 @@
 # The same smoke program also runs on Linux arm64 (job `native image smoke (arm64 Linux)`, runner ubuntu-24.04-arm, GraalVM Community 21.0.2 for
 # aarch64 through the same pinned setup-graalvm action) with the same build flags. Neither job is a required check.
 #
+# macOS arm64 (issue #46): the scalar image (job `native image smoke (macOS arm64)`, GraalVM Community 21.0.2) and the vector image (the matrix entry
+# `macOS arm64` of `native image smoke (vector, ...)`, GraalVM Community 25.0.2) run on macos-15 with the same commands as the Linux jobs. The macOS
+# runner has no `timeout` command, so a step puts GNU coreutils on the path first.
+#
+# Windows x64 (issue #46): the job `native image smoke (vector, Windows x64)` on windows-2025 is an experiment. It is not known whether the Vector API
+# image builds and runs on Windows, and the job has `continue-on-error: true`, so a failure is information and does not turn the run red. It is not
+# a required check.
+#
 # This job is not a required check. The GraalVM version is pinned (GraalVM Community 21.0.2, the last community release for JDK 21).
 name: Native Image Smoke
 
@@ -52,6 +60,8 @@ jobs:
             arch: x86-64 Linux
           - os: ubuntu-24.04-arm
             arch: arm64 Linux
+          - os: macos-15
+            arch: macOS arm64
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -61,6 +71,13 @@ jobs:
           distribution: graalvm-community
           java-version: "25.0.2"
           github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Provide timeout (macOS has no GNU timeout)
+        if: runner.os == 'macOS'
+        run: |
+          command -v timeout || {
+            brew install coreutils
+            echo "$(brew --prefix coreutils)/libexec/gnubin" >> "$GITHUB_PATH"
+          }
       - name: Toolchain
         run: |
           uname -m
@@ -171,3 +188,105 @@ jobs:
           timeout 600 target/smoke/tiervec-smoke native | tee target/smoke/native.log
           echo "native run: $(( $(date +%s) - start )) s"
           grep -q '^NATIVE-SMOKE OK (native)' target/smoke/native.log
+
+  smoke-macos:
+    name: native image smoke (macOS arm64)
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: graalvm/setup-graalvm@f70bc8032f90a104502824a54bcb94b6f01715bc # v1.6.8
+        with:
+          distribution: graalvm-community
+          java-version: "21.0.2"
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Provide timeout (macOS has no GNU timeout)
+        if: runner.os == 'macOS'
+        run: |
+          command -v timeout || {
+            brew install coreutils
+            echo "$(brew --prefix coreutils)/libexec/gnubin" >> "$GITHUB_PATH"
+          }
+      - name: Toolchain
+        run: |
+          uname -m
+          java -version
+          native-image --version
+          java --list-modules | grep incubator
+      - name: Compile the library and the smoke program
+        run: |
+          mkdir -p target/smoke/classes
+          find src/main/java src/smoke/java -name '*.java' > target/smoke/sources.txt
+          javac -d target/smoke/classes --add-modules jdk.incubator.vector @target/smoke/sources.txt
+      - name: Control run on the JVM without the Vector API module
+        run: timeout 600 java -Xmx1g -cp target/smoke/classes com.humemai.vec.NativeSmoke jvm
+      - name: Build the native image
+        run: |
+          start=$(date +%s)
+          native-image -cp target/smoke/classes --no-fallback -o target/smoke/tiervec-smoke com.humemai.vec.NativeSmoke
+          echo "native-image build: $(( $(date +%s) - start )) s"
+          ls -l target/smoke/tiervec-smoke
+      - name: Run the native image
+        run: |
+          start=$(date +%s)
+          timeout 600 target/smoke/tiervec-smoke native | tee target/smoke/native.log
+          echo "native run: $(( $(date +%s) - start )) s"
+          grep -q '^NATIVE-SMOKE OK (native)' target/smoke/native.log
+
+  # Experiment (issue #46): the Vector API image on Windows x64. It is not known whether this works. continue-on-error: true makes a failure
+  # information and not a red run; the job is not a required check. windows-2025 is a standard GitHub-hosted runner with Visual Studio, which
+  # native-image needs; setup-graalvm sets up the MSVC environment itself on Windows. Steps run in bash (Git for Windows). There is no `timeout`
+  # command that is safe to call there (Windows has its own timeout.exe), so the steps use `timeout-minutes`. The class path separator on
+  # Windows is `;`, the files of the build come from `git ls-files` (the Windows `find` is another program), and the image is `*.exe`.
+  smoke-windows-vector:
+    name: native image smoke (vector, Windows x64)
+    runs-on: windows-2025
+    continue-on-error: true
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: graalvm/setup-graalvm@f70bc8032f90a104502824a54bcb94b6f01715bc # v1.6.8
+        with:
+          distribution: graalvm-community
+          java-version: "25.0.2"
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Toolchain
+        run: |
+          uname -m
+          java -version
+          native-image --version
+          java --list-modules | grep incubator
+      - name: Compile the library and the smoke program
+        run: |
+          mkdir -p target/smoke/classes
+          git ls-files 'src/main/java/*.java' 'src/smoke/java/*.java' > target/smoke/sources.txt
+          wc -l target/smoke/sources.txt
+          javac -d target/smoke/classes --add-modules jdk.incubator.vector @target/smoke/sources.txt
+      - name: Control run on the JVM with the Vector API module
+        timeout-minutes: 10
+        run: |
+          java -Xmx1g --add-modules jdk.incubator.vector -cp target/smoke/classes com.humemai.vec.NativeSmoke jvm-vector | tee target/smoke/jvm-vector.log
+          grep -q '^NATIVE-SMOKE OK (jvm-vector)' target/smoke/jvm-vector.log
+      - name: Build the native image with the Vector API
+        run: |
+          start=$(date +%s)
+          native-image -cp "target/smoke/classes;src/main/resources" --no-fallback --add-modules jdk.incubator.vector -H:+VectorAPISupport -o target/smoke/tiervec-smoke-vector com.humemai.vec.NativeSmoke
+          echo "native-image build: $(( $(date +%s) - start )) s"
+          ls -l target/smoke/tiervec-smoke-vector.exe
+      - name: Run the native image with the Vector API
+        timeout-minutes: 10
+        run: |
+          start=$(date +%s)
+          target/smoke/tiervec-smoke-vector.exe native-vector | tee target/smoke/native-vector.log
+          echo "native run: $(( $(date +%s) - start )) s"
+          grep -q '^NATIVE-SMOKE OK (native-vector)' target/smoke/native-vector.log
+      - name: Speed lines (informational)
+        if: always()
+        run: grep -h '^SPEED' target/smoke/jvm-vector.log target/smoke/native-vector.log || true

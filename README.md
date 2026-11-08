@@ -43,6 +43,7 @@ The library runs in a GraalVM native image. The CI job `native image smoke` buil
 - JDK 21 or newer. CI builds and tests with Temurin 21 and 25 on x86-64 Linux, and runs the fast tests on arm64 Linux (JDK 21 and 25) and arm64 macOS (JDK 21).
 - Maven 3.9 or newer.
 - The Vector API is an incubator module in these JDKs. Compile with `--add-modules jdk.incubator.vector`, and run with it to get the Vector API kernels; the `pom.xml` sets it for the compiler and for the test JVMs. At run time the module is optional: every kernel (flat, IVF, and graph) falls back to its scalar twin when the module is missing, or when `-Dhumemai.vec.scalar=true` is set.
+- On a JVM with the Vector API, x86-64 vectorizes the fp32 `dot` and `l2sq`, the int8 dot, the SQ8 dots, and `block16`. On aarch64 (NEON, 128-bit float lanes) the fp32 `dot` and `l2sq` use the JVM kernels and the int8 dot, the SQ8 dots, and `block16` use the 128-bit forms of `NKernels`. `hamming` is scalar everywhere. A JVM with 128-bit lanes that is not aarch64 runs those four as scalar code. AVX-512 and SVE are not used ([#52](https://github.com/humemai/tiervec/issues/52)).
 - Nothing else at run time. JUnit 5 is a test dependency.
 
 ## Documentation

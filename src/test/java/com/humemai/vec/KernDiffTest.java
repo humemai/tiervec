@@ -13,6 +13,7 @@ import java.util.Random;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.stream.IntStream;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
@@ -21,6 +22,8 @@ import org.junit.jupiter.api.Test;
  * {@link Kernels#l2sqScalar}, {@link Kernels#dotF8Scalar}), for dot, squared L2 and the SQ8 dot (a float query against signed int8 codes).
  * Dimensions include 0, 1, every size around the lane width (so the masked-free tails of both versions run) and sizes that are not a
  * multiple of it. Runs in the default surefire execution, where the Vector API kernels are active.
+ *
+ * The routing of the int8, SQ8 and block kernels on a JVM with 128-bit float lanes (aarch64) is tested in {@link JvmQuantRoutingTest}.
  *
  * The kernels of a native image ({@link NKernels}: fp32 dot and squared L2, int8 dot, the SQ8 dots, block16) are tested here on the JVM against the same
  * scalar twins: every form of each kernel (the one {@link NKernels#WIDE} selects and both explicit forms, so the 128-bit forms of aarch64 run on an x86
@@ -428,8 +431,10 @@ class KernDiffTest {
 
     @Test
     void inAJvmTheQuantKernelsDoNotUseNKernels() {
-        // on a JVM Kernels uses VKernels for the int8, SQ8 and block kernels (the JVM path is unchanged), bit for bit
+        // on a JVM with 8 or more float lanes Kernels uses VKernels for the int8, SQ8 and block kernels (the JVM path is unchanged), bit for bit;
+        // with fewer lanes (NEON on aarch64) it uses the 128-bit forms of NKernels or the scalar twins, see JvmQuantRoutingTest
         assertTrue(!Kernels.IN_IMAGE && Kernels.JVM_VECTOR && !Kernels.NATIVE_VECTOR, "this test runs on a JVM with the Vector API");
+        Assumptions.assumeTrue(Kernels.JVM_QUANT_VK, "the 128-bit float lanes of this host route these kernels away from VKernels (JvmQuantRoutingTest)");
         Random r = new Random(36);
         int n = 770;
         float[] q = rnd(r, n);

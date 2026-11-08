@@ -19,10 +19,12 @@ import java.util.Set;
  * fixed at image build time and has the lanes of the architecture, that {@code Kernels.JVM_VECTOR} is false and {@code Kernels.NATIVE_VECTOR} is true, and that
  * every kernel except hamming (fp32 dot and L2, int8 dot, the SQ8 dots, block16) returns the bits of its {@code NKernels} method and agrees with its scalar twin.</li>
  * <li>{@code jvm}: the control run on a JVM without the module (the same checks as {@code native} except for the kernel reason).</li>
- * <li>{@code jvm-vector}: the control run on a JVM with the module (the Vector API kernels of the JVM, no image).</li>
+ * <li>{@code jvm-vector}: the control run on a JVM with the module (the Vector API kernels of the JVM, no image). On aarch64 it also checks that the int8, SQ8 and block
+ * kernels are the 128-bit forms of {@code NKernels} (issue #52), and it is the only mode with a speed bar: {@code dotI8} must not take more than 10 times the time of its scalar twin.</li>
  * </ul>
  * Every mode then prints informational {@code SPEED} lines with the median time of 1,000,000 calls of {@code Kernels.dot} on 768 dimensions and of the scalar
- * twin, and the same for {@code dotI8}, {@code dotF8}, {@code dotF8x4} and {@code block16} (per call on a block of 16 vectors); a line is never a pass or fail bar.
+ * twin, and the same for {@code dotI8}, {@code dotF8}, {@code dotF8x4} and {@code block16} (per call on a block of 16 vectors); a line is informational, and the one bar is the loose
+ * one of {@code jvm-vector} on aarch64 for {@code dotI8} (10 times; the regression of issue #52 was 138 times).
  * Then the program builds a flat index (all three metrics, fp32, and SQ8 with each of the four SQ8 kernels), an IVF index (fp32 and SQ8), a graph index (fp32 and SQ8)
  * and a tier (fp32 and SQ8: add, background seal, tail, delete, seal, replace ids, merge, delete after the merge), and after every step
  * it compares the answers with an exact scan over a model of the live rows.
@@ -194,11 +196,17 @@ public final class NativeSmoke {
 
     // ---- phases ----
 
+    static boolean isArm() {
+        String arch = System.getProperty("os.arch", "");
+        return arch.equals("aarch64") || arch.equals("arm64");
+    }
+
     static void kernels(String mode) {
         boolean nat = mode.startsWith("native");
         boolean vec = mode.endsWith("-vector");
         String image = System.getProperty("org.graalvm.nativeimage.imagecode");
         System.out.println("imagecode=" + image + ", Kernels.VECTOR=" + Kernels.VECTOR + ", Kernels.JVM_VECTOR=" + Kernels.JVM_VECTOR + ", scalarReason=" + Kernels.scalarReason + ", os.arch=" + System.getProperty("os.arch"));
+        if (!nat && vec) System.out.println("JVM int8, SQ8 and block kernels: JVM_QUANT_VK=" + Kernels.JVM_QUANT_VK + ", JVM_NARROW=" + Kernels.JVM_NARROW + ", JVM_QUANT_SCALAR=" + Kernels.JVM_QUANT_SCALAR + ", quantReason=" + Kernels.quantReason);
         if (nat) check("runtime".equals(image), "the program is not running as a native image (imagecode " + image + ")");
         else check(image == null, "the control run is inside a native image");
         if (!vec) {
@@ -236,6 +244,8 @@ public final class NativeSmoke {
         } else {
             check(Kernels.JVM_VECTOR, "Kernels.JVM_VECTOR is false on a JVM with the module");
             check(!Kernels.NATIVE_VECTOR, "Kernels.NATIVE_VECTOR is true on a JVM");
+            // issue #52: on an aarch64 JVM the int8, SQ8 and block kernels must not be the 256-bit forms of VKernels (unless the JVM has 8 or more float lanes, as with SVE) nor the scalar twins
+            if (isArm()) check(Kernels.JVM_NARROW || Kernels.JVM_QUANT_VK, "on aarch64 the int8, SQ8 and block kernels are neither the narrow forms nor VKernels with wide lanes, quantReason " + Kernels.quantReason);
         }
     }
 
@@ -246,6 +256,7 @@ public final class NativeSmoke {
      */
     static void kernelsAgree(String mode) {
         boolean nat = mode.equals("native-vector");
+        boolean narrow = mode.equals("jvm-vector") && Kernels.JVM_NARROW;
         Random r = new Random(31);
         int[] dims = {1, 7, 8, 9, 15, 16, 17, 31, 32, 33, 100, 128, 768, 770};
         for (int n : dims) {
@@ -263,6 +274,7 @@ public final class NativeSmoke {
             for (int i = 0; i < blk.length; i++) blk[i] = (byte) (r.nextInt(255) - 127);
             check(Kernels.dotI8(a, 3, b, 5, n) == Kernels.dotI8Scalar(a, 3, b, 5, n), "dotI8 against the scalar twin" + m);
             if (nat) check(Kernels.dotI8(a, 3, b, 5, n) == NKernels.dotI8(a, 3, b, 5, n), "dotI8 is not NKernels.dotI8" + m);
+            if (narrow) check(Kernels.dotI8(a, 3, b, 5, n) == NKernels.dotI8N(a, 3, b, 5, n), "dotI8 is not NKernels.dotI8N" + m);
             double dq = 0, dqAbs = 0, dd = 0, ddAbs = 0;
             for (int i = 0; i < n; i++) {
                 dq += (double) q[i] * a[3 + i];
@@ -288,6 +300,14 @@ public final class NativeSmoke {
                 double tol = 1e-4 * exAbs + 1e-6;
                 check(Math.abs(out[l] - outS[l]) <= tol && Math.abs(out[l] - ex) <= tol, "block16 lane " + l + " against the scalar twin and the exact value" + m);
             }
+            if (narrow) {
+                check(Float.floatToIntBits(f8) == Float.floatToIntBits(NKernels.dotF8N(q, 0, a, 3, n)), "dotF8 is not NKernels.dotF8N" + m);
+                check(Float.floatToIntBits(f84) == Float.floatToIntBits(NKernels.dotF8x4N(q, 0, a, 3, n)), "dotF8x4 is not NKernels.dotF8x4N" + m);
+                float[] outN = new float[16];
+                NKernels.block16N(q, 0, blk, 5, n, outN);
+                for (int l = 0; l < 16; l++) check(Float.floatToIntBits(out[l]) == Float.floatToIntBits(outN[l]), "block16 lane " + l + " is not NKernels.block16N" + m);
+                check(Float.floatToIntBits(Kern.dotQ8(q, a, 3, n)) == Float.floatToIntBits(NKernels.dotF8N(q, 0, a, 3, n)), "Kern.dotQ8 is not NKernels.dotF8N" + m);
+            }
             if (nat) {
                 check(Float.floatToIntBits(f8) == Float.floatToIntBits(NKernels.dotF8(q, 0, a, 3, n)), "dotF8 is not NKernels.dotF8" + m);
                 check(Float.floatToIntBits(f84) == Float.floatToIntBits(NKernels.dotF8x4(q, 0, a, 3, n)), "dotF8x4 is not NKernels.dotF8x4" + m);
@@ -298,7 +318,7 @@ public final class NativeSmoke {
                 check(Float.floatToIntBits(Kern.dotQ8(q, a, 3, n)) == Float.floatToIntBits(NKernels.dotF8(q, 0, a, 3, n)), "Kern.dotQ8 is not NKernels.dotF8" + m);
             }
         }
-        System.out.println("kernels agree with their scalar twins at " + dims.length + " lengths" + (nat ? ", and are the NKernels methods" : ""));
+        System.out.println("kernels agree with their scalar twins at " + dims.length + " lengths" + (nat ? ", and are the NKernels methods" : narrow ? ", and the int8, SQ8 and block kernels are the narrow NKernels methods" : ""));
     }
 
     /**
@@ -403,6 +423,8 @@ public final class NativeSmoke {
                     + ", median of " + reps + " runs of " + calls + " calls: Kernels." + names[k] + " " + Math.round(mk * 10) / 10.0 + " ns, scalar twin "
                     + Math.round(ms * 10) / 10.0 + " ns, scalar twin / Kernels." + names[k] + " " + Math.round(ms / mk * 100) / 100.0 + ", VECTOR " + Kernels.VECTOR
                     + ", sink " + sink);
+            // the one bar (issue #52), a loose one so that the 138 times of the 256-bit form on NEON fails and a noisy VM does not: dotI8 on an aarch64 JVM, at most 10 times the scalar twin
+            if (k == 0 && mode.equals("jvm-vector") && isArm()) check(mk <= 10 * ms, "dotI8 on an aarch64 JVM takes " + Math.round(mk * 10) / 10.0 + " ns, more than 10 times the " + Math.round(ms * 10) / 10.0 + " ns of the scalar twin");
         }
     }
 

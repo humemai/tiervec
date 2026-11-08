@@ -1,3 +1,5 @@
+# Round 5: the byte kernels of VKernels (dotI8, dotF8, dotF8x4, block16, all use convertShape) in the image. Same reduction as round 4: only the v1 arm
+# (Vector API, build-time init) on CE 25.0.2 and Oracle 25, plus the JVM job as baseline. BenchV now runs the Vc8 variants cur, tx, cv and the Sb scalar loops.
 # Round 4 reduction: only the v1 arm (Vector API, build-time init) on CE 25.0.2 and Oracle 25 (plus the JVM job); the flag arms, scalar images and
 # the 25.5 job of round 2 are dropped to save runner minutes. BenchV now carries the L/A/M variants and dimensions 100 and 770.
 # Experiment round 2 (branch native-perf-experiment only, never merged): why is the native image with the Vector API slow, and which
@@ -22,7 +24,7 @@ env:
   CLASSES: target/bench/classes
   VEC: --add-modules jdk.incubator.vector
   VAPI: -H:+VectorAPISupport
-  BT: --initialize-at-build-time=com.humemai.vec.VKernels,com.humemai.vec.Vc
+  BT: --initialize-at-build-time=com.humemai.vec.Vc8
 
 jobs:
   jvm:
@@ -61,7 +63,7 @@ jobs:
           .github/perf/prep.sh
           native-image --version
           native-image --expert-options-all 2>&1 | grep -i -E 'vector' | cut -c1-250 | sed 's/^/EXPERT /' || true
-      - name: A, Vector API in the image (build-time init), round 4 variants
+      - name: A, Vector API in the image (build-time init), round 5 byte kernels
         run: .github/perf/nb.sh ce25 BenchV v1 $VEC $VAPI $BT
 
   ora25:
@@ -82,5 +84,5 @@ jobs:
           .github/perf/prep.sh
           native-image --version
           native-image --expert-options-all 2>&1 | grep -i -E 'vector' | cut -c1-250 | sed 's/^/EXPERT /' || true
-      - name: A, Vector API in the image (build-time init), round 4 variants
+      - name: A, Vector API in the image (build-time init), round 5 byte kernels
         run: .github/perf/nb.sh ora25 BenchV v1 $VEC $VAPI $BT

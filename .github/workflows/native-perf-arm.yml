@@ -1,3 +1,6 @@
+# Round 5: the byte kernels of VKernels (dotI8, dotF8, dotF8x4, block16, all use convertShape) in the image, 128-bit float species. Same reduction as round 4: only
+# the v1 arm (Vector API, build-time init) per toolchain and OS, plus the JVM job as baseline; the JVM SVE-off step is dropped (the species are fixed at 128 bits).
+# BenchA now runs the Vc8A variants cur, tx, cv and the Sb scalar loops.
 # Round 4 reduction: only the v1 arm (Vector API, build-time init) per toolchain and OS; the march native arm and the scalar image are dropped to
 # save runner minutes. BenchA now carries the L/A/M variants and dimensions 100 and 770.
 # Experiment round 3 (branch native-perf-experiment only, never merged): which Vector API species is fast on ARM64, in the JVM and in a native image.
@@ -22,7 +25,7 @@ env:
   CLASSES: target/bench/classes
   VEC: --add-modules jdk.incubator.vector
   VAPI: -H:+VectorAPISupport
-  BT: --initialize-at-build-time=com.humemai.vec.VKernels,com.humemai.vec.VcA
+  BT: --initialize-at-build-time=com.humemai.vec.Vc8A
 
 jobs:
   jvm:
@@ -46,10 +49,6 @@ jobs:
       - name: JVM 25, all variants
         run: |
           "$JAVA_HOME/bin/java" -Xmx2g $VEC -cp "$CLASSES" com.humemai.vec.BenchA jvm25
-      - name: JVM 25, SVE off (Linux only, tolerant)
-        if: runner.os == 'Linux'
-        run: |
-          "$JAVA_HOME/bin/java" -Xmx2g -XX:UseSVE=0 $VEC -cp "$CLASSES" com.humemai.vec.BenchA jvm25nosve || echo "SVE-OFF-FAILED"
 
   ce25:
     name: graalvm ce 25.0.2 (${{ matrix.os }})
@@ -74,7 +73,7 @@ jobs:
           native-image --version
           native-image --expert-options-all 2>&1 | grep -i -E 'vector|march' | cut -c1-250 | sed 's/^/EXPERT /' || true
           native-image -march=list 2>&1 | head -20 | sed 's/^/MARCHLIST /' || true
-      - name: A, Vector API in the image (build-time init), round 4 variants
+      - name: A, Vector API in the image (build-time init), round 5 byte kernels
         run: .github/perf/nba.sh ce25 BenchA v1 $VEC $VAPI $BT
 
   ora25:
@@ -100,5 +99,5 @@ jobs:
           native-image --version
           native-image --expert-options-all 2>&1 | grep -i -E 'vector|march' | cut -c1-250 | sed 's/^/EXPERT /' || true
           native-image -march=list 2>&1 | head -20 | sed 's/^/MARCHLIST /' || true
-      - name: A, Vector API in the image (build-time init), round 4 variants
+      - name: A, Vector API in the image (build-time init), round 5 byte kernels
         run: .github/perf/nba.sh ora25 BenchA v1 $VEC $VAPI $BT

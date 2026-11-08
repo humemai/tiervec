@@ -2,10 +2,15 @@ package com.humemai.vec;
 
 /**
  * Distance kernels: a run-time choice between the Java Vector API ({@link VKernels}, and {@link VKern} for the graph kernels in {@link Kern})
- * and a scalar twin of every kernel. The scalar twins are used when -Dhumemai.vec.scalar=true, inside a GraalVM native image (the engine forces scalar code there), or when the
+ * and a scalar twin of every kernel. The scalar twins are used when -Dhumemai.vec.scalar=true or when the
  * jdk.incubator.vector module is absent. All take (array, offset) pairs so a scan reads straight out of a chunk array without copying.
  * Any length n is fine. A float kernel result depends only on n and the mode, never on offsets, so two calls on equal data are bitwise
  * equal within one mode; the scalar and the vector mode can differ by rounding (the int8 kernel is exact in both).
+ *
+ * <p>Inside a GraalVM native image ({@link #IN_IMAGE}) the Vector API kernels of {@link VKernels} are far slower than scalar code (a masked tail
+ * and a slice-based sum send the kernel through a slow path), so an image uses {@link NKernels} for the fp32 dot and squared L2 when the module
+ * is present, and the scalar twins otherwise. The SQ8, int8, block16 and hamming kernels stay scalar in an image: they use convertShape, and no
+ * measurement of them in an image exists yet (see {@link #JVM_VECTOR}). A result in an image can differ from a result on a JVM by rounding.
  */
 final class Kernels {
     private Kernels() {}
@@ -13,8 +18,20 @@ final class Kernels {
     /** why the scalar twins are in use, or null (set before VECTOR; no initializer on purpose) */
     static String scalarReason;
 
-    /** true when the Vector API kernels are used */
+    /** true inside a GraalVM native image (the property org.graalvm.nativeimage.imagecode is set, as it is by the image builder and by a running image) */
+    static final boolean IN_IMAGE = System.getProperty("org.graalvm.nativeimage.imagecode") != null;
+
+    /**
+     * true when the Vector API kernels are used: on a JVM all of them, in a native image only the fp32 dot and squared L2 of {@link NKernels}.
+     * (initialized after {@link #IN_IMAGE}, and before everything that reads it)
+     */
     static final boolean VECTOR = decide();
+
+    /**
+     * true when the full set of Vector API kernels ({@link VKernels}, {@link VKern}) is in use: {@link #VECTOR} on a JVM, never in a native image.
+     * The kernels that convert byte lanes (SQ8, int8, block16) are guarded by this flag, not by {@link #VECTOR}.
+     */
+    static final boolean JVM_VECTOR = VECTOR && !IN_IMAGE;
 
     /**
      * The Vector API holder classes are initialized HERE, inside a try: if one of them cannot load or initialize (module missing,
@@ -26,9 +43,16 @@ final class Kernels {
             scalarReason = "forced by -Dhumemai.vec.scalar=true";
             return false;
         }
-        if (System.getProperty("org.graalvm.nativeimage.imagecode") != null) {
-            scalarReason = "native image";
-            return false;
+        if (IN_IMAGE) {
+            // NKernels is initialized at image build time (native-image.properties); if the module was missing there, its species is null
+            try {
+                Class.forName("com.humemai.vec.NKernels", true, Kernels.class.getClassLoader());
+                if (NKernels.S == null) throw new IllegalStateException("no species: " + NKernels.ERROR);
+                return true;
+            } catch (Throwable t) {
+                scalarReason = "native image without the Vector API: " + t;
+                return false;
+            }
         }
         try {
             Class.forName("com.humemai.vec.VKernels", true, Kernels.class.getClassLoader());
@@ -41,32 +65,34 @@ final class Kernels {
     }
 
     static float dot(float[] a, int ao, float[] b, int bo, int n) {
-        return VECTOR ? VKernels.dot(a, ao, b, bo, n) : dotScalar(a, ao, b, bo, n);
+        if (!VECTOR) return dotScalar(a, ao, b, bo, n);
+        return IN_IMAGE ? NKernels.dot(a, ao, b, bo, n) : VKernels.dot(a, ao, b, bo, n);
     }
 
     /** squared Euclidean distance */
     static float l2sq(float[] a, int ao, float[] b, int bo, int n) {
-        return VECTOR ? VKernels.l2sq(a, ao, b, bo, n) : l2sqScalar(a, ao, b, bo, n);
+        if (!VECTOR) return l2sqScalar(a, ao, b, bo, n);
+        return IN_IMAGE ? NKernels.l2sq(a, ao, b, bo, n) : VKernels.l2sq(a, ao, b, bo, n);
     }
 
     /** int8 dot with an int32 accumulator; codes must be in [-127, 127] */
     static int dotI8(byte[] a, int ao, byte[] b, int bo, int n) {
-        return VECTOR ? VKernels.dotI8(a, ao, b, bo, n) : dotI8Scalar(a, ao, b, bo, n);
+        return JVM_VECTOR ? VKernels.dotI8(a, ao, b, bo, n) : dotI8Scalar(a, ao, b, bo, n);
     }
 
     /** float query against int8 codes, one accumulator */
     static float dotF8(float[] q, int qo, byte[] c, int co, int n) {
-        return VECTOR && VKernels.F8_OK ? VKernels.dotF8(q, qo, c, co, n) : dotF8Scalar(q, qo, c, co, n);
+        return JVM_VECTOR && VKernels.F8_OK ? VKernels.dotF8(q, qo, c, co, n) : dotF8Scalar(q, qo, c, co, n);
     }
 
     /** float query against int8 codes, four accumulators */
     static float dotF8x4(float[] q, int qo, byte[] c, int co, int n) {
-        return VECTOR && VKernels.F8_OK ? VKernels.dotF8x4(q, qo, c, co, n) : dotF8Scalar(q, qo, c, co, n);
+        return JVM_VECTOR && VKernels.F8_OK ? VKernels.dotF8x4(q, qo, c, co, n) : dotF8Scalar(q, qo, c, co, n);
     }
 
     /** 16 dot products at once over a dimension-major block (element (j, lane) at base + j*16 + lane); out receives 16 sums */
     static void block16(float[] q, int qo, byte[] c, int base, int n, float[] out) {
-        if (VECTOR && VKernels.BLOCK_OK) VKernels.block16(q, qo, c, base, n, out);
+        if (JVM_VECTOR && VKernels.BLOCK_OK) VKernels.block16(q, qo, c, base, n, out);
         else block16Scalar(q, qo, c, base, n, out);
     }
 

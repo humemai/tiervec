@@ -1,7 +1,10 @@
 # Native-image smoke test (issue #15): builds a GraalVM native image of the library plus a small program (src/smoke/java/.../NativeSmoke.java)
 # and runs it. The program builds a flat index, an IVF index, a graph index and a tier, adds, seals, merges and deletes, and compares every
-# answer with an exact scan; a mismatch, a failed check, or a failed image build fails the job. The image runs without the Vector API: the
-# program fails when the scalar kernels are not the ones in use or when a class of jdk.incubator.vector is present.
+# answer with an exact scan; a mismatch, a failed check, or a failed image build fails the job. The scalar image (job `native image smoke`) runs
+# without the Vector API: the program fails when the scalar kernels are not the ones in use or when a class of jdk.incubator.vector is present.
+# The vector image (jobs `native image smoke (vector, ...)`, issue #44) is built with the module and runs the fp32 dot and L2 of NKernels: the
+# program fails when Kernels.VECTOR is false in the image, when NKernels was not initialized at image build time, or when the lanes are not the
+# ones of the architecture; then the same index checks and recall bars run. Both variants print one informational speed line.
 #
 # Trigger choice: pull requests and pushes to main that touch src/main, src/smoke or this file (a nightly schedule is not needed).
 # Run time, read from the first green run (run 42411834063): the whole job took 58 s, of which the image build took 37 s and the image run 2 s.
@@ -35,6 +38,63 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # The vector image needs GraalVM 25 (the Vector API support of the image builder, -H:+VectorAPISupport, is measured on Oracle GraalVM 25 and
+  # GraalVM Community 25.0.2). The jobs are not required checks; their names differ from the required `native image smoke`.
+  smoke-vector:
+    name: native image smoke (vector, ${{ matrix.arch }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            arch: x86-64 Linux
+          - os: ubuntu-24.04-arm
+            arch: arm64 Linux
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: graalvm/setup-graalvm@f70bc8032f90a104502824a54bcb94b6f01715bc # v1.6.8
+        with:
+          distribution: graalvm-community
+          java-version: "25.0.2"
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Toolchain
+        run: |
+          uname -m
+          java -version
+          native-image --version
+          java --list-modules | grep incubator
+      - name: Compile the library and the smoke program
+        run: |
+          mkdir -p target/smoke/classes
+          find src/main/java src/smoke/java -name '*.java' > target/smoke/sources.txt
+          javac -d target/smoke/classes --add-modules jdk.incubator.vector @target/smoke/sources.txt
+      - name: Control run on the JVM with the Vector API module
+        run: |
+          timeout 600 java -Xmx1g --add-modules jdk.incubator.vector -cp target/smoke/classes com.humemai.vec.NativeSmoke jvm-vector | tee target/smoke/jvm-vector.log
+          grep -q '^NATIVE-SMOKE OK (jvm-vector)' target/smoke/jvm-vector.log
+      # src/main/resources is on the class path so that the builder reads META-INF/native-image/com.humemai/tiervec/native-image.properties
+      # (--initialize-at-build-time=com.humemai.vec.NKernels), as it does for an application that has the jar. The two options below are the
+      # ones the properties file does not set.
+      - name: Build the native image with the Vector API
+        run: |
+          start=$(date +%s)
+          native-image -cp target/smoke/classes:src/main/resources --no-fallback --add-modules jdk.incubator.vector -H:+VectorAPISupport -o target/smoke/tiervec-smoke-vector com.humemai.vec.NativeSmoke
+          echo "native-image build: $(( $(date +%s) - start )) s"
+          ls -l target/smoke/tiervec-smoke-vector
+      - name: Run the native image with the Vector API
+        run: |
+          start=$(date +%s)
+          timeout 600 target/smoke/tiervec-smoke-vector native-vector | tee target/smoke/native-vector.log
+          echo "native run: $(( $(date +%s) - start )) s"
+          grep -q '^NATIVE-SMOKE OK (native-vector)' target/smoke/native-vector.log
+      - name: Speed lines (informational)
+        if: always()
+        run: grep -h '^SPEED' target/smoke/jvm-vector.log target/smoke/native-vector.log || true
+
   smoke:
     name: native image smoke
     runs-on: ubuntu-latest

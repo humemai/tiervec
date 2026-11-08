@@ -10,9 +10,19 @@ import java.util.Set;
  * lives in the package of the library because it reads the kernel switch ({@code Kernels.VECTOR} and {@code Kernels.scalarReason}), which
  * is package-private. Maven does not compile it: the workflow compiles it with the library sources and builds the image from the classes.
  *
- * <p>Argument: {@code native} (the program runs as a native image) or {@code jvm} (the control run on a JVM without the incubator module,
- * the same checks except for the kernel reason). The program checks that the scalar kernels are in use and that no class of the Vector API
- * is present. Then it builds a flat index (all three metrics, fp32 and SQ8), an IVF index (fp32 and SQ8), a graph index (fp32 and SQ8)
+ * <p>Argument, the mode (two image variants and two control runs on a JVM):
+ * <ul>
+ * <li>{@code native}: the scalar image, built without the module jdk.incubator.vector. The program checks that the scalar kernels are in use
+ * and that no class of the Vector API is present.</li>
+ * <li>{@code native-vector}: the vector image, built with {@code --add-modules jdk.incubator.vector -H:+VectorAPISupport} and the properties file
+ * of the jar on the class path. The program checks that {@code Kernels.VECTOR} is true in the image, that the species of {@code NKernels} was
+ * fixed at image build time and has the lanes of the architecture, and that {@code Kernels.JVM_VECTOR} is false (the SQ8, int8 and block
+ * kernels stay scalar in an image).</li>
+ * <li>{@code jvm}: the control run on a JVM without the module (the same checks as {@code native} except for the kernel reason).</li>
+ * <li>{@code jvm-vector}: the control run on a JVM with the module (the Vector API kernels of the JVM, no image).</li>
+ * </ul>
+ * Every mode then prints one informational line with the median time of 1,000,000 calls of {@code Kernels.dot} on 768 dimensions and of the scalar
+ * twin; the line is never a pass or fail bar. Then the program builds a flat index (all three metrics, fp32 and SQ8), an IVF index (fp32 and SQ8), a graph index (fp32 and SQ8)
  * and a tier (fp32 and SQ8: add, background seal, tail, delete, seal, replace ids, merge, delete after the merge), and after every step
  * it compares the answers with an exact scan over a model of the live rows.
  *
@@ -184,23 +194,82 @@ public final class NativeSmoke {
     // ---- phases ----
 
     static void kernels(String mode) {
-        boolean nat = mode.equals("native");
+        boolean nat = mode.startsWith("native");
+        boolean vec = mode.endsWith("-vector");
         String image = System.getProperty("org.graalvm.nativeimage.imagecode");
-        System.out.println("imagecode=" + image + ", Kernels.VECTOR=" + Kernels.VECTOR + ", scalarReason=" + Kernels.scalarReason);
-        check(!Kernels.VECTOR, "the Vector API kernels are in use, the scalar twins must be");
-        if (nat) {
-            check("runtime".equals(image), "the program is not running as a native image (imagecode " + image + ")");
-            check("native image".equals(Kernels.scalarReason), "scalarReason is " + Kernels.scalarReason + ", expected native image");
-        } else {
-            check(image == null, "the control run is inside a native image");
-            check(Kernels.scalarReason != null && Kernels.scalarReason.startsWith("Vector API unavailable"), "scalarReason is " + Kernels.scalarReason + ", expected Vector API unavailable");
+        System.out.println("imagecode=" + image + ", Kernels.VECTOR=" + Kernels.VECTOR + ", Kernels.JVM_VECTOR=" + Kernels.JVM_VECTOR + ", scalarReason=" + Kernels.scalarReason + ", os.arch=" + System.getProperty("os.arch"));
+        if (nat) check("runtime".equals(image), "the program is not running as a native image (imagecode " + image + ")");
+        else check(image == null, "the control run is inside a native image");
+        if (!vec) {
+            check(!Kernels.VECTOR, "the Vector API kernels are in use, the scalar twins must be");
+            if (nat) {
+                check(Kernels.scalarReason != null && Kernels.scalarReason.startsWith("native image without the Vector API"), "scalarReason is " + Kernels.scalarReason + ", expected native image without the Vector API");
+            } else {
+                check(Kernels.scalarReason != null && Kernels.scalarReason.startsWith("Vector API unavailable"), "scalarReason is " + Kernels.scalarReason + ", expected Vector API unavailable");
+            }
+            try {
+                Class.forName("jdk.incubator.vector.FloatVector");
+                fail("the class jdk.incubator.vector.FloatVector is present, the Vector API must not be");
+            } catch (ClassNotFoundException | LinkageError e) {
+                System.out.println("jdk.incubator.vector.FloatVector is not present: " + e.getClass().getSimpleName());
+            }
+            return;
         }
+        check(Kernels.VECTOR, "Kernels.VECTOR is false, scalarReason " + Kernels.scalarReason);
+        check(Kernels.scalarReason == null, "scalarReason is " + Kernels.scalarReason + ", expected none");
         try {
             Class.forName("jdk.incubator.vector.FloatVector");
-            fail("the class jdk.incubator.vector.FloatVector is present, the Vector API must not be");
+            System.out.println("jdk.incubator.vector.FloatVector is present");
         } catch (ClassNotFoundException | LinkageError e) {
-            System.out.println("jdk.incubator.vector.FloatVector is not present: " + e.getClass().getSimpleName());
+            fail("the class jdk.incubator.vector.FloatVector is not present: " + e);
         }
+        if (nat) {
+            String arch = System.getProperty("os.arch", "");
+            int lanes = arch.equals("aarch64") || arch.equals("arm64") ? 4 : 8;
+            check(!Kernels.JVM_VECTOR, "Kernels.JVM_VECTOR is true in an image, the SQ8, int8 and block kernels must be scalar there");
+            check("buildtime".equals(NKernels.INIT_IMAGECODE), "NKernels was initialized at " + NKernels.INIT_IMAGECODE + ", expected buildtime (is native-image.properties on the class path?)");
+            check(NKernels.L == lanes, "NKernels has " + NKernels.L + " lanes, expected " + lanes + " for os.arch " + arch);
+            System.out.println("NKernels: species " + NKernels.S + ", lanes " + NKernels.L + ", initialized at " + NKernels.INIT_IMAGECODE);
+        } else {
+            check(Kernels.JVM_VECTOR, "Kernels.JVM_VECTOR is false on a JVM with the module");
+        }
+    }
+
+    /**
+     * Informational: median ns per call of Kernels.dot and of the scalar twin on 768 dimensions, over {@code REPS} runs of {@code CALLS} calls each (one
+     * run to warm up first). The calls rotate over a few pairs of vectors, and every result goes into a sum that is printed, so the loop stays alive.
+     * Never a pass or fail bar: the line shows in the CI log what the kernels of this image or JVM cost.
+     */
+    static void speed(String mode) {
+        final int dim = 768, pairs = 16, calls = 1_000_000, reps = 5;
+        Random r = new Random(5);
+        float[][] a = new float[pairs][dim], b = new float[pairs][dim];
+        for (int p = 0; p < pairs; p++) {
+            for (int j = 0; j < dim; j++) {
+                a[p][j] = r.nextFloat() * 2f - 1f;
+                b[p][j] = r.nextFloat() * 2f - 1f;
+            }
+        }
+        double[] kern = new double[reps], scal = new double[reps];
+        float sink = 0f;
+        for (int rep = -1; rep < reps; rep++) {
+            long t = System.nanoTime();
+            for (int c = 0; c < calls; c++) sink += Kernels.dot(a[c % pairs], 0, b[c % pairs], 0, dim);
+            double kn = (System.nanoTime() - t) / (double) calls;
+            t = System.nanoTime();
+            for (int c = 0; c < calls; c++) sink += Kernels.dotScalar(a[c % pairs], 0, b[c % pairs], 0, dim);
+            double sn = (System.nanoTime() - t) / (double) calls;
+            if (rep >= 0) {
+                kern[rep] = kn;
+                scal[rep] = sn;
+            }
+        }
+        Arrays.sort(kern);
+        Arrays.sort(scal);
+        double mk = kern[reps / 2], ms = scal[reps / 2];
+        System.out.println("SPEED (informational) mode " + mode + ", dot " + dim + " dims, median of " + reps + " runs of " + calls + " calls: Kernels.dot "
+                + Math.round(mk * 10) / 10.0 + " ns, scalar twin " + Math.round(ms * 10) / 10.0 + " ns, scalar twin / Kernels.dot " + Math.round(ms / mk * 100) / 100.0 + ", VECTOR "
+                + Kernels.VECTOR + ", sink " + sink);
     }
 
     static void flat() {
@@ -385,14 +454,15 @@ public final class NativeSmoke {
 
     public static void main(String[] args) {
         final String mode = args.length > 0 ? args[0] : "";
-        if (!mode.equals("native") && !mode.equals("jvm")) {
-            System.out.println("usage: NativeSmoke native|jvm");
+        if (!mode.equals("native") && !mode.equals("native-vector") && !mode.equals("jvm") && !mode.equals("jvm-vector")) {
+            System.out.println("usage: NativeSmoke native|native-vector|jvm|jvm-vector");
             System.exit(2);
         }
         long t0 = System.nanoTime();
         System.out.println("tiervec smoke program, mode " + mode + ", dim " + DIM + ", n " + N + ", k " + K + ", " + QUERIES + " queries, cpus " + Runtime.getRuntime().availableProcessors());
         System.out.println("covered: flat, ivf, graph, tier (seal, merge, delete, id reuse); not covered: segment files (checkpoint, open), rebuildFrom, threaded writers");
         phase("kernels", () -> kernels(mode));
+        phase("speed", () -> speed(mode));
         phase("flat", NativeSmoke::flat);
         phase("ivf", NativeSmoke::ivf);
         phase("graph", NativeSmoke::graph);

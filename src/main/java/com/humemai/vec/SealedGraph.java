@@ -106,7 +106,16 @@ public final class SealedGraph implements VecIndex {
 
     @Override public Hit[] search(float[] q, int k, LongPredicate allow) { return search(q, k, allow, Math.max(k, params.efSearch())); }
 
-    public Hit[] search(float[] q, int k, LongPredicate allow, int ef) {
+    private volatile double filterScanBelow;
+    /** Scan-first threshold for filtered searches, as {@link GraphIndex#filterScanBelow(double)}. Default 0 = off. */
+    public void filterScanBelow(double fraction) { FilterPlan.check(fraction); filterScanBelow = fraction; }
+    public double filterScanBelow() { return filterScanBelow; }
+
+    public Hit[] search(float[] q, int k, LongPredicate allow, int ef) { return search(q, k, allow, ef, filterScanBelow); }
+
+    /** As {@link #search(float[], int, LongPredicate, int)} with the scan-first threshold of this call. */
+    public Hit[] search(float[] q, int k, LongPredicate allow, int ef, double scanBelow) {
+        FilterPlan.check(scanBelow);
         if (k <= 0 || n == 0) return new Hit[0];
         if (q.length != dim) throw new IllegalArgumentException("dim");
         Sc s = tl.get(); ef = Math.max(ef, k);
@@ -126,6 +135,7 @@ public final class SealedGraph implements VecIndex {
             }
         }
         s.prep(n);
+        if (allow != null && scanBelow > 0 && FilterPlan.scanFirst(scanBelow, n, r -> !isDead(r), r -> ids[r], allow)) return scanExact(s, k, allow);
         int budget = allow == null ? 0 : Math.max(50 * ef, n / 20);
         beam(s, cur, curD, ef, allow, q8, budget);
         if (allow != null && s.exhausted && s.outCount < ef) return scanExact(s, k, allow);

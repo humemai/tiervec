@@ -140,6 +140,37 @@ public final class TierTests {
         TierT.check(ix.size() == 3150 && ix.stats().failures() == 0, "seg: size and no worker failure");
     }
 
+    /** filterScanBelow on the tier: a small allowed share is answered exactly in every segment, a larger share is unchanged by the option. */
+    static void testFilterScanBelow() {
+        TieredIndex ix = mk(Metric.COSINE, cfg(500, 300, 8));
+        Map<Long, float[]> model = new HashMap<>();
+        fill(ix, model, 41, 0, 3000);
+        TierT.check(ix.awaitIdle(120_000), "scanbelow: idle");
+        fill(ix, model, 41, 3000, 3150);
+        TierT.check(ix.segmentCount() >= 1, "scanbelow: at least one segment");
+        TierT.check(ix.filterScanBelow() == 0.0, "scanbelow: off by default");
+        for (double bad : new double[] { -0.5, 2.0, Double.NaN }) {
+            try { ix.filterScanBelow(bad); TierT.check(false, "scanbelow: " + bad + " must throw"); } catch (IllegalArgumentException ok) { }
+        }
+        java.util.function.LongPredicate big = id -> id % 5 == 0; // share 0.2
+        Hit[][] before = new Hit[20][];
+        for (int i = 0; i < 20; i++) before[i] = ix.search(TierT.vec(42, i, DIM), 10, big);
+        ix.filterScanBelow(0.05);
+        TierT.check(ix.filterScanBelow() == 0.05, "scanbelow: getter returns the setting");
+        boolean same = true;
+        for (int i = 0; i < 20; i++) {
+            Hit[] a = ix.search(TierT.vec(42, i, DIM), 10, big);
+            if (a.length != before[i].length) same = false;
+            else for (int j = 0; j < a.length; j++) if (a[j].id() != before[i][j].id()) same = false;
+        }
+        TierT.check(same, "scanbelow: share 0.2 with the option on returns the same hits as with it off");
+        java.util.function.LongPredicate small = id -> id % 250 == 0; // share 0.004
+        double r = meanRecall(ix, model, Metric.COSINE, 40, 43, small);
+        TierT.check(r >= 0.995, "scanbelow: share 0.004 equals brute force in every segment, up to float ties (recall " + r + ")");
+        TierT.check(ix.search(TierT.vec(44, 1, DIM), 10, id -> false).length == 0, "scanbelow: reject-all returns nothing");
+        TierT.check(ix.stats().failures() == 0, "scanbelow: no worker failure");
+    }
+
     static void testMetrics() {
         for (Metric m : new Metric[] {Metric.L2, Metric.DOT}) {
             TieredIndex ix = mk(m, cfg(500, 300, 8));
@@ -708,8 +739,8 @@ public final class TierTests {
         full = args.length > 0 && args[0].equals("full");
         String only = args.length > 1 ? args[1] : "";
         System.out.println("TierTests mode=" + (full ? "full" : "quick") + " filter='" + only + "' java=" + System.getProperty("java.version"));
-        String[] names = {"tailOnly", "noGraphBelowSmall", "segmentsRecall", "metrics", "swapInstantHooks", "sealStress", "merge", "deleteReplace", "rebuild", "close", "agentRate", "concurrent"};
-        Runnable[] tests = {TierTests::testTailOnly, TierTests::testNoGraphBelowSmall, TierTests::testSegmentsRecall, TierTests::testMetrics,
+        String[] names = {"tailOnly", "noGraphBelowSmall", "segmentsRecall", "filterScanBelow", "metrics", "swapInstantHooks", "sealStress", "merge", "deleteReplace", "rebuild", "close", "agentRate", "concurrent"};
+        Runnable[] tests = {TierTests::testTailOnly, TierTests::testNoGraphBelowSmall, TierTests::testSegmentsRecall, TierTests::testFilterScanBelow, TierTests::testMetrics,
                 TierTests::testSwapInstantHooks, TierTests::testSealStress, TierTests::testMerge, TierTests::testDeleteReplace,
                 TierTests::testRebuild, TierTests::testClose, TierTests::testAgentRate, () -> testConcurrent(full ? 60 : 10)};
         for (int i = 0; i < tests.length; i++) {

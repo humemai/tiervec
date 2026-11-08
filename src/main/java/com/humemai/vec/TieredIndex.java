@@ -345,6 +345,14 @@ public final class TieredIndex implements VecIndex {
     private final ReentrantLock mu = new ReentrantLock();
     private final ReentrantLock work = new ReentrantLock();
     private volatile View view;
+    private volatile double filterScanBelow;
+    /**
+     * Filtered searches: a segment whose allowed share is estimated at or below this fraction is scanned exactly instead of walked first
+     * (see FilterPlan and {@link GraphIndex#filterScanBelow(double)}). Default 0 = off, the walk with its fallback after the visit budget.
+     * The tails are always scanned exactly. Takes effect for the next search.
+     */
+    public void filterScanBelow(double fraction) { FilterPlan.check(fraction); filterScanBelow = fraction; }
+    public double filterScanBelow() { return filterScanBelow; }
     /** odd while apply is changing the tail and the floor map, even otherwise; written only under mu (see {@link #apply}) */
     private volatile long batchSeq;
     /** replaced views that a search may still be scanning (their reader count was not zero at the swap); guarded by mu */
@@ -668,6 +676,7 @@ public final class TieredIndex implements VecIndex {
             }
         }
         int searched = 0;
+        double scanBelow = filterScanBelow;
         int ef = Math.max(k, efSearch);
         long sizeSum = 0; // fix5 splitBeam only: rows of the segments that will be searched; 0 (the default) keeps the full beam ef in every segment
         if (cfg.splitBeam() && segs.length > 1) {
@@ -678,7 +687,7 @@ public final class TieredIndex implements VecIndex {
             if (s.n == 0 || s.dead >= s.n) continue;
             LongPredicate p = s.dead > 0 ? segFilter(s, allow) : allow;
             int efS = sizeSum > 0 ? Math.max(k, (int) ((ef * (long) s.n + sizeSum - 1) / sizeSum)) : ef; // ceil(ef * rows(s) / sizeSum), at least k
-            Hit[] h = s.g.search(q, k, p, efS);
+            Hit[] h = s.g.search(q, k, p, efS, scanBelow);
             if (h.length > 0) lists[li++] = h;
             searched++;
         }

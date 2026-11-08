@@ -138,6 +138,14 @@ public final class GraphIndex implements VecIndex {
     public int tombstoneCount() { return tombstones.get(); }
     public Params params() { return p; }
 
+    private volatile double filterScanBelow;
+    /**
+     * Filtered searches whose allowed share is estimated at or below this fraction scan the allowed ids exactly instead of walking the graph
+     * first (see FilterPlan). Default 0 = off: a filtered search then walks and falls back to the scan after its visit budget, as before.
+     */
+    public void filterScanBelow(double fraction) { FilterPlan.check(fraction); filterScanBelow = fraction; }
+    public double filterScanBelow() { return filterScanBelow; }
+
     // ---------------------------------------------------------------- storage access
 
     private Chunk chunk(int o) {
@@ -472,7 +480,11 @@ public final class GraphIndex implements VecIndex {
 
     @Override public Hit[] search(float[] q, int k, LongPredicate allow) { return search(q, k, allow, Math.max(k, p.efSearch())); }
 
-    public Hit[] search(float[] q, int k, LongPredicate allow, int ef) {
+    public Hit[] search(float[] q, int k, LongPredicate allow, int ef) { return search(q, k, allow, ef, filterScanBelow); }
+
+    /** As {@link #search(float[], int, LongPredicate, int)} with the scan-first threshold of this call (see {@link #filterScanBelow(double)}). */
+    public Hit[] search(float[] q, int k, LongPredicate allow, int ef, double scanBelow) {
+        FilterPlan.check(scanBelow);
         if (k <= 0) return new Hit[0];
         Scratch s = enter();
         try {
@@ -484,6 +496,10 @@ public final class GraphIndex implements VecIndex {
             int cur = e.node;
             float curD = distC(s, chunk(cur), cur & MASK, q8);
             for (int l = e.level; l >= 1; l--) { cur = greedy(s, cur, curD, l, q8); curD = distC(s, chunk(cur), cur & MASK, q8); }
+            if (allow != null && scanBelow > 0
+                    && FilterPlan.scanFirst(scanBelow, nextOrd.get(), o -> stateOf(chunk(o), o & MASK) == LIVE, o -> chunk(o).ids[o & MASK], allow)) {
+                return scanExact(s, k, allow);
+            }
             int budget = allow == null ? 0 : Math.max(50 * ef, nextOrd.get() / 20);
             beam(s, cur, curD, ef, 0, allow, q8, budget);
             if (allow != null && s.exhausted && s.outCount < ef) return scanExact(s, k, allow);

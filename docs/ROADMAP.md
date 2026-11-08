@@ -23,14 +23,14 @@ Decisions and tests that the rest of the work depends on.
 - [#4](https://github.com/humemai/tiervec/issues/4): Choose the default merge policy: one large segment plus a small recent one
 - [#5](https://github.com/humemai/tiervec/issues/5): Tests for record-id reuse and tombstone correctness across seal and merge
 - [#6](https://github.com/humemai/tiervec/issues/6): Specify the segment file and the manifest
-- [#7](https://github.com/humemai/tiervec/issues/7): Define the id epoch and the replay protocol for a host. Page: [ID-EPOCH-AND-REPLAY.md](ID-EPOCH-AND-REPLAY.md).
+- [#7](https://github.com/humemai/tiervec/issues/7): Define the id epoch and the replay protocol for a host. Page: [ID-EPOCH-AND-REPLAY.md](ID-EPOCH-AND-REPLAY.md). The epoch, the snapshot rebuild, and the replay in `open` are built, see [STATUS.md](STATUS.md#id-epoch-and-replay).
 - [#8](https://github.com/humemai/tiervec/issues/8): Document the host contract in docs/PROVIDER-CONTRACT.md. Page: [PROVIDER-CONTRACT.md](PROVIDER-CONTRACT.md).
 
 ## Next
 
 Library work that follows from the items above. CI already runs the fast and the slow tests on JDK 21 and 25, so there is no separate item for that.
 
-- [#9](https://github.com/humemai/tiervec/issues/9): Serialize sealed segments with a manifest, and reopen without a full rebuild. First cut: [SEGMENT-FORMAT.md](SEGMENT-FORMAT.md). Memory-mapped readers, non-empty tombstones, tail replay, and lazy verification are not in it.
+- [#9](https://github.com/humemai/tiervec/issues/9): Serialize sealed segments with a manifest, and reopen without a full rebuild. First cut: [SEGMENT-FORMAT.md](SEGMENT-FORMAT.md). Memory-mapped readers, non-empty tombstones, and lazy verification are not in it. The host replays the tail through `open` with a record source ([#7](https://github.com/humemai/tiervec/issues/7)).
 - [#10](https://github.com/humemai/tiervec/issues/10): Atomic apply(batch): adds and deletes become visible together. `TieredIndex.apply` and `TieredIndex.awaitCapacity` are built, see [STATUS.md](STATUS.md#atomic-batches).
 - [#11](https://github.com/humemai/tiervec/issues/11): Search context with a deadline and cancellation
 - [#12](https://github.com/humemai/tiervec/issues/12): Allowed-id filters: measure the selectivity range and add fast paths

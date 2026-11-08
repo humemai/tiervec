@@ -2,7 +2,7 @@
 
 A tiered vector index for agent-memory databases on the JVM.
 
-**Status: experimental and private.** The sources of the first experiment are imported and build with Maven, and their tests run in CI on JDK 21 and 25. There is no release, the API is not stable, nothing is wired into a database engine yet, and no measurements are published. See [docs/STATUS.md](docs/STATUS.md).
+**Status: experimental and private.** The sources of the first experiment are imported and build with Maven, and their tests run in CI on JDK 21 and 25, and the fast tests also on arm64 (Linux and macOS). There is no release, the API is not stable, nothing is wired into a database engine yet, and no measurements are published. See [docs/STATUS.md](docs/STATUS.md).
 
 ## What it is
 
@@ -29,7 +29,7 @@ The tests are the test programs of the experiment, wrapped as JUnit 5 tests. A w
 
 ## Requirements
 
-- JDK 21 or newer. CI builds and tests with Temurin 21 and 25.
+- JDK 21 or newer. CI builds and tests with Temurin 21 and 25 on x86-64 Linux, and runs the fast tests on arm64 Linux (JDK 21 and 25) and arm64 macOS (JDK 21).
 - Maven 3.9 or newer.
 - The Vector API is an incubator module in these JDKs. Compile with `--add-modules jdk.incubator.vector`, and run with it to get the Vector API kernels; the `pom.xml` sets it for the compiler and for the test JVMs. At run time the module is optional: every kernel (flat, IVF, and graph) falls back to its scalar twin when the module is missing, or when `-Dhumemai.vec.scalar=true` is set.
 - Nothing else at run time. JUnit 5 is a test dependency.

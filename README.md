@@ -54,6 +54,7 @@ The library runs in a GraalVM native image. The CI job `native image smoke` buil
 - [docs/SEGMENT-FORMAT.md](docs/SEGMENT-FORMAT.md): the segment file, the manifest, the publish order, and reopen, as the first cut implements them.
 - [docs/STATUS.md](docs/STATUS.md): what exists, what does not exist yet.
 - [docs/ROADMAP.md](docs/ROADMAP.md): what is planned and in what order, with the open issues, and the non-goals.
+- [docs/RELEASING.md](docs/RELEASING.md): the version rule and the steps of a release. [CHANGELOG.md](CHANGELOG.md) lists the changes.
 
 ## License
 

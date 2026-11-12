@@ -77,7 +77,7 @@ The threaded program (`GraphConcurrencyTest`) therefore checks read-your-writes 
 - Engine integration. Nothing here is wired into ArcadeDB or any other engine.
 - IVF as a segment type of the tier. `IvfIndex` is standalone.
 - Native-image coverage beyond the smoke job. The program does not write or read segment files (`checkpoint`, `open`), does not call `rebuildFrom`, and uses no concurrent writers; the image is built on Linux (x86-64 and arm64) and on macOS arm64 in CI, and on Windows x64 in the vector job only (there is no scalar image job on Windows), and it is not published.
-- A release: no publish workflow, version `0.1.0-SNAPSHOT`.
+- A release: no publish workflow, version `0.1.0-SNAPSHOT`. The version rule and the steps are in [RELEASING.md](RELEASING.md).
 - Published measurements. They are in a private harness and will be published later.
 - The longer mode of the graph test program (a recall curve at n = 20000) is not wired into the JUnit tests.
 

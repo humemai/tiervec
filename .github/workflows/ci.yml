@@ -54,10 +54,13 @@ jobs:
   # the job when recall is below the floors set here, when an answer is malformed, or when the concurrent phase loses a vector or returns a deleted id.
   # The job is not a required check and it runs beside the fast tests, so it does not make them longer. It has no speed bar: a timing from a shared
   # runner is a ratio inside one run, never an absolute speed (README, "Platform support").
+  # Issue #108 added two paths to the harness, and the job runs both of them on a small generated data set (5,000 vectors of dimension 64, written
+  # into target/ and not committed): the loader of a real embedding set (--data, the files of scripts/prep_real_dataset.py, which the job runs on a
+  # parquet set in the layout of the DBpedia shards), and the JVector arm (--engine jvector, src/bench/jvector, JVector from the profile "bench").
   bench-smoke:
     name: bench smoke (JDK ${{ matrix.java }})
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
@@ -96,11 +99,96 @@ jobs:
           echo "control exit code: $code"
           test "$code" -eq 1
           grep -q '^BENCH-FAILURE .*below the floor' target/bench/control.txt
+      - name: Set up uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: "0.13.4"
+      - name: Prepare a small data set in the layout of the real one
+        run: |
+          uv run --python 3.12 .github/scripts/make-smoke-parquet.py target/bench/smoke-parquet 5100 64 3
+          uv run --python 3.12 scripts/prep_real_dataset.py target/bench/smoke-parquet target/bench/smoke-data --queries 100 --truth-k 10 --block-rows 2000
+          cat target/bench/smoke-data/meta.properties
+          ls -l target/bench/smoke-data
+          grep -q '^count=5000$' target/bench/smoke-data/meta.properties
+          grep -q '^queries=100$' target/bench/smoke-data/meta.properties
+      - name: Fetch JVector (profile bench) and compile the JVector arm
+        run: |
+          mvn -B -ntp -Pbench dependency:copy-dependencies -DoutputDirectory=target/bench/lib -DincludeScope=runtime
+          ls -l target/bench/lib
+          ls target/bench/lib | grep -q '^jvector-'
+          javac -d target/bench/classes --add-modules jdk.incubator.vector -cp 'target/bench/classes:target/bench/lib/*' \
+            src/bench/jvector/java/ai/humem/tiervec/JVectorArm.java
+      - name: The library keeps no run-time dependency
+        run: |
+          mvn -B -ntp dependency:list -DincludeScope=runtime -DoutputFile=target/bench/default-runtime-deps.txt
+          test -f target/bench/default-runtime-deps.txt
+          cat target/bench/default-runtime-deps.txt
+          if grep -qi jvector target/bench/default-runtime-deps.txt; then echo "JVector is in the default dependency set"; exit 1; fi
+      - name: Run both arms on the data set
+        run: |
+          common=(--data target/bench/smoke-data --queries 100 --reps 3 --ef-sweep 32 --min-recall 0.85 --host-label github-runner)
+          # the tier needs no JVector jar on the class path: it runs the same files as before (shares 0.1 also checks the file's answers against the harness's own scan)
+          timeout 300 java -Xmx2g --add-modules jdk.incubator.vector -cp target/bench/classes ai.humem.tiervec.Bench \
+            "${common[@]}" --engine tiervec --shares 0.1 --scan-below 0,1 --min-scan-recall 0.99 --out target/bench/data-tiervec.txt
+          timeout 300 java -Xmx2g --add-modules jdk.incubator.vector --enable-native-access=ALL-UNNAMED -cp 'target/bench/classes:target/bench/lib/*' ai.humem.tiervec.Bench \
+            "${common[@]}" --engine jvector --out target/bench/data-jvector.txt
+      - name: The two result files read side by side
+        run: |
+          for e in tiervec jvector; do
+            f=target/bench/data-$e.txt
+            grep -q '^BENCH-SUMMARY status=OK failures=0' "$f"
+            grep -q '^DATASET .*dim=64 ' "$f"
+            grep -h -E '^(TRUTH-CHECK|BUILD |JVECTOR|MEMORY afterBuild|SEARCH kind=unfiltered)' "$f"
+          done
+          grep -q '^TRUTH-CHECK fileVsExactScanOverlap=' target/bench/data-tiervec.txt
+          grep -q '^JVECTOR jar=jvector-.* provider=.* M=16 efConstruction=200 ' target/bench/data-jvector.txt
+          a=$(grep '^SEARCH kind=unfiltered' target/bench/data-tiervec.txt | grep -o ' ef=[0-9]*' | tr '\n' ' ')
+          b=$(grep '^SEARCH kind=unfiltered' target/bench/data-jvector.txt | grep -o ' ef=[0-9]*' | tr '\n' ' ')
+          echo "tiervec cells: $a"
+          echo "jvector cells: $b"
+          test -n "$a"
+          test "$a" = "$b"
+          # the same vectors and queries went into both
+          n=$(grep -h -o 'checksumFirst1000AndQuery0=[0-9a-f]*' target/bench/data-tiervec.txt target/bench/data-jvector.txt | sort -u | wc -l)
+          test "$n" -eq 1
+      - name: Control, a floor that cannot be met fails on both new paths, and wrong options are refused
+        run: |
+          cp=('target/bench/classes:target/bench/lib/*')
+          run() { timeout 300 java -Xmx2g --add-modules jdk.incubator.vector --enable-native-access=ALL-UNNAMED -cp "${cp[0]}" ai.humem.tiervec.Bench "$@"; }
+          for e in tiervec jvector; do
+            code=0
+            run --data target/bench/smoke-data --engine $e --queries 20 --reps 1 --shares "" --min-recall 1.5 --host-label github-runner \
+              --out target/bench/control-$e.txt > target/bench/control-$e.log || code=$?
+            echo "control $e exit code: $code"
+            test "$code" -eq 1
+            grep -q '^BENCH-FAILURE .*below the floor' target/bench/control-$e.txt
+          done
+          code=0
+          run --data target/bench/smoke-data --n 123 > target/bench/wrong-n.log 2>&1 || code=$?
+          echo "wrong --n exit code: $code"
+          test "$code" -eq 2
+          grep -q 'does not match the data file' target/bench/wrong-n.log
+          code=0
+          run --data target/bench/smoke-data --engine jvector --conc-seconds 10 > target/bench/wrong-conc.log 2>&1 || code=$?
+          echo "jvector with a concurrent phase exit code: $code"
+          test "$code" -eq 2
+          code=0
+          timeout 300 java -Xmx2g --add-modules jdk.incubator.vector -cp target/bench/classes ai.humem.tiervec.Bench \
+            --data target/bench/smoke-data --engine jvector > target/bench/no-jvector.log 2>&1 || code=$?
+          echo "jvector without the jars exit code: $code"
+          test "$code" -eq 2
+          grep -q 'needs the JVector arm and the JVector jars' target/bench/no-jvector.log
       - name: Result file
         if: always()
         run: |
           grep -h -E '^(BENCH-SUMMARY|SEARCH|CONC |CONC-RECALL|BUILD )' target/bench/smoke.txt || true
           { echo '```'; cat target/bench/smoke.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY" || true
+          for f in target/bench/data-tiervec.txt target/bench/data-jvector.txt; do
+            grep -h -E '^(BENCH-SUMMARY|TRUTH-CHECK|BUILD |JVECTOR|SEARCH)' "$f" || true
+          done
+          for f in target/bench/data-tiervec.txt target/bench/data-jvector.txt; do
+            { echo '```'; cat "$f"; echo '```'; } >> "$GITHUB_STEP_SUMMARY" || true
+          done
 
   # The same fast tests on arm64 (NEON for the Vector API kernels). These jobs are not required checks; their names differ from the required
   # "fast tests (JDK 21)" and "fast tests (JDK 25)". Runner labels: ubuntu-24.04-arm is Linux arm64 and macos-15 is macOS arm64 (M1), both

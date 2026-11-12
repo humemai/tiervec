@@ -4,6 +4,10 @@ All notable changes to tiervec are in this file. The layout follows [Keep a Chan
 
 ## Unreleased
 
+### Added
+
+- Benchmark harness: `--data` reads a real embedding set that `scripts/prep_real_dataset.py` converts from parquet (raw float32 files with exact answers), and `--engine jvector` builds and searches the same data with JVector at the same `M` and `efConstruction`, in the bench profile only (JVector is not a dependency of the library). A CI smoke runs both on a small generated set ([docs/BENCHMARKS.md](docs/BENCHMARKS.md), [issue #108](https://github.com/humemai/tiervec/issues/108)).
+
 ## 0.1.1 - 2026-11-13
 
 The library code is unchanged from `0.1.0`: no source file changed. The changes are in the release workflow and the pom.

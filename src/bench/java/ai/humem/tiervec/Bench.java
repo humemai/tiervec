@@ -1,18 +1,23 @@
 package ai.humem.tiervec;
 
+import java.io.IOException;
 import java.io.PrintWriter;
 import java.lang.management.GarbageCollectorMXBean;
 import java.lang.management.ManagementFactory;
+import java.lang.reflect.Constructor;
+import java.lang.reflect.InvocationTargetException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.SplittableRandom;
 import java.util.TreeMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
@@ -46,6 +51,11 @@ import java.util.function.LongPredicate;
  *
  * <p>The filter is a hash of the id (uniform, independent of the vector): an id is allowed when {@code unit(id) < share}. The allowed sets of the
  * shares are nested. A filter that is correlated with the vectors is not measured.
+ *
+ * <p>Two options came with issue #108. {@code --data DIR} replaces the generated vectors, queries and exact answers by a real embedding set that
+ * {@code scripts/prep_real_dataset.py} prepared (class {@link RealData}). {@code --engine jvector} builds and searches the same data with JVector
+ * (class {@code JVectorArm} in {@code src/bench/jvector}, compiled apart because it needs the JVector jars) at the same {@code M} and
+ * {@code efConstruction}, and prints the same BUILD, MEMORY and SEARCH lines for the unfiltered cells. Neither option changes a run that does not use it.
  *
  * <p>Options are {@code --key value} pairs; see {@link #defaults()}. The exit code is 1 when a check of integrity fails (an exception, a lost or phantom
  * vector, an answer out of order or with a repeated id, a deleted id returned) or when a recall floor that was set (it is 0 by default) is not met, and 2 for a wrong option.
@@ -96,11 +106,21 @@ public final class Bench {
         d.put("host-label", "");            // label of the machine in the file; empty is the host name
         d.put("repo", ".");                 // directory for git rev-parse
         d.put("out", "");                   // result file; empty is standard output only
+        // the options below came with the real data set and the JVector arm (issue #108); the PARAMS line leaves them out while they have their defaults
+        d.put("data", "");                  // a prepared real data set (a directory, see docs/BENCHMARKS.md); empty is the generated data
+        d.put("engine", "tiervec");         // tiervec, or jvector (the comparison arm: unfiltered cells only, src/bench/jvector)
+        d.put("jvector-alpha", "1.2");      // JVector: pruning alpha (the value of its tutorial; the tier uses 1.0)
+        d.put("jvector-overflow", "1.2");   // JVector: neighbor overflow while building (the value of its tutorial)
         return d;
     }
 
+    /** the options of issue #108 */
+    static final List<String> NEW_KEYS = List.of("data", "engine", "jvector-alpha", "jvector-overflow");
+
     static final class Opts {
         final Map<String, String> m = new TreeMap<>();
+        /** the keys that the command line set (a key that has its default value is not the same as a key that was given) */
+        final Set<String> given = new HashSet<>();
 
         Opts(String[] a) {
             m.putAll(defaults());
@@ -108,6 +128,7 @@ public final class Bench {
                 if (!a[i].startsWith("--") || !m.containsKey(a[i].substring(2)) || i + 1 >= a.length)
                     throw new IllegalArgumentException("bad option " + a[i] + " (options are --key value pairs: " + defaults().keySet() + ")");
                 m.put(a[i].substring(2), a[i + 1]);
+                given.add(a[i].substring(2));
             }
         }
 
@@ -219,14 +240,19 @@ public final class Bench {
         return l.isEmpty() ? firstLine("/proc/sys/kernel/hostname") : l;
     }
 
-    static void header(Out out, Opts o, Gen gen) {
+    static void header(Out out, Opts o, Gen gen, RealData real) {
         out.line("BENCH-RESULT format=1 harness=ai.humem.tiervec.Bench");
         out.line("RUN started=" + Instant.now() + " host=" + hostLabel(o));
         String sha = sh("git", "-C", o.s("repo"), "rev-parse", "HEAD");
         String dirty = sh("git", "-C", o.s("repo"), "status", "--porcelain", "--untracked-files=no");
         out.line("COMMIT sha=" + (sha == null ? "unknown" : sha) + " modifiedFiles=" + (dirty == null ? "unknown" : String.valueOf(dirty.isEmpty() ? 0 : dirty.split("\n").length)));
-        out.line("SEED seed=" + o.l("seed") + " data=clustered-gaussian clusters=" + o.i("clusters") + " sigma=" + o.d("sigma")
-                + " filter=hash-uniform queryIdBase=" + QUERY_BASE);
+        if (real == null) {
+            out.line("SEED seed=" + o.l("seed") + " data=clustered-gaussian clusters=" + o.i("clusters") + " sigma=" + o.d("sigma")
+                    + " filter=hash-uniform queryIdBase=" + QUERY_BASE);
+        } else {
+            // the vectors, the queries and the exact answers come from the files; the seed is left for the filter of the filtered cells
+            out.line("SEED seed=" + o.l("seed") + " data=file filter=hash-uniform queryIdBase=" + QUERY_BASE);
+        }
         String allowed = "unknown";
         for (String l : readLines("/proc/self/status")) if (l.startsWith("Cpus_allowed_list:")) allowed = l.substring(18).trim();
         int first = 0;
@@ -252,9 +278,15 @@ public final class Bench {
         out.line("JVM maxHeapMiB=" + Runtime.getRuntime().maxMemory() / (1 << 20) + " collectors=" + gcs + " args=" + ManagementFactory.getRuntimeMXBean().getInputArguments());
         out.line("VECTORAPI module=" + ModuleLayer.boot().findModule("jdk.incubator.vector").isPresent() + " kernels=" + (Kernels.VECTOR ? "vector" : "scalar")
                 + " lanes=" + Kern.lanes() + " scalarProperty=" + System.getProperty("ai.humem.tiervec.scalar"));
+        // a run with the defaults of issue #108 (generated data, the tier) prints the PARAMS line it printed before the options existed
+        boolean extended = real != null || !o.s("engine").equals("tiervec");
         StringBuilder ps = new StringBuilder();
-        for (Map.Entry<String, String> e : o.m.entrySet()) ps.append(ps.length() == 0 ? "" : " ").append(e.getKey()).append('=').append(e.getValue());
+        for (Map.Entry<String, String> e : o.m.entrySet()) {
+            if (!extended && NEW_KEYS.contains(e.getKey())) continue;
+            ps.append(ps.length() == 0 ? "" : " ").append(e.getKey()).append('=').append(e.getValue());
+        }
         out.line("PARAMS " + ps);
+        if (real != null) out.line("DATASET " + real.describe());
     }
 
     // ------------------------------------------------------------------------------------------------ data
@@ -499,6 +531,79 @@ public final class Bench {
                 statusKb("VmRSS") / 1024.0, statusKb("VmHWM") / 1024.0));
     }
 
+    // ------------------------------------------------------------------------------------------------ the engine under test, and the real data
+
+    /**
+     * An index under test other than the tier. It answers unfiltered searches only. The one implementation is {@code JVectorArm} in
+     * {@code src/bench/jvector}, which is compiled apart (it needs the JVector jars) and is reached by reflection, so that the harness
+     * compiles and runs without JVector when {@code --engine tiervec} is used.
+     */
+    interface Arm {
+        /** the k best hits of the query, best first; the score is the dot product (the cosine, the vectors have unit length) */
+        Hit[] search(float[] q, int k, int ef);
+
+        /** {@code key=value} pairs for the JVECTOR line of the result file: the version, the provider, the parameters */
+        String describe();
+
+        void close() throws Exception;
+    }
+
+    /** what {@link #prepare} found: the real data set (null for generated data) and the constructor of the JVector arm (null for the tier) */
+    static final class Plan {
+        RealData real;
+        Constructor<?> jvector;
+    }
+
+    /**
+     * Checks the options that depend on each other and on the files, and rewrites {@code n}, {@code dim} and the other options that the data
+     * file or the engine decide. Throws IllegalArgumentException for a wrong combination (exit code 2), before any data is loaded.
+     */
+    static Plan prepare(Opts o) {
+        Plan plan = new Plan();
+        String engine = o.s("engine");
+        if (!engine.equals("tiervec") && !engine.equals("jvector")) throw new IllegalArgumentException("--engine is tiervec or jvector, not " + engine);
+        if (!o.s("data").isEmpty()) {
+            try {
+                plan.real = RealData.open(Path.of(o.s("data")));
+            } catch (IOException e) {
+                throw new IllegalArgumentException("cannot read --data " + o.s("data") + ": " + e, e);
+            }
+            RealData real = plan.real;
+            if (o.given.contains("n") && o.i("n") != real.count)
+                throw new IllegalArgumentException("--n " + o.i("n") + " does not match the data file, which holds " + real.count
+                        + " vectors (with --data the size comes from the file; prepare a smaller file with --limit)");
+            if (o.given.contains("dim") && o.i("dim") != real.dim)
+                throw new IllegalArgumentException("--dim " + o.i("dim") + " does not match the data file, which holds vectors of dimension " + real.dim);
+            if (o.i("k") > real.truthK)
+                throw new IllegalArgumentException("--k " + o.i("k") + " is more than the " + real.truthK + " exact answers per query that the data file holds");
+            if (o.given.contains("queries") && o.i("queries") > real.queries)
+                throw new IllegalArgumentException("--queries " + o.i("queries") + " is more than the " + real.queries + " queries that the data file holds");
+            o.m.put("n", String.valueOf(real.count));
+            o.m.put("dim", String.valueOf(real.dim));
+            if (!o.given.contains("queries")) o.m.put("queries", String.valueOf(Math.min(o.i("queries"), real.queries)));
+        }
+        if (plan.real != null || engine.equals("jvector")) {
+            // the writers of the concurrent phase draw their vectors from the generator, and the JVector arm has no concurrent writes
+            if (o.given.contains("conc-seconds") && o.i("conc-seconds") > 0)
+                throw new IllegalArgumentException("--conc-seconds is not available with --data or --engine jvector: the concurrent phase adds generated vectors to the tier");
+            o.m.put("conc-seconds", "0");
+        }
+        if (engine.equals("jvector")) {
+            if (o.given.contains("shares") && !o.s("shares").trim().isEmpty())
+                throw new IllegalArgumentException("--shares is not available with --engine jvector: the filtered cells are a feature of the tier (the JVector arm runs the unfiltered cells)");
+            o.m.put("shares", "");
+            if (o.given.contains("load")) throw new IllegalArgumentException("--load is an option of the tier: JVector builds the graph in one parallel pass");
+            try {
+                Class<?> arm = Class.forName("ai.humem.tiervec.JVectorArm");
+                plan.jvector = arm.getDeclaredConstructor(float[][].class, int.class, int.class, int.class, float.class, float.class, int.class);
+                plan.jvector.setAccessible(true);
+            } catch (ClassNotFoundException | LinkageError | NoSuchMethodException e) {
+                throw new IllegalArgumentException("--engine jvector needs the JVector arm and the JVector jars on the class path (docs/BENCHMARKS.md, \"The JVector arm\"): " + e, e);
+            }
+        }
+        return plan;
+    }
+
     // ------------------------------------------------------------------------------------------------ the run
 
     static final class Run {
@@ -515,10 +620,15 @@ public final class Bench {
         long[][][] truth;
         TieredIndex tier;
         long filterSeed;
+        final RealData real;      // null: the generated data
+        final Constructor<?> jvectorCtor; // null: the engine is the tier
+        Arm arm;                  // the JVector arm once it is built, else null
 
-        Run(Opts o, Out out) {
+        Run(Opts o, Out out, Plan plan) {
             this.o = o;
             this.out = out;
+            this.real = plan.real;
+            this.jvectorCtor = plan.jvector;
             n = o.i("n");
             dim = o.i("dim");
             k = o.i("k");
@@ -543,7 +653,69 @@ public final class Bench {
 
         // ---- DATA
 
+        /** checksum of the first 1000 vectors and the first query, as the DATA line has it (the same bytes on every JVM for the same data) */
+        long dataChecksum() {
+            CRC32 crc = new CRC32();
+            for (int i = 0; i < Math.min(n, 1000); i++) for (float x : data[i]) for (int sh = 0; sh < 32; sh += 8) crc.update(Float.floatToIntBits(x) >>> sh);
+            for (float x : qs[0]) for (int sh = 0; sh < 32; sh += 8) crc.update(Float.floatToIntBits(x) >>> sh);
+            return crc.getValue();
+        }
+
+        void truthLine() {
+            StringBuilder tl = new StringBuilder();
+            for (int g = 0; g < truth.length; g++) {
+                int min = Integer.MAX_VALUE;
+                for (long[] t : truth[g]) min = Math.min(min, t.length);
+                tl.append(g == 0 ? "unfiltered" : f("share%s", o.ds("shares")[g - 1])).append(":minTruthSize=").append(min).append(' ');
+            }
+            out.line("TRUTH " + tl.toString().trim());
+        }
+
+        /** the number of ids that the two answers share, as a share of the second one */
+        static double overlap(long[] a, long[] b) {
+            if (b.length == 0) return 1;
+            int c = 0;
+            for (long x : b) for (long y : a) if (x == y) { c++; break; }
+            return (double) c / b.length;
+        }
+
+        /**
+         * DATA from the files of a prepared data set: the vectors, the queries and the exact answers of the unfiltered search (computed by
+         * scripts/prep_real_dataset.py). The filtered cells need the exact answers of each share, and those the harness computes itself, as for
+         * generated data; when it does, it also checks the file's answers against its own scan of the same queries.
+         */
+        void dataReal() throws Exception {
+            phase("data");
+            Gc g0 = Gc.take();
+            long t0 = System.nanoTime();
+            data = real.readVectors();
+            qs = real.readQueries(nq);
+            long[][] fileTruth = real.readTruth(nq, k);
+            double loadS = (System.nanoTime() - t0) / 1e9;
+            double exactS = 0;
+            if (shares.length > 0) {
+                t0 = System.nanoTime();
+                truth = exact(data, null, n, qs, k, shares, filterSeed, threads);
+                exactS = (System.nanoTime() - t0) / 1e9;
+                double ov = 0;
+                for (int q = 0; q < nq; q++) ov += overlap(truth[0][q], fileTruth[q]);
+                ov /= Math.max(1, nq);
+                out.line(f("TRUTH-CHECK fileVsExactScanOverlap=%.4f queries=%d", ov, nq));
+                if (ov < 0.98) fail(f("the exact answers in the data file share only %.4f of their ids with the exact scan of the harness over the same vectors", ov));
+                truth[0] = fileTruth;
+            } else {
+                truth = new long[][][] { fileTruth };
+            }
+            out.line(f("DATA source=file n=%d dim=%d queries=%d checksumFirst1000AndQuery0=%08x loadSeconds=%.1f exactScanSeconds=%.1f exactScanThreads=%d %s", n, dim, nq,
+                    dataChecksum(), loadS, exactS, threads, Gc.take().since(g0)));
+            truthLine();
+        }
+
         void data() throws Exception {
+            if (real != null) {
+                dataReal();
+                return;
+            }
             phase("data");
             gen = new Gen(dim, seed, o.i("clusters"), (float) o.d("sigma"));
             Gc g0 = Gc.take();
@@ -558,23 +730,40 @@ public final class Bench {
             t0 = System.nanoTime();
             truth = exact(data, null, n, qs, k, shares, filterSeed, threads);
             double exactS = (System.nanoTime() - t0) / 1e9;
-            CRC32 crc = new CRC32();
-            for (int i = 0; i < Math.min(n, 1000); i++) for (float x : data[i]) for (int sh = 0; sh < 32; sh += 8) crc.update(Float.floatToIntBits(x) >>> sh);
-            for (float x : qs[0]) for (int sh = 0; sh < 32; sh += 8) crc.update(Float.floatToIntBits(x) >>> sh);
-            out.line(f("DATA n=%d dim=%d queries=%d checksumFirst1000AndQuery0=%08x generateSeconds=%.1f exactScanSeconds=%.1f exactScanThreads=%d %s", n, dim, nq, crc.getValue(), genS, exactS,
+            out.line(f("DATA n=%d dim=%d queries=%d checksumFirst1000AndQuery0=%08x generateSeconds=%.1f exactScanSeconds=%.1f exactScanThreads=%d %s", n, dim, nq, dataChecksum(), genS, exactS,
                     threads, Gc.take().since(g0)));
-            StringBuilder tl = new StringBuilder();
-            for (int g = 0; g < truth.length; g++) {
-                int min = Integer.MAX_VALUE;
-                for (long[] t : truth[g]) min = Math.min(min, t.length);
-                tl.append(g == 0 ? "unfiltered" : f("share%s", o.ds("shares")[g - 1])).append(":minTruthSize=").append(min).append(' ');
-            }
-            out.line("TRUTH " + tl.toString().trim());
+            truthLine();
         }
 
         // ---- BUILD
 
+        /**
+         * BUILD of the JVector arm: the same data, the same M and efConstruction as the tier (--m, --efc), one parallel build pass. The line has
+         * the keys of the tier's BUILD line so that the two files read side by side; the JVECTOR line says what JVector ran with.
+         */
+        void buildJVector() throws Exception {
+            phase("build");
+            Gc g0 = Gc.take();
+            long t0 = System.nanoTime();
+            try {
+                arm = (Arm) jvectorCtor.newInstance(data, dim, o.i("m"), o.i("efc"), (float) o.d("jvector-alpha"), (float) o.d("jvector-overflow"), o.i("build-threads"));
+            } catch (InvocationTargetException e) {
+                Throwable c = e.getCause();
+                if (c instanceof Exception ex) throw ex;
+                if (c instanceof Error er) throw er;
+                throw e;
+            }
+            double s = (System.nanoTime() - t0) / 1e9;
+            out.line(f("BUILD load=jvector addSeconds=%.1f settledSeconds=%.1f insertsPerSecondSettled=%.0f size=%d %s", s, s, n / s, n, Gc.take().since(g0)));
+            out.line("JVECTOR " + arm.describe());
+            memory(out, "afterBuild");
+        }
+
         void build() throws Exception {
+            if (jvectorCtor != null) {
+                buildJVector();
+                return;
+            }
             phase("build");
             GraphIndex.Params gp0 = GraphIndex.Params.defaults().withM(o.i("m")).withEfConstruction(o.i("efc"));
             GraphIndex.Params gp = new GraphIndex.Params(gp0.M(), gp0.efConstruction(), ef, gp0.alpha(), gp0.sq8(), gp0.seed());
@@ -634,6 +823,7 @@ public final class Bench {
             phase("search");
             cell("unfiltered", -1, 0, null, truth[0], ef);
             for (double e : o.ds("ef-sweep")) cell("unfiltered", -1, 0, null, truth[0], (int) e);
+            if (arm != null) return; // the JVector arm answers unfiltered searches only
             for (int s = 0; s < shares.length; s++) {
                 LongPredicate al = allow(shares[s], filterSeed);
                 for (double sb : scanBelows) cell("filtered", shares[s], sb, al, truth[1 + s], ef);
@@ -642,7 +832,7 @@ public final class Bench {
         }
 
         void cell(String kind, double share, double scanBelow, LongPredicate al, long[][] tr, int efv) {
-            tier.filterScanBelow(scanBelow);
+            if (tier != null) tier.filterScanBelow(scanBelow);
             boolean scans = al != null && scanBelow >= share && scanBelow > 0;
             long[] lat = new long[reps * nq];
             double rsum = 0, rmin = 1, maxScoreErr = 0;
@@ -652,7 +842,7 @@ public final class Bench {
             for (int pass = 0; pass <= reps; pass++) {
                 for (int q = 0; q < nq; q++) {
                     long a = System.nanoTime();
-                    Hit[] h = tier.search(qs[q], k, al, efv);
+                    Hit[] h = arm != null ? arm.search(qs[q], k, efv) : tier.search(qs[q], k, al, efv);
                     long b = System.nanoTime();
                     if (pass == 0) {
                         double r = recall(h, tr[q]);
@@ -879,8 +1069,10 @@ public final class Bench {
 
     public static void main(String[] args) throws Exception {
         Opts o;
+        Plan plan;
         try {
             o = new Opts(args);
+            plan = prepare(o);
         } catch (IllegalArgumentException e) {
             System.err.println(e.getMessage());
             System.exit(2);
@@ -889,9 +1081,9 @@ public final class Bench {
         Out out = new Out(o.s("out"));
         int code = 0;
         try {
-            Run r = new Run(o, out);
-            r.gen = new Gen(r.dim, r.seed, o.i("clusters"), (float) o.d("sigma"));
-            header(out, o, r.gen);
+            Run r = new Run(o, out, plan);
+            if (plan.real == null) r.gen = new Gen(r.dim, r.seed, o.i("clusters"), (float) o.d("sigma"));
+            header(out, o, r.gen, plan.real);
             long t0 = System.nanoTime();
             try {
                 r.data();
@@ -908,6 +1100,13 @@ public final class Bench {
             out.line("BENCH-END");
             code = r.failures.isEmpty() ? 0 : 1;
             if (r.tier != null) r.tier.close();
+            if (r.arm != null) {
+                try {
+                    r.arm.close();
+                } catch (Exception e) {
+                    System.err.println("closing the JVector arm failed: " + e);
+                }
+            }
         } finally {
             out.close();
         }

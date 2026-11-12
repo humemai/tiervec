@@ -8,6 +8,10 @@ All notable changes to tiervec are in this file. The layout follows [Keep a Chan
 
 - Benchmark harness: `--data` reads a real embedding set that `scripts/prep_real_dataset.py` converts from parquet (raw float32 files with exact answers), and `--engine jvector` builds and searches the same data with JVector at the same `M` and `efConstruction`, in the bench profile only (JVector is not a dependency of the library). A CI smoke runs both on a small generated set ([docs/BENCHMARKS.md](docs/BENCHMARKS.md), [issue #108](https://github.com/humemai/tiervec/issues/108)).
 
+### Fixed
+
+- The fp32 graph kernels of a JVM (`VKern`) sum the lanes in a fixed order, like the flat kernels. Before, the sum was `reduceLanes(ADD)`, whose order depends on the JIT tier, so the same search could return a score one ulp apart before and after compilation. This showed as a rare failure of `SegmentForgedFileTest` on arm64 ([#104](https://github.com/humemai/tiervec/issues/104)). A score can differ from the one of 0.1.0 in the last bit.
+
 ## 0.1.1 - 2026-11-13
 
 The library code is unchanged from `0.1.0`: no source file changed. The changes are in the release workflow and the pom.

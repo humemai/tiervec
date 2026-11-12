@@ -107,7 +107,7 @@ The slow tests run on Linux x86-64 only. There is no scalar-kernel native image 
 
 ## Documentation
 
-The pages below are published at <https://docs.humem.ai/tiervec/>. The default version is `latest`, the newest release (`0.1.0`). The version `dev` follows `main` and has changes that are not released yet. The site is built from the Markdown files of this repository ([how to build it](CONTRIBUTING.md#build-the-documentation)).
+The pages below are published at <https://docs.humem.ai/tiervec/>. The default version is `latest`, the newest release (`0.1.1`). The version `dev` follows `main` and has changes that are not released yet. The site is built from the Markdown files of this repository ([how to build it](CONTRIBUTING.md#build-the-documentation)).
 
 - [docs/API.md](docs/API.md): the supported public classes, the internal ones, and what may change in a 0.x release.
 - [docs/DESIGN.md](docs/DESIGN.md): the architecture and the knobs of the tier configuration.

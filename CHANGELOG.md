@@ -4,6 +4,10 @@ All notable changes to tiervec are in this file. The layout follows [Keep a Chan
 
 ## Unreleased
 
+## 0.1.1 - 2026-11-13
+
+The library code is unchanged from `0.1.0`: no source file changed. The changes are in the release workflow and the pom.
+
 ### Changed
 
 - Creating the GitHub release now publishes to Maven Central by itself and verifies the result (checksums, signatures, the built jars, a resolution from a fresh local repository), so the Publish click in the Central Portal is gone ([docs/RELEASING.md](docs/RELEASING.md#the-publish-run)).

@@ -113,6 +113,7 @@ nav:
   - Reference:
       - API and stability policy: API.md
       - Host contract: PROVIDER-CONTRACT.md
+      - Benchmark harness: BENCHMARKS.md
   - Project:
       - Releasing: RELEASING.md
       - Changelog: CHANGELOG.md

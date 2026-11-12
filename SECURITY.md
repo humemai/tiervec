@@ -4,7 +4,7 @@
 
 Do not open a public issue for a security problem.
 
-Send an email to [info@humem.ai](mailto:info@humem.ai) with the subject `tiervec security`. A maintainer reads it, replies, and works with you on a fix before anything is made public.
+Use GitHub's private reporting: open the [Security tab](https://github.com/humemai/tiervec/security) of the repository and choose **Report a vulnerability**. Or send an email to [info@humem.ai](mailto:info@humem.ai) with the subject `tiervec security`. Either way a maintainer reads it, replies, and works with you on a fix before anything is made public.
 
 Please include:
 

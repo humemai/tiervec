@@ -36,6 +36,7 @@ import java.util.regex.Pattern;
  * {@code tombGeneration}, {@code tombLength} and {@code tombCrc} describe the tombstone file the manifest names; {@link #publish} fills
  * them in.
  */
+@Internal
 public record Manifest(long generation, long epoch, long hwm, long versionCounter, long nextSegId, Fingerprint fingerprint,
                        List<Entry> entries, long tombGeneration, long tombLength, int tombCrc) {
 

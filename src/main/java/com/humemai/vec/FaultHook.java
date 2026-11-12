@@ -7,6 +7,7 @@ import java.io.IOException;
  * the publish at that point and leaves exactly the files a process kill after that step would leave (the publisher does no cleanup of its
  * own when it fails, because the next open removes whatever no manifest names).
  */
+@Internal
 public interface FaultHook {
     /** the points between the publish steps, in order */
     enum Step {

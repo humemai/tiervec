@@ -23,6 +23,7 @@ import java.util.zip.CRC32C;
  * cut short, has bytes appended, or has a damaged header, footer or locator fails there, before any section is read. {@link #read} then
  * loads the sections; with {@code verifyAll} it also checks the CRC32C of each section against the footer.
  */
+@Internal
 public final class SegmentReader {
     private SegmentReader() {}
 

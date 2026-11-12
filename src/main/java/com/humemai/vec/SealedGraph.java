@@ -12,6 +12,7 @@ import java.util.function.LongPredicate;
  * upIdx/upOff/upEdges), optional SQ8 codes. Searches are lock-free. The only mutation is a soft delete through a deletion bitset
  * (like a deletion vector); add() is unsupported. Produced by GraphIndex.seal(); GraphIndex.fromSealed() re-inflates it.
  */
+@Internal
 public final class SealedGraph implements VecIndex {
     final int dim; final Metric metric; final GraphIndex.Params params; final int n;
     final float[] vec; final byte[] codes; final float[] qbase, qdelta, qnorm; final long[] ids; final byte[] level;

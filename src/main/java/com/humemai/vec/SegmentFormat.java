@@ -11,6 +11,7 @@ import java.util.zip.CRC32C;
  * little-endian. A segment file is: a 4096-byte header block, sections that each start at a multiple of the alignment, a footer with the
  * section table, and a 32-byte locator at the very end that names the footer and the exact file length.
  */
+@Internal
 public final class SegmentFormat {
     private SegmentFormat() {}
 

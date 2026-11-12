@@ -48,6 +48,7 @@ The library runs in a GraalVM native image. The CI job `native image smoke` buil
 
 ## Documentation
 
+- [docs/API.md](docs/API.md): the supported public classes, the internal ones, and what may change in a 0.x release.
 - [docs/DESIGN.md](docs/DESIGN.md): the architecture and the knobs of the tier configuration.
 - [docs/PROVIDER-CONTRACT.md](docs/PROVIDER-CONTRACT.md): what a host database must provide and what the library guarantees, with the status of each line.
 - [docs/ID-EPOCH-AND-REPLAY.md](docs/ID-EPOCH-AND-REPLAY.md): how ids are numbered, the epoch rule, and replay after a restart.

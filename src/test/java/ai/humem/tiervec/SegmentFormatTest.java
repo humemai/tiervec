@@ -76,7 +76,7 @@ class SegmentFormatTest {
         }
     }
 
-    // ---- U1: round trip ----
+    // ---- round trip ----
 
     @ParameterizedTest(name = "{0} sq8={1}")
     @CsvSource({"L2,false", "COSINE,false", "DOT,false", "L2,true", "COSINE,true"})
@@ -159,7 +159,7 @@ class SegmentFormatTest {
         for (SegmentInfo.Section s : info.sections()) assertEquals(0, s.offset() % SegmentFormat.ALIGN);
     }
 
-    // ---- U2: every section, damaged or cut ----
+    // ---- every section, damaged or cut ----
 
     @ParameterizedTest(name = "section id {0}")
     @ValueSource(ints = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12})
@@ -191,7 +191,7 @@ class SegmentFormatTest {
         }
     }
 
-    // ---- U4: header, footer and locator are checked in constant time ----
+    // ---- header, footer and locator are checked in constant time ----
 
     @Test
     void damageToTheMetadataIsDetectedBeforeAnySectionIsRead() throws IOException {
@@ -238,7 +238,7 @@ class SegmentFormatTest {
         SegmentReader.read(good, false);
     }
 
-    // ---- U3: versioning ----
+    // ---- versioning ----
 
     @Test
     void versionRules() throws IOException {

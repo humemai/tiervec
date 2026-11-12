@@ -14,7 +14,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * Rule F2 threaded test: W writer threads (add, replace, delete on their own id ranges) and R reader threads for a fixed time.
+ * Threaded test of the flat index: W writer threads (add, replace, delete on their own id ranges) and R reader threads for a fixed time.
  * Pass = zero exceptions, no reader ever sees a deleted id (deleted before the search started), results sorted and duplicate free, every
  * writer's own insert is found right after the insert (read-your-writes, checked every 25 ops), every writer finds its own last 100
  * inserts at the end, and (exact path only) final size and 100 random queries equal brute force over the writers' models.

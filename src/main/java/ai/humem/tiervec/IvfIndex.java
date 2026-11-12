@@ -24,7 +24,7 @@ import java.util.function.LongPredicate;
  * Written from the published algorithms (Sivic and Zisserman's inverted file, the IVF part of Jegou et al.'s IVFADC, Lloyd k-means with
  * k-means++ seeding); no third-party source was read or adapted.
  *
- * <p>Why IVF here (VECTOR-PROGRAM.md R1, R4, R7): an insert is one pass over the centroids plus an append, a delete is a tombstone, a build
+ * <p>Why IVF here: an insert is one pass over the centroids plus an append, a delete is a tombstone, a build
  * is k-means instead of a graph build. The price is that the centroids go stale when the data drifts; {@link #needsRetrain()} measures that
  * and {@link #retrain()} rebuilds in the background and swaps atomically.
  *

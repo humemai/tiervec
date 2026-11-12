@@ -10,7 +10,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.LockSupport;
 
 /**
- * Rule G2: 8 writer threads plus 8 reader threads for DURATION seconds (default 60), with consolidate() running in a background thread
+ * Threaded test of the graph index: 8 writer threads plus 8 reader threads for DURATION seconds (default 60), with consolidate() running in a background thread
  * every few seconds. Pass criteria: zero exceptions; read-your-writes (exact membership of every probed id right after its insert) with zero
  * misses, and the self-search recall check (see {@link Ryw}); deleted ids never returned by a search that started
  * after the delete returned; every writer finds its own last 100 inserts at the end; size() equals inserts minus deletes (no lost or

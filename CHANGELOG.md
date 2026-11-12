@@ -4,6 +4,10 @@ All notable changes to tiervec are in this file. The layout follows [Keep a Chan
 
 ## Unreleased
 
+### Fixed
+
+- The fp32 graph kernels of a JVM (`VKern`) sum the lanes in a fixed order, like the flat kernels. Before, the sum was `reduceLanes(ADD)`, whose order depends on the JIT tier, so the same search could return a score one ulp apart before and after compilation. This showed as a rare failure of `SegmentForgedFileTest` on arm64 ([#104](https://github.com/humemai/tiervec/issues/104)). A score can differ from the one of 0.1.0 in the last bit.
+
 ### Changed
 
 - Creating the GitHub release now publishes to Maven Central by itself and verifies the result (checksums, signatures, the built jars, a resolution from a fresh local repository), so the Publish click in the Central Portal is gone ([docs/RELEASING.md](docs/RELEASING.md#the-publish-run)).

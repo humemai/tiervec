@@ -10,7 +10,10 @@ import jdk.incubator.vector.VectorSpecies;
  * The Vector API version of the graph kernels. Only {@link Kern} calls this class, and only when {@link Kernels#VECTOR} is true, so a
  * scalar-only run (native image, no jdk.incubator.vector module, -Dai.humem.tiervec.scalar=true) never loads it. No Vector object appears in a
  * field type or a method signature of this class: the signatures use plain arrays, so a caller does not link against the incubator module.
- * Plain float arrays with offsets; two accumulators; scalar tail.
+ * Plain float arrays with offsets; two accumulators; scalar tail. The lanes are summed in a FIXED order, {@link VKernels#hsum}: {@code reduceLanes(ADD)} leaves
+ * the order unspecified and the interpreter, C1 and C2 differ (on aarch64 the same score came out one ulp apart before and after compilation, so a search of a
+ * graph and the same search of the same graph read back from a segment file could differ in the last bit of a score). {@code VKern} and {@code VKernels} are
+ * the only JVM holders of the fp32 kernels and they share one species, so they share one order.
  * dotQ8: dot of a float query with SIGNED int8 codes (the codes are converted to float lanes).
  */
 final class VKern {
@@ -30,7 +33,7 @@ final class VKern {
             s1 = FloatVector.fromArray(F, a, ao + i + L).fma(FloatVector.fromArray(F, b, bo + i + L), s1);
         }
         for (; i + L <= n; i += L) s0 = FloatVector.fromArray(F, a, ao + i).fma(FloatVector.fromArray(F, b, bo + i), s0);
-        float s = s0.add(s1).reduceLanes(VectorOperators.ADD);
+        float s = VKernels.hsum(s0.add(s1));
         for (; i < n; i++) s += a[ao + i] * b[bo + i];
         return s;
     }
@@ -49,7 +52,7 @@ final class VKern {
             FloatVector d0 = FloatVector.fromArray(F, a, ao + i).sub(FloatVector.fromArray(F, b, bo + i));
             s0 = d0.fma(d0, s0);
         }
-        float s = s0.add(s1).reduceLanes(VectorOperators.ADD);
+        float s = VKernels.hsum(s0.add(s1));
         for (; i < n; i++) { float d = a[ao + i] - b[bo + i]; s += d * d; }
         return s;
     }
@@ -62,7 +65,7 @@ final class VKern {
             FloatVector c = (FloatVector) ByteVector.fromArray(BS, codes, co + i).convertShape(VectorOperators.B2F, F, 0);
             s0 = FloatVector.fromArray(F, q, i).fma(c, s0);
         }
-        float s = s0.reduceLanes(VectorOperators.ADD);
+        float s = VKernels.hsum(s0);
         for (; i < n; i++) s += q[i] * codes[co + i];
         return s;
     }

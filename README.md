@@ -26,7 +26,7 @@ Every row says what the repository itself shows, and links the evidence. "Not me
 |---|---|---|
 | Does it build and pass its tests? | Yes, on Linux x86-64 (JDK 21 and 25, fast and slow tests), Linux arm64, macOS arm64 and Windows x64 (fast tests only on these three). Native image smoke jobs run on the same four platforms. | [Platform support](#platform-support), [docs/STATUS.md](docs/STATUS.md#what-exists) |
 | Sizes the tests use | The tests run on small collections. The long id-reuse test (`RidReuseBigLongTest`) and the long IVF program use 20,000 vectors, and the threaded graph program stays below 67,000. A self-search probe on the graph index ran at 100,000 to 200,000 vectors. | [docs/STATUS.md](docs/STATUS.md#graph-self-search-recall) |
-| Speed and recall at scale | Not measured yet. No benchmark numbers are published in this repository, and nothing here is proven at 1,000,000 vectors or at 10,000,000. | [docs/STATUS.md](docs/STATUS.md) |
+| Speed and recall at scale | Not measured yet. No benchmark numbers are published in this repository, and nothing here is proven at 1,000,000 vectors or at 10,000,000. A harness for these measurements exists, and CI runs it at 10,000 vectors as a smoke test. | [docs/BENCHMARKS.md](docs/BENCHMARKS.md), [docs/STATUS.md](docs/STATUS.md) |
 | Concurrent readers and writers | Tested at small sizes: threaded programs of 5 to 60 seconds, batch stress tests, and tests that hold a search inside a merge or a seal. Concurrent writers at scale: not proven. | [docs/STATUS.md](docs/STATUS.md#record-id-reuse-and-tombstones) |
 | Deletes, updates, reused ids, atomic batches | Tested, including races between a search and a merge or a rebuild. The races found so far ([#3](https://github.com/humemai/tiervec/issues/3), [#26](https://github.com/humemai/tiervec/issues/26), [#28](https://github.com/humemai/tiervec/issues/28)) have tests. | [docs/STATUS.md](docs/STATUS.md#record-id-reuse-and-tombstones), [docs/STATUS.md](docs/STATUS.md#atomic-batches) |
 | Restart and recovery | A settled tier can be checkpointed and reopened. Tests stop the publish after each step (a simulated process kill), flip bits in every byte that a CRC covers, and forge files with valid CRCs. Power loss is not tested. | [docs/SEGMENT-FORMAT.md](docs/SEGMENT-FORMAT.md), [docs/STATUS.md](docs/STATUS.md#id-epoch-and-replay) |
@@ -49,7 +49,7 @@ mvn -B -ntp verify            # fast tests: Vector API kernels, then the scalar 
 mvn -B -ntp verify -Pslow     # the long concurrency and stress tests (tag "slow")
 ```
 
-The tests are the test programs of the experiment, wrapped as JUnit 5 tests. A wrapper runs the program, asserts that no check failed, and asserts that at least the expected number of checks ran.
+The tests are the test programs of the experiment, wrapped as JUnit 5 tests. A wrapper runs the program, asserts that no check failed, and asserts that at least the expected number of checks ran. The benchmark harness is not part of the Maven build: [docs/BENCHMARKS.md](docs/BENCHMARKS.md) says how to compile and run it.
 
 ## Native image
 
@@ -95,7 +95,7 @@ There are three tiers. For tier 1, each row names the CI job that proves it. A j
 
 The slow tests run on Linux x86-64 only. There is no scalar-kernel native image job on Windows. The native image jobs run only when `src/main`, `src/smoke` or their workflow file change.
 
-**Tier 2: measured.** None yet. No benchmark numbers are published in this repository. The `SPEED` lines that the native image jobs print are informational, and the one measurement in the repository (the graph self-search recall in [docs/STATUS.md](docs/STATUS.md#graph-self-search-recall)) does not record its hardware. The shared GitHub runners are not a benchmark machine: a timing from them is a ratio between two things measured in the same run, not an absolute speed. A row moves here when its numbers and its hardware are published.
+**Tier 2: measured.** None yet. No benchmark numbers are published in this repository. The harness is described in [docs/BENCHMARKS.md](docs/BENCHMARKS.md); a row moves here when a result file with its hardware, JDK and commit is committed under `results/`. The `SPEED` lines that the native image jobs print are informational, and the one measurement in the repository (the graph self-search recall in [docs/STATUS.md](docs/STATUS.md#graph-self-search-recall)) does not record its hardware. The shared GitHub runners are not a benchmark machine: a timing from them is a ratio between two things measured in the same run, not an absolute speed. A row moves here when its numbers and its hardware are published.
 
 **Tier 3: best effort.** The code is plain Java 21 and has no native dependency, so it is expected to work, but nothing checks it and a problem there is fixed when it is cheap to do.
 
@@ -112,6 +112,7 @@ The slow tests run on Linux x86-64 only. There is no scalar-kernel native image 
 - [docs/PROVIDER-CONTRACT.md](docs/PROVIDER-CONTRACT.md): what a host database must provide and what the library guarantees, with the status of each line.
 - [docs/ID-EPOCH-AND-REPLAY.md](docs/ID-EPOCH-AND-REPLAY.md): how ids are numbered, the epoch rule, and replay after a restart.
 - [docs/SEGMENT-FORMAT.md](docs/SEGMENT-FORMAT.md): the segment file, the manifest, the publish order, and reopen, as the first cut implements them.
+- [docs/BENCHMARKS.md](docs/BENCHMARKS.md): the benchmark harness, how to run it, and what a result file holds.
 - [docs/STATUS.md](docs/STATUS.md): what exists, what does not exist yet.
 - [docs/ROADMAP.md](docs/ROADMAP.md): what is planned and in what order, with the open issues, and the non-goals.
 - [docs/RELEASING.md](docs/RELEASING.md): the version rule and the steps of a release. [CHANGELOG.md](CHANGELOG.md) lists the changes.

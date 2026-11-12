@@ -83,10 +83,19 @@ jobs:
         run: |
           start=$(date +%s)
           timeout 600 java -Xmx2g --add-modules jdk.incubator.vector -cp target/bench/classes com.humemai.vec.Bench \
-            --n 10000 --dim 768 --queries 100 --reps 3 --shares 0.1,0.01 --scan-below 0,1 \
+            --n 10000 --dim 768 --queries 100 --reps 3 --ef-sweep 32 --shares 0.1,0.01 --scan-below 0,1 \
             --conc-seconds 15 --conc-window-s 5 --write-rate 200 --delete-rate 50 --final-queries 50 \
             --min-recall 0.90 --min-scan-recall 0.99 --host-label github-runner --out target/bench/smoke.txt
           echo "smoke run: $(( $(date +%s) - start )) s"
+      - name: Control, the harness fails when a floor is not met
+        run: |
+          code=0
+          timeout 300 java -Xmx1g --add-modules jdk.incubator.vector -cp target/bench/classes com.humemai.vec.Bench \
+            --n 2000 --dim 128 --queries 20 --reps 1 --shares 0.1 --scan-below 0 --conc-seconds 0 \
+            --min-recall 1.5 --host-label github-runner --out target/bench/control.txt > target/bench/control.log || code=$?
+          echo "control exit code: $code"
+          test "$code" -eq 1
+          grep -q '^BENCH-FAILURE .*below the floor' target/bench/control.txt
       - name: Result file
         if: always()
         run: |

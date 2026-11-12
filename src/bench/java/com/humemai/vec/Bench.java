@@ -65,6 +65,7 @@ public final class Bench {
         d.put("dim", "768");
         d.put("k", "10");
         d.put("ef", "100");                 // beam width of a segment search (the default of the library)
+        d.put("ef-sweep", "20,50,200,400"); // extra unfiltered cells at these beam widths (a recall curve); empty is none
         d.put("efc", "200");                // efConstruction
         d.put("m", "16");                   // graph degree
         d.put("queries", "200");            // distinct queries
@@ -611,6 +612,7 @@ public final class Bench {
                 addS = (System.nanoTime() - t0) / 1e9;
                 long left = Math.max(1, (deadline - System.nanoTime()) / 1_000_000L);
                 boolean idle = timedOut || tier.awaitIdle(left);
+            if (timedOut) throw new IllegalStateException("the build did not finish within " + o.l("build-timeout-s") + " s, the later phases are skipped");
                 if (!idle) fail("build: the tier was not idle within the timeout");
                 idleS = (System.nanoTime() - t0) / 1e9;
             }
@@ -630,15 +632,16 @@ public final class Bench {
 
         void search() {
             phase("search");
-            cell("unfiltered", -1, 0, null, truth[0]);
+            cell("unfiltered", -1, 0, null, truth[0], ef);
+            for (double e : o.ds("ef-sweep")) cell("unfiltered", -1, 0, null, truth[0], (int) e);
             for (int s = 0; s < shares.length; s++) {
                 LongPredicate al = allow(shares[s], filterSeed);
-                for (double sb : scanBelows) cell("filtered", shares[s], sb, al, truth[1 + s]);
+                for (double sb : scanBelows) cell("filtered", shares[s], sb, al, truth[1 + s], ef);
             }
             tier.filterScanBelow(0);
         }
 
-        void cell(String kind, double share, double scanBelow, LongPredicate al, long[][] tr) {
+        void cell(String kind, double share, double scanBelow, LongPredicate al, long[][] tr, int efv) {
             tier.filterScanBelow(scanBelow);
             boolean scans = al != null && scanBelow >= share && scanBelow > 0;
             long[] lat = new long[reps * nq];
@@ -649,7 +652,7 @@ public final class Bench {
             for (int pass = 0; pass <= reps; pass++) {
                 for (int q = 0; q < nq; q++) {
                     long a = System.nanoTime();
-                    Hit[] h = tier.search(qs[q], k, al, ef);
+                    Hit[] h = tier.search(qs[q], k, al, efv);
                     long b = System.nanoTime();
                     if (pass == 0) {
                         double r = recall(h, tr[q]);
@@ -675,12 +678,13 @@ public final class Bench {
             for (long v : so) sumS += v / 1e9;
             double rec = rsum / nq;
             out.line(f("SEARCH kind=%s share=%s scanBelow=%s scanFirst=%b k=%d ef=%d recall=%.4f recallMin=%.2f p50us=%d p99us=%d p999us=%d meanUs=%.0f maxUs=%d"
-                            + " opsPerSecond=%.1f samples=%d badAnswers=%d maxScoreError=%.2e %s", kind, share < 0 ? "none" : String.valueOf(share), scanBelow, scans, k, ef, rec, rmin,
+                            + " opsPerSecond=%.1f samples=%d badAnswers=%d maxScoreError=%.2e %s", kind, share < 0 ? "none" : String.valueOf(share), scanBelow, scans, k, efv, rec, rmin,
                     pct(so, .5) / 1000, pct(so, .99) / 1000, pct(so, .999) / 1000, sumS / Math.max(1, so.length) * 1e6, so.length == 0 ? 0 : so[so.length - 1] / 1000,
                     so.length / Math.max(1e-9, sumS), so.length, bad, maxScoreErr, Gc.take().since(g0)));
             if (bad > 0) fail("search cell " + kind + " share " + share + " scanBelow " + scanBelow + ": " + bad + " bad answers");
+            // the floors are for the configured ef; the cells of the ef sweep are a curve, not a bar
             double floor = scans ? minScanRecall : minRecall;
-            if (rec < floor) fail(f("search cell %s share %s scanBelow %s: recall %.4f is below the floor %.4f", kind, share, scanBelow, rec, floor));
+            if (efv == ef && rec < floor) fail(f("search cell %s share %s scanBelow %s: recall %.4f is below the floor %.4f", kind, share, scanBelow, rec, floor));
         }
 
         // ---- CONC

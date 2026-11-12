@@ -21,3 +21,14 @@ updates:
       maven:
         patterns:
           - "*"
+  # The pins of the documentation build (MkDocs Material and mike). The build check shows what a bump breaks.
+  - package-ecosystem: pip
+    directory: /docs-site
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: docs
+    groups:
+      docs-build:
+        patterns:
+          - "*"

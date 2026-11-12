@@ -1,0 +1,56 @@
+# Builds the documentation site with `mkdocs build --strict`, so a link that points nowhere (a renamed page, a missing heading, a
+# file that moved) fails the pull request that did it. It also checks the vendored design system copy in docs/brand and that the
+# experimental banner is on every page. Nothing is published here: deploy-docs.yml publishes, and only from main. Actions are
+# pinned to full commit SHAs (see lint-workflows.yml).
+name: Build docs
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-docs-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-docs:
+    name: docs build (strict)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The design system in docs/brand is vendored, never edited here: it must still match the hash in its VERSION.md.
+      - name: Check the vendored design system copy
+        run: bash docs/brand/verify.sh
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+        with:
+          version: "0.13.4"
+
+      - name: Build docs
+        run: uv run --no-project --python 3.12 --with-requirements docs-site/requirements.txt mkdocs build --strict
+
+      - name: Check the banner is on every page
+        run: |
+          pages=$(find site -name index.html -not -path 'site/brand/*' | sort)
+          count=$(printf '%s\n' "$pages" | wc -l)
+          echo "pages built: $count"
+          test "$count" -ge 14
+          missing=0
+          for page in $pages; do
+            if ! grep -q 'Experimental and unreleased\.' "$page"; then
+              echo "no banner: $page"
+              missing=1
+            fi
+          done
+          exit "$missing"

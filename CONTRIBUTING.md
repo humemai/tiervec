@@ -26,6 +26,16 @@ mvn -B -ntp verify -Pslow     # the long concurrency and stress tests (tag "slow
 
 The fast tests run on every pull request, on JDK 21 and 25. The slow tests also run on every pull request, on x86-64 Linux, and take about 45 minutes. You do not have to run them on your own machine.
 
+### Build the documentation
+
+The site at <https://docs.humem.ai/tiervec/dev/> is built with MkDocs Material from the README, the other Markdown files in the repository root, and `docs/`. The hook `docs-site/hooks.py` turns the root files into pages and rewrites relative links: a link to another page stays a link to that page, and a link to any other file in the repository becomes a link to it on GitHub. The design system in `docs/brand` is a vendored copy. Do not edit it: change it in [humemai/design-system](https://github.com/humemai/design-system) and vendor it again. `bash docs/brand/verify.sh` checks the copy. To build the site as the check does:
+
+```
+uv run --no-project --python 3.12 --with-requirements docs-site/requirements.txt mkdocs build --strict
+```
+
+The build fails on a link that points nowhere. The workflow `deploy-docs.yml` publishes the site as `dev` when a change to the docs reaches `main`.
+
 ## Make a change
 
 1. Fork the repository and branch from `main`.
@@ -47,7 +57,7 @@ Three checks are required before a merge:
 - `fast tests (JDK 25)`
 - `Ensure SHA pinned actions`
 
-The other jobs (arm64, Windows, native image, slow tests) also run on a pull request. A failure there is read like any other failure, even where the check is not required.
+The other jobs (arm64, Windows, native image, slow tests, the documentation build) also run on a pull request. A failure there is read like any other failure, even where the check is not required.
 
 ### Workflow files
 

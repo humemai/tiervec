@@ -1,0 +1,122 @@
+site_name: tiervec
+site_url: https://docs.humem.ai/tiervec/
+site_description: Documentation for tiervec, a tiered vector index for agent-memory databases on the JVM (experimental, unreleased)
+site_author: HumemAI
+repo_url: https://github.com/humemai/tiervec
+repo_name: humemai/tiervec
+edit_uri: edit/main/docs/
+
+copyright: Copyright &copy; 2026 HumemAI
+
+theme:
+  name: material
+  language: en
+  # HumemAI design system (github.com/humemai/design-system), vendored in
+  # docs/brand: oxblood palette, Schibsted Grotesk + DM Mono (Newsreader
+  # headings come from brand/css/mkdocs.css), the white mark in the header.
+  font:
+    text: Schibsted Grotesk
+    code: DM Mono
+  logo: brand/logo/mark-white.svg
+  favicon: brand/export/favicon.svg
+  palette:
+    - scheme: default
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.sections
+    - navigation.path
+    - navigation.top
+    - navigation.footer
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - toc.follow
+  icon:
+    repo: fontawesome/brands/github
+    edit: material/pencil
+
+plugins:
+  - search
+
+# docs-site/hooks.py builds the pages that live in the repository root (the README is the
+# home page, then CHANGELOG, CONTRIBUTING, SECURITY, SUPPORT and THIRD_PARTY), rewrites the
+# links that leave the docs folder, and puts the experimental banner on every page.
+hooks:
+  - docs-site/hooks.py
+
+# A link that MkDocs cannot resolve is a warning, so `mkdocs build --strict` fails on it.
+validation:
+  omitted_files: warn
+  absolute_links: warn
+  unrecognized_links: warn
+  anchors: warn
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - toc:
+      permalink: true
+      toc_depth: 3
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/humemai/tiervec
+  version:
+    provider: mike
+
+# The vendored design system's bookkeeping stays out of the built site.
+exclude_docs: |
+  brand/VERSION.md
+  brand/verify.sh
+
+extra_css:
+  - brand/css/mkdocs.css
+  - stylesheets/tiervec.css
+
+nav:
+  - Home: index.md
+  - Status:
+      - Status: STATUS.md
+      - Roadmap: ROADMAP.md
+  - Design:
+      - Design: DESIGN.md
+      - Id epoch and replay: ID-EPOCH-AND-REPLAY.md
+      - Segment files: SEGMENT-FORMAT.md
+  - Reference:
+      - API and stability policy: API.md
+      - Host contract: PROVIDER-CONTRACT.md
+  - Project:
+      - Releasing: RELEASING.md
+      - Changelog: CHANGELOG.md
+      - Contributing: CONTRIBUTING.md
+      - Security: SECURITY.md
+      - Support: SUPPORT.md
+      - Third-party code: THIRD_PARTY.md

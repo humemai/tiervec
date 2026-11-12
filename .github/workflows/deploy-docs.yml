@@ -1,0 +1,100 @@
+# Publishes the documentation to https://docs.humem.ai/tiervec/dev/ as the version `dev`: the docs of main, labelled experimental
+# and unreleased because the library has no release. The pages are pushed with mike into the shared humemai/humemai-docs repository
+# under the prefix `tiervec`. There is no `latest` alias yet, and no tag trigger: both come with the first release (docs/RELEASING.md).
+#
+# It never runs on a pull request and never from a branch other than main. It needs the organization secret HUMEMAI_DOCS_TOKEN,
+# which humemai/humemai-docs accepts a push with. Actions are pinned to full commit SHAs (see lint-workflows.yml).
+name: Deploy docs
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'README.md'
+      - 'CHANGELOG.md'
+      - 'CONTRIBUTING.md'
+      - 'SECURITY.md'
+      - 'SUPPORT.md'
+      - 'THIRD_PARTY.md'
+      - 'docs/**'
+      - 'docs-site/**'
+      - 'mkdocs.yml'
+      - '.github/workflows/deploy-docs.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-docs
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: deploy docs (dev)
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      DOCS_REPO: humemai/humemai-docs
+      DOCS_BRANCH: main
+      DOCS_PREFIX: tiervec
+      DOCS_VERSION: dev
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check the vendored design system copy
+        run: bash docs/brand/verify.sh
+
+      - name: Check that the docs token is present
+        env:
+          DOCS_TOKEN: ${{ secrets.HUMEMAI_DOCS_TOKEN }}
+        run: |
+          if [ -z "$DOCS_TOKEN" ]; then
+            echo "HUMEMAI_DOCS_TOKEN is missing"
+            exit 1
+          fi
+          echo "HUMEMAI_DOCS_TOKEN is present"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+        with:
+          version: "0.13.4"
+
+      - name: Build docs (strict)
+        run: uv run --no-project --python 3.12 --with-requirements docs-site/requirements.txt mkdocs build --strict
+
+      - name: Check out humemai-docs
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ env.DOCS_REPO }}
+          ref: ${{ env.DOCS_BRANCH }}
+          token: ${{ secrets.HUMEMAI_DOCS_TOKEN }}
+          path: humemai-docs
+
+      - name: Configure git (humemai-docs)
+        run: |
+          git -C humemai-docs config user.name "github-actions[bot]"
+          git -C humemai-docs config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Deploy with mike
+        working-directory: humemai-docs
+        run: |
+          uv run --no-project --python 3.12 --with-requirements ../docs-site/requirements.txt \
+            mike deploy \
+            --deploy-prefix "$DOCS_PREFIX" \
+            --branch "$DOCS_BRANCH" \
+            --push \
+            --config-file ../mkdocs.yml \
+            --title "dev (experimental, unreleased)" \
+            "$DOCS_VERSION"
+          uv run --no-project --python 3.12 --with-requirements ../docs-site/requirements.txt \
+            mike set-default \
+            --deploy-prefix "$DOCS_PREFIX" \
+            --branch "$DOCS_BRANCH" \
+            --push \
+            --config-file ../mkdocs.yml \
+            "$DOCS_VERSION"

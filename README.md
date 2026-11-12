@@ -107,6 +107,8 @@ The slow tests run on Linux x86-64 only. There is no scalar-kernel native image 
 
 ## Documentation
 
+The pages below are published at <https://docs.humem.ai/tiervec/dev/> as the `dev` version. It follows `main` and is experimental and unreleased, like the library. The site is built from the Markdown files of this repository ([how to build it](CONTRIBUTING.md#build-the-documentation)).
+
 - [docs/API.md](docs/API.md): the supported public classes, the internal ones, and what may change in a 0.x release.
 - [docs/DESIGN.md](docs/DESIGN.md): the architecture and the knobs of the tier configuration.
 - [docs/PROVIDER-CONTRACT.md](docs/PROVIDER-CONTRACT.md): what a host database must provide and what the library guarantees, with the status of each line.

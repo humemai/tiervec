@@ -49,7 +49,7 @@ It covers 1-bit and 4-bit quantization schemes, IVF as a segment format, an on-d
 
 ## How to read measurements
 
-Measurements will be published with the harness, and none are published yet. A single run (n=1) is descriptive: it shows what happened, not what usually happens. A claim of a 1.3x difference or larger needs at least five runs, each in a fresh JVM, and a smaller difference needs more. Every study states its claim, its arms, its number of runs, and the bound it must meet before it runs. Memory figures say which unit and which counter they use, and latency figures say whether the JIT was warm.
+The harness is in the repository ([BENCHMARKS.md](BENCHMARKS.md)), and no measurement is published yet. A single run (n=1) is descriptive: it shows what happened, not what usually happens. A claim of a 1.3x difference or larger needs at least five runs, each in a fresh JVM, and a smaller difference needs more. Every study states its claim, its arms, its number of runs, and the bound it must meet before it runs. Memory figures say which unit and which counter they use, and latency figures say whether the JIT was warm.
 
 ## Non-goals
 

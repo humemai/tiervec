@@ -17,3 +17,4 @@ There is no release yet. This section holds what the first release (`0.1.0`) wil
 - A GraalVM native image smoke test on Linux (x86-64 and arm64), macOS arm64 and Windows x64.
 - CI on JDK 21 and 25, with the fast tests also on arm64 and on Windows x64.
 - The supported public surface and the stability policy ([docs/API.md](docs/API.md)).
+- A benchmark harness for the tier (`src/bench`, [docs/BENCHMARKS.md](docs/BENCHMARKS.md)) with a CI smoke at 10,000 vectors. No result file is published yet.

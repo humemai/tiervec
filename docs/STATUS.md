@@ -1,6 +1,6 @@
 # Status
 
-Experimental. The sources come from the first experiment and were imported unchanged except for the test wrappers and the small edits listed under "Import notes". Measurements of the experiment live in a private harness and are not published yet. This repository has no benchmark numbers.
+Experimental. The sources come from the first experiment and were imported unchanged except for the test wrappers and the small edits listed under "Import notes". Measurements of the experiment live in a private harness and are not published yet. This repository has no benchmark numbers. It has a harness for new measurements of the tier ([BENCHMARKS.md](BENCHMARKS.md)), and no result file yet.
 
 ## What exists
 
@@ -78,7 +78,7 @@ The threaded program (`GraphConcurrencyTest`) therefore checks read-your-writes 
 - IVF as a segment type of the tier. `IvfIndex` is standalone.
 - Native-image coverage beyond the smoke job. The program does not write or read segment files (`checkpoint`, `open`), does not call `rebuildFrom`, and uses no concurrent writers; the image is built on Linux (x86-64 and arm64) and on macOS arm64 in CI, and on Windows x64 in the vector job only (there is no scalar image job on Windows), and it is not published.
 - A release: no publish workflow, version `0.1.0-SNAPSHOT`. The version rule and the steps are in [RELEASING.md](RELEASING.md).
-- Published measurements. They are in a private harness and will be published later.
+- Published measurements. The experiment's own measurements are in a private harness. The harness `Bench` ([BENCHMARKS.md](BENCHMARKS.md)) is in the repository and the CI job `bench smoke` runs it at 10,000 vectors, but no result file is committed yet.
 - The longer mode of the graph test program (a recall curve at n = 20000) is not wired into the JUnit tests.
 
 ## Import notes
@@ -87,5 +87,5 @@ The threaded program (`GraphConcurrencyTest`) therefore checks read-your-writes 
 - Comments and Javadoc in the sources still use experiment-internal names (requirement ids, fix numbers, rule names). They will be cleaned up when the API is settled.
 - The graph test helper `T` was renamed `GraphT`, because the flat tests have their own `T` and both now live in one module and one package.
 - The test helpers got an `exitOnFailure` flag (default true, so a program run alone still ends the JVM on failure), and the end of each program's `main` is guarded by it. A JUnit wrapper sets it to false and reads the counters instead, because a `System.exit` would end the surefire JVM.
-- The micro-benchmark `FlatMicro`, the benchmark harness, and the native-image smoke test of the experiment are not part of this repository.
+- The micro-benchmark `FlatMicro` and the benchmark harness of the experiment are not part of this repository. `Bench` and `NativeSmoke` are new programs written for it, not imports.
 - One edit to a main source, `GraphIndex.java` (issue [#3](https://github.com/humemai/tiervec/issues/3), found by the slow CI job): `consolidate()`, `repairOrphans` and `seal()` size their bitsets and arrays from a snapshot of `nextOrd`, and a concurrent `add` can publish a node allocated after the snapshot as the entry point (or, in `repairOrphans`, return one from its search), so the node index fell past the end. `bit` now reads an index past the end as not set, `repairOrphans` sizes its arrays to cover the entry point, and `seal()` ignores an entry point from after its snapshot. `GraphConsolidateRaceTest` builds that view without threads. It was pushed alone first and failed the fast job on the unfixed code.

@@ -204,13 +204,10 @@
                                 <additionalOption>--add-modules</additionalOption>
                                 <additionalOption>jdk.incubator.vector</additionalOption>
                             </additionalOptions>
-                            <!-- Every doclint check except "missing" (a missing comment is a warning, and the package-private and internal
-                                 classes are not documented line by line) and "syntax". A broken {@link} or @param, bad HTML and the
-                                 accessibility checks still fail the build. "syntax" is off because IvfIndex.java line 744 has a raw "<="
-                                 in a comment, which doclint reports as "malformed HTML" under that group (the only error of the run
-                                 on 2026-11-12; turning off "html" alone did not help). Write "&lt;=" or {@code <=} there and delete
-                                 the "-syntax" to have the check back. -->
-                            <doclint>all,-missing,-syntax</doclint>
+                            <!-- Every doclint check except "missing": a missing comment is a warning, and the package-private and internal
+                                 classes are not documented line by line. A broken {@link} or @param, malformed HTML (a raw "<" or "&" in a
+                                 comment) and the accessibility checks fail the build. -->
+                            <doclint>all,-missing</doclint>
                             <quiet>true</quiet>
                         </configuration>
                         <executions>

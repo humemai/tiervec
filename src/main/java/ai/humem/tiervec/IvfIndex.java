@@ -741,7 +741,7 @@ public final class IvfIndex implements VecIndex {
         return search(q, k, allow, 0);
     }
 
-    /** nprobe <= 0 means the configured default (max(8, nlist / 16) unless set) */
+    /** {@code nprobe <= 0} means the configured default (max(8, nlist / 16) unless set) */
     public Hit[] search(float[] q, int k, LongPredicate allow, int nprobe) {
         if (k <= 0) return EMPTY;
         if (q.length != dim) throw new IllegalArgumentException("dim " + q.length + " != " + dim);

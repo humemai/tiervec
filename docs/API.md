@@ -1,6 +1,6 @@
 # Public API and stability policy
 
-This page says what a host may depend on and what may change. It describes the code on `main` (version `0.1.0-SNAPSHOT`). There is no release yet.
+This page says what a host may depend on and what may change. It describes the code of the first release, `0.1.0`, and of `main` after it.
 
 All classes live in one Java package, `ai.humem.tiervec`, and every class that a host needs is public. Some other classes are public only because the classes of the library call each other. This page separates the two groups. The package has the name of the library, and the Maven coordinates are `ai.humem:tiervec`.
 

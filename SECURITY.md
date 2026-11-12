@@ -26,7 +26,7 @@ A wrong answer, a crash on bad input that ends in an exception, and a slow query
 
 ## Supported versions
 
-There is no release yet. A fix goes to `main`. After the first release, a fix goes to the latest minor version, as a new patch version (see the version rule in the issue about the release process).
+The first release is `0.1.0`. A fix goes to the latest minor version as a new patch version, and `main` gets it too (see the version rule in [docs/RELEASING.md](docs/RELEASING.md)).
 
 ## What to expect
 

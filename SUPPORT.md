@@ -1,6 +1,6 @@
 # Support
 
-tiervec is an open source library, maintained by [HumemAI](https://humem.ai) under the Apache License 2.0. It is experimental: there is no release yet, and the API can change (see [docs/STATUS.md](docs/STATUS.md)).
+tiervec is an open source library, maintained by [HumemAI](https://humem.ai) under the Apache License 2.0. It is experimental: the first release is `0.1.0`, and the API can change (see [docs/STATUS.md](docs/STATUS.md)).
 
 ## Who maintains it
 

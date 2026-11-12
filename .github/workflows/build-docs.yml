@@ -48,7 +48,7 @@ jobs:
           test "$count" -ge 14
           missing=0
           for page in $pages; do
-            if ! grep -q 'Experimental and unreleased\.' "$page"; then
+            if ! grep -q '<strong>Experimental\.</strong>' "$page"; then
               echo "no banner: $page"
               missing=1
             fi

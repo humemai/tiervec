@@ -13,8 +13,7 @@ The source files stay as they are, so there is one source for GitHub and for the
    folder of the repository (a source file, a workflow, the license) becomes an absolute GitHub
    URL pinned to `main`. A link that points nowhere is a warning, and `mkdocs build --strict`
    fails on a warning.
-3. The banner. Every page starts, after its title, with a note that the library is experimental
-   and unreleased.
+3. The banner. Every page starts, after its title, with a note that the library is experimental.
 """
 
 import logging
@@ -43,7 +42,7 @@ ROOT_PAGES = {
 
 BANNER = (
     '<div class="hm-banner" markdown>\n'
-    "**Experimental and unreleased.** The API is not stable and nothing here is wired into a "
+    "**Experimental.** The API is not stable and nothing here is wired into a "
     "database engine yet. [What may change](API.md#stability-policy-for-0x).\n"
     "</div>\n"
 )

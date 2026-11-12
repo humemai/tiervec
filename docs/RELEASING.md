@@ -1,6 +1,6 @@
 # Releasing
 
-This page is the rule for version numbers and the steps of a release. There is no release yet: the version on `main` is `0.1.0-SNAPSHOT`.
+This page is the rule for version numbers and the steps of a release. The first release is `0.1.0`. Between releases the version on `main` is the next `-SNAPSHOT`.
 
 ## Version numbers
 
@@ -141,13 +141,3 @@ If the status is `FAILED`, read the messages in the portal, drop the deployment,
 ### Reminder: the Central token expires
 
 The Central user token was created on 2026-11-12 with an expiry of one year, so it expires around 2027-11. Rotate it before then: generate a new token in the portal, set `CENTRAL_USERNAME` and `CENTRAL_PASSWORD` again, and keep the date of the new expiry here. An expired token shows as an authentication error (HTTP 401) in the upload step of the publish run, and the dry run cannot catch it because it uses no token. If the signing key has an expiry (the example above has three years), that date is a second rotation point: extend it with `gpg --edit-key <FPR> expire`, export it again as above and upload the public key again.
-
-## Before the first release
-
-These open points are named in the repository and are settled before `0.1.0` is tagged:
-
-- Settled: the Java package is `ai.humem.tiervec` and the Maven coordinates are `ai.humem:tiervec`. The package was renamed before the first release, so the rename is not a breaking change. After the release a rename would be one.
-- Settled: comments and Javadoc in the sources use plain wording. The requirement ids, fix numbers and rule names of the first experiment are gone ([STATUS.md](STATUS.md#import-notes)).
-- The supported surface is listed in [API.md](API.md).
-- Settled: the documentation site publishes only the label `dev` ([docs.humem.ai/tiervec/dev](https://docs.humem.ai/tiervec/dev/)) until the first release. `deploy-docs.yml` has a tag trigger that publishes the release version with the alias `latest`, and `dev` stays as the label of `main`.
-- Settled: the workflow `release-central.yml` and the profile `release` exist ([#62](https://github.com/humemai/tiervec/issues/62)). Before the tag, the four secrets of "Maven Central" must exist and the dry run must be green on the release branch.

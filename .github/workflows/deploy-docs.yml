@@ -1,6 +1,6 @@
 # Publishes the documentation to https://docs.humem.ai/tiervec/ with mike, into the shared humemai/humemai-docs repository under the
 # prefix `tiervec`. Two kinds of version:
-#  - `dev`, on every push to main that changes a doc file: the docs of main, labelled experimental and unreleased.
+#  - `dev`, on every push to main that changes a doc file: the docs of main, labelled as changes that are not released yet.
 #  - A release, on the push of a bare version tag such as `0.1.0` (docs/RELEASING.md): the docs of that tag, deployed as `<tag>` with
 #    the alias `latest`. `latest` becomes the default version of the site, so https://docs.humem.ai/tiervec/ opens the newest release.
 #    Once a release exists, a push to main updates `dev` and leaves the default on `latest`.
@@ -59,7 +59,7 @@ jobs:
             fi
             { echo "DOCS_RELEASE=true"; echo "DOCS_VERSION=$REF_NAME"; echo "DOCS_TITLE=$REF_NAME"; } >> "$GITHUB_ENV"
           elif [ "$REF_TYPE" = "branch" ] && [ "$REF_NAME" = "main" ]; then
-            { echo "DOCS_RELEASE=false"; echo "DOCS_VERSION=dev"; echo "DOCS_TITLE=dev (experimental, unreleased)"; } >> "$GITHUB_ENV"
+            { echo "DOCS_RELEASE=false"; echo "DOCS_VERSION=dev"; echo "DOCS_TITLE=dev (unreleased changes)"; } >> "$GITHUB_ENV"
           else
             echo "::error::docs are deployed from main (dev) or from a version tag, not from $REF_TYPE '$REF_NAME'"; exit 1
           fi

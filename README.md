@@ -90,6 +90,12 @@ The slow tests run on Linux x86-64 only. There is no scalar-kernel native image 
 - [docs/STATUS.md](docs/STATUS.md): what exists, what does not exist yet.
 - [docs/ROADMAP.md](docs/ROADMAP.md): what is planned and in what order, with the open issues, and the non-goals.
 
+## Contributing and support
+
+- [CONTRIBUTING.md](CONTRIBUTING.md): how to build, test and open a pull request.
+- [SUPPORT.md](SUPPORT.md): who maintains tiervec and where to ask for help.
+- [SECURITY.md](SECURITY.md): how to report a security problem privately.
+
 ## License
 
 Apache-2.0, see [LICENSE](LICENSE). Papers and libraries this work builds on are listed in [THIRD_PARTY.md](THIRD_PARTY.md).

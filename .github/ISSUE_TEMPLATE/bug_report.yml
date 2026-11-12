@@ -1,0 +1,65 @@
+name: Bug report
+description: Something in tiervec gives a wrong answer, fails, or crashes
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for the report. A security problem does not belong here: see [SECURITY.md](https://github.com/humemai/tiervec/blob/main/SECURITY.md).
+  - type: input
+    id: version
+    attributes:
+      label: tiervec version or commit
+      description: The commit SHA of the checkout, or the version of the jar.
+      placeholder: 5455bb4
+    validations:
+      required: true
+  - type: textarea
+    id: jdk
+    attributes:
+      label: JDK
+      description: The output of `java -version`.
+      render: text
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Operating system and CPU architecture
+      placeholder: Ubuntu 24.04, x86-64
+    validations:
+      required: true
+  - type: dropdown
+    id: vector_api
+    attributes:
+      label: Vector API
+      description: The Vector API is an incubator module in the JDK. Without it, or with `-Dhumemai.vec.scalar=true`, every kernel uses its scalar twin.
+      options:
+        - On (run with --add-modules jdk.incubator.vector)
+        - Off (the module is missing)
+        - Off (-Dhumemai.vec.scalar=true)
+        - GraalVM native image
+        - I do not know
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include the full stack trace or the output.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: A short Java program or a failing test makes a fast fix much more likely. Say the dimension, the metric, the number of vectors, and how many threads write and search.
+      render: java
+    validations:
+      required: true

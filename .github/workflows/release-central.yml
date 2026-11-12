@@ -1,0 +1,296 @@
+# Builds, signs and uploads ai.humem:tiervec to Maven Central through the Central Portal (issue #62; the steps are in docs/RELEASING.md).
+#
+# Two paths:
+#  - Dry run (workflow_dispatch with dry-run=true, the default, or a pull request that changes pom.xml, the library sources or this file):
+#    runs on any branch. It generates a throwaway signing key inside the job,
+#    runs the release profile of pom.xml (sources jar, javadoc jar, signatures), writes the Central bundle and checks it. It has no
+#    credentials, so it cannot publish: the bundle is uploaded to the run as an artifact and nowhere else. On a pull request it keeps a
+#    Javadoc error or a broken release profile out of main. It is not a required check.
+#  - Publish (the release `published` event, or workflow_dispatch with dry-run=false on a tag): only for a bare version tag, for example
+#    `0.1.0`, that equals the version in pom.xml and whose commit is on main. It imports the signing key from the repository secrets and
+#    uploads the bundle to the Central Portal. autoPublish is false: the deployment stops at VALIDATED and the maintainer presses
+#    Publish in the portal, so nothing goes public without that click.
+#
+# Repository secrets (names only here): CENTRAL_USERNAME and CENTRAL_PASSWORD (the Central Portal user token), GPG_PRIVATE_KEY (armored
+# private key) and GPG_PASSPHRASE. A value is never echoed, never put on a command line and never written to a file: the settings.xml
+# holds ${env.NAME} references, and the key goes from a step environment variable to gpg on standard input. Actions are pinned to full
+# commit SHAs (see lint-workflows.yml).
+name: Release to Maven Central
+
+on:
+  release:
+    types:
+      - published
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: 'Dry run: build, sign with a throwaway key and check the bundle, but publish nothing'
+        type: boolean
+        default: true
+  pull_request:
+    paths:
+      - 'pom.xml'
+      - 'src/main/**'
+      - '.github/workflows/release-central.yml'
+      - '.github/scripts/import-signing-key.sh'
+
+permissions:
+  contents: read
+
+# A publish run never waits behind, and is never replaced by, a dry run: they have different groups.
+concurrency:
+  group: release-central-${{ github.event_name == 'release' && 'publish' || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  release:
+    name: ${{ (github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && !inputs.dry-run)) && 'central publish' || 'central dry run' }}
+    if: github.repository == 'humemai/tiervec'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # The whole history: the publish path checks that the tagged commit is on main.
+          fetch-depth: 0
+
+      - name: Decide the mode and check the tag
+        env:
+          EVENT: ${{ github.event_name }}
+          INPUT_DRY_RUN: ${{ inputs.dry-run }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          case "$EVENT" in
+            release)
+              dry_run=false ;;
+            pull_request)
+              dry_run=true ;;
+            workflow_dispatch)
+              case "$INPUT_DRY_RUN" in
+                true|false) dry_run="$INPUT_DRY_RUN" ;;
+                *) echo "::error::dry-run must be true or false, got '$INPUT_DRY_RUN'"; exit 1 ;;
+              esac ;;
+            *)
+              echo "::error::unexpected event $EVENT"; exit 1 ;;
+          esac
+
+          # The version has one source: the project <version> line of pom.xml (four spaces of indentation).
+          pom_version="$(awk -F'[<>]' '/^    <version>/ { print $3; exit }' pom.xml)"
+          if ! [[ "$pom_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-SNAPSHOT)?$ ]]; then
+            echo "::error::cannot read a version from pom.xml, got '$pom_version'"; exit 1
+          fi
+
+          if [ "$dry_run" = "false" ]; then
+            if ! [[ "$pom_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "::error::pom.xml version '$pom_version' is a SNAPSHOT or not a release version; nothing to publish"; exit 1
+            fi
+            if [ "$REF_TYPE" != "tag" ] || [ "$REF_NAME" != "$pom_version" ]; then
+              echo "::error::a publish runs only on the tag '$pom_version' (the version in pom.xml), not on $REF_TYPE '$REF_NAME'"; exit 1
+            fi
+            if [ "$EVENT" = "release" ] && [ "$RELEASE_TAG" != "$pom_version" ]; then
+              echo "::error::the release tag '$RELEASE_TAG' is not the pom version '$pom_version'"; exit 1
+            fi
+            if ! git merge-base --is-ancestor HEAD refs/remotes/origin/main; then
+              echo "::error::the tagged commit is not on main"; exit 1
+            fi
+          fi
+
+          echo "mode: dry_run=$dry_run, version $pom_version, $REF_TYPE $REF_NAME"
+          { echo "DRY_RUN=$dry_run"; echo "POM_VERSION=$pom_version"; } >> "$GITHUB_ENV"
+
+      - name: Check that the four secrets are present (publish only)
+        if: env.DRY_RUN == 'false'
+        env:
+          CENTRAL_USERNAME: ${{ secrets.CENTRAL_USERNAME }}
+          CENTRAL_PASSWORD: ${{ secrets.CENTRAL_PASSWORD }}
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          missing=0
+          for name in CENTRAL_USERNAME CENTRAL_PASSWORD GPG_PRIVATE_KEY GPG_PASSPHRASE; do
+            if [ -z "${!name}" ]; then
+              echo "::error::the secret $name is missing or empty"; missing=1
+            else
+              echo "$name is present"
+            fi
+          done
+          exit "$missing"
+
+      # No cache here: a release build never reads or writes the Maven cache of other runs.
+      - uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Toolchain
+        run: |
+          java -version
+          mvn -B -ntp -version
+          gpg --version | head -n 2
+
+      - name: Private GnuPG home
+        run: |
+          set -euo pipefail
+          umask 077
+          gnupg_home="$(mktemp -d "$RUNNER_TEMP/gnupg.XXXXXX")"
+          chmod 700 "$gnupg_home"
+          echo "GNUPGHOME=$gnupg_home" >> "$GITHUB_ENV"
+
+      - name: Throwaway signing key (dry run)
+        if: env.DRY_RUN == 'true'
+        run: |
+          set -euo pipefail
+          passphrase="$(openssl rand -hex 24)"
+          echo "::add-mask::$passphrase"
+          echo "GPG_PASSPHRASE=$passphrase" >> "$GITHUB_ENV"
+          printf '%s\n' "$passphrase" | gpg --batch --pinentry-mode loopback --passphrase-fd 0 \
+            --quick-generate-key 'tiervec dry run (throwaway key) <dry-run@example.invalid>' ed25519 sign 1d
+          gpg --batch --list-secret-keys --keyid-format long
+
+      - name: Import the signing key (publish)
+        if: env.DRY_RUN == 'false'
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: bash .github/scripts/import-signing-key.sh
+
+      # The publish path imports the key from a secret, which a dry run cannot do. It does the next best thing: the throwaway key is
+      # exported with its passphrase, imported into a second GnuPG home by the same script the publish path runs, and must sign there.
+      - name: Rehearse the key import with the throwaway key (dry run)
+        if: env.DRY_RUN == 'true'
+        run: |
+          set -euo pipefail
+          umask 077
+          armored="$(printf '%s\n' "$GPG_PASSPHRASE" | gpg --batch --pinentry-mode loopback --passphrase-fd 0 --armor --export-secret-keys)"
+          rehearsal_home="$(mktemp -d "$RUNNER_TEMP/gnupg-rehearsal.XXXXXX")"
+          chmod 700 "$rehearsal_home"
+          GNUPGHOME="$rehearsal_home" GPG_PRIVATE_KEY="$armored" bash .github/scripts/import-signing-key.sh
+          GNUPGHOME="$rehearsal_home" gpgconf --kill gpg-agent || true
+          rm -rf "$rehearsal_home"
+
+      # The Central plugin writes a bundle only for a release version; for a SNAPSHOT it stages the files and stops. A dry run on main (a
+      # SNAPSHOT) therefore builds the release form of the version, 0.1.0-SNAPSHOT as 0.1.0, in this checkout of the job only.
+      - name: Use the release form of the version (dry run)
+        if: env.DRY_RUN == 'true'
+        run: |
+          set -euo pipefail
+          if [[ "$POM_VERSION" == *-SNAPSHOT ]]; then
+            release_version="${POM_VERSION%-SNAPSHOT}"
+            awk -v v="$release_version" '!done && /^    <version>.*<\/version>$/ { print "    <version>" v "</version>"; done = 1; next } { print }' pom.xml > "$RUNNER_TEMP/pom.dry.xml"
+            cp "$RUNNER_TEMP/pom.dry.xml" pom.xml
+            echo "POM_VERSION=$release_version" >> "$GITHUB_ENV"
+            echo "dry run builds version $release_version (the pom says $POM_VERSION)"
+          else
+            echo "dry run builds version $POM_VERSION"
+          fi
+          grep -n -m1 '^    <version>' pom.xml
+
+      # The dry run has no Central credentials and no settings.xml: the upload is skipped (skipUpload) and could not authenticate anyway.
+      - name: Build, sign and write the bundle (dry run)
+        if: env.DRY_RUN == 'true'
+        run: mvn -B -ntp deploy -Prelease -DskipTests -DskipUpload=true
+
+      - name: Check the bundle (dry run)
+        if: env.DRY_RUN == 'true'
+        run: |
+          set -euo pipefail
+          v="$POM_VERSION"
+          bundle="$(find target -name 'central-bundle.zip' -print -quit)"
+          if [ -z "$bundle" ] || [ ! -s "$bundle" ]; then
+            echo "::error::no central-bundle.zip under target"; find target -name '*.zip'; exit 1
+          fi
+          echo "bundle: $bundle"
+          unzip -Z1 "$bundle" | sort > "$RUNNER_TEMP/bundle-list.txt"
+          cat "$RUNNER_TEMP/bundle-list.txt"
+          base="ai/humem/tiervec/$v/tiervec-$v"
+          missing=0
+          for suffix in .jar -sources.jar -javadoc.jar .pom; do
+            for ext in "" .asc .md5 .sha1; do
+              if ! grep -Fxq "$base$suffix$ext" "$RUNNER_TEMP/bundle-list.txt"; then
+                echo "::error::the bundle has no $base$suffix$ext"; missing=1
+              fi
+            done
+          done
+          test "$missing" = 0
+
+          unpack="$(mktemp -d "$RUNNER_TEMP/bundle.XXXXXX")"
+          unzip -q "$bundle" -d "$unpack"
+          dir="$unpack/ai/humem/tiervec/$v"
+          for suffix in .jar -sources.jar -javadoc.jar .pom; do
+            gpg --batch --verify "$dir/tiervec-$v$suffix.asc" "$dir/tiervec-$v$suffix"
+          done
+
+          unzip -Z1 "$dir/tiervec-$v-sources.jar" | grep -q '^ai/humem/tiervec/TieredIndex\.java$'
+          unzip -Z1 "$dir/tiervec-$v-javadoc.jar" | grep -qx 'index.html'
+          unzip -Z1 "$dir/tiervec-$v.jar" | grep -q '^ai/humem/tiervec/TieredIndex\.class$'
+          for element in '<name>' '<description>' '<url>' '<licenses>' '<developers>' '<scm>'; do
+            grep -Fq "$element" "$dir/tiervec-$v.pom" || { echo "::error::the bundled pom has no $element"; exit 1; }
+          done
+          echo "bundle checked: files, checksums, signatures, sources, javadoc and pom elements"
+          {
+            echo "### Central dry run for $v"
+            echo
+            echo "The release profile built, signed (throwaway key) and bundled $v. Nothing was uploaded or published."
+            echo
+            echo '```'
+            cat "$RUNNER_TEMP/bundle-list.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the dry-run files
+        if: env.DRY_RUN == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: central-dry-run-bundle
+          path: |
+            target/**/central-bundle.zip
+            target/*.jar
+            target/*.asc
+          retention-days: 7
+          if-no-files-found: error
+
+      # Publish: the credentials reach Maven only through environment variables. The settings.xml has references to them, mode 600,
+      # in the runner temp directory, and is removed by the last step.
+      - name: Build, sign and upload the bundle (publish)
+        if: env.DRY_RUN == 'false'
+        env:
+          CENTRAL_USERNAME: ${{ secrets.CENTRAL_USERNAME }}
+          CENTRAL_PASSWORD: ${{ secrets.CENTRAL_PASSWORD }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          umask 077
+          settings="$(mktemp "$RUNNER_TEMP/central-settings.XXXXXX")"
+          echo "SETTINGS_FILE=$settings" >> "$GITHUB_ENV"
+          chmod 600 "$settings"
+          cat > "$settings" <<'XML'
+          <settings xmlns="http://maven.apache.org/SETTINGS/1.2.0">
+            <servers>
+              <server>
+                <id>central</id>
+                <username>${env.CENTRAL_USERNAME}</username>
+                <password>${env.CENTRAL_PASSWORD}</password>
+              </server>
+            </servers>
+          </settings>
+          XML
+          test "$(stat -c %a "$settings")" = 600
+          mvn -B -ntp -s "$settings" deploy -Prelease
+          {
+            echo "### Central upload for $POM_VERSION"
+            echo
+            echo "The bundle was uploaded and validated. It is not published: open https://central.sonatype.com/publishing/deployments, check the deployment of ai.humem:tiervec:$POM_VERSION, and press Publish."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove the settings file and the GnuPG home
+        if: always()
+        run: |
+          rm -f "${SETTINGS_FILE:-}" "$RUNNER_TEMP"/central-settings.* "$RUNNER_TEMP"/probe.*
+          if [ -n "${GNUPGHOME:-}" ] && [ -d "$GNUPGHOME" ]; then
+            gpgconf --kill gpg-agent || true
+            rm -rf "$GNUPGHOME"
+          fi

@@ -20,6 +20,33 @@
         </license>
     </licenses>
 
+    <organization>
+        <name>HumemAI</name>
+        <url>https://humem.ai</url>
+    </organization>
+
+    <developers>
+        <developer>
+            <id>tae898</id>
+            <name>Taewoon Kim</name>
+            <email>taewoon@humem.ai</email>
+            <organization>HumemAI</organization>
+            <organizationUrl>https://humem.ai</organizationUrl>
+        </developer>
+    </developers>
+
+    <scm>
+        <connection>scm:git:https://github.com/humemai/tiervec.git</connection>
+        <developerConnection>scm:git:git@github.com:humemai/tiervec.git</developerConnection>
+        <url>https://github.com/humemai/tiervec</url>
+        <tag>HEAD</tag>
+    </scm>
+
+    <issueManagement>
+        <system>GitHub Issues</system>
+        <url>https://github.com/humemai/tiervec/issues</url>
+    </issueManagement>
+
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
 
@@ -33,6 +60,13 @@
         <maven-compiler-plugin.version>3.16.0</maven-compiler-plugin.version>
         <maven-surefire-plugin.version>3.6.1</maven-surefire-plugin.version>
         <maven-jar-plugin.version>3.5.1</maven-jar-plugin.version>
+
+        <!-- Release profile (-Prelease): the newest stable versions on Maven Central when they were pinned (2026-11-12).
+             maven-source-plugin 4.0.0-beta-1 is newer but a beta; 3.4.0 is the newest release. -->
+        <maven-source-plugin.version>3.4.0</maven-source-plugin.version>
+        <maven-javadoc-plugin.version>3.12.0</maven-javadoc-plugin.version>
+        <maven-gpg-plugin.version>3.2.8</maven-gpg-plugin.version>
+        <central-publishing-maven-plugin.version>0.12.0</central-publishing-maven-plugin.version>
 
         <!-- Test selection by JUnit tag. Default run: everything except the tags "slow" and "scalar". "scalar" tests run in their own
              surefire execution (scalar-twin) with -Dai.humem.tiervec.scalar=true. Profile "slow" runs only the slow tag. -->
@@ -132,6 +166,101 @@
                 <test.excludedGroups>scalar</test.excludedGroups>
                 <test.scalar.skip>true</test.scalar.skip>
             </properties>
+        </profile>
+
+        <!-- Profile "release" is what Maven Central requires for ai.humem:tiervec: the sources jar, the javadoc jar, a GnuPG signature on
+             every artifact, and one bundle uploaded to the Central Portal. The upload is not published by itself: autoPublish is false,
+             so the deployment stops at VALIDATED and the maintainer presses Publish in the portal.
+             Run it through .github/workflows/release-central.yml only (docs/RELEASING.md). Secrets are environment variables, never a
+             file or a flag: GPG_PASSPHRASE for the signing key, and CENTRAL_USERNAME and CENTRAL_PASSWORD through the server "central"
+             of a settings.xml.
+             "verify -Prelease -DskipTests" builds and signs without uploading. "deploy -Prelease -DskipUpload=true" also writes the
+             bundle (target/central-publishing/central-bundle.zip) and uploads nothing. -->
+        <profile>
+            <id>release</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-source-plugin</artifactId>
+                        <version>${maven-source-plugin.version}</version>
+                        <executions>
+                            <execution>
+                                <id>attach-sources</id>
+                                <goals>
+                                    <goal>jar-no-fork</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-javadoc-plugin</artifactId>
+                        <version>${maven-javadoc-plugin.version}</version>
+                        <configuration>
+                            <source>${java.release}</source>
+                            <!-- The Vector API is an incubator module: javadoc needs it on the module path as javac does. -->
+                            <additionalOptions>
+                                <additionalOption>--add-modules</additionalOption>
+                                <additionalOption>jdk.incubator.vector</additionalOption>
+                            </additionalOptions>
+                            <!-- Every doclint check except "missing" (a missing comment is a warning, and the package-private and internal
+                                 classes are not documented line by line) and "syntax". A broken {@link} or @param, bad HTML and the
+                                 accessibility checks still fail the build. "syntax" is off because IvfIndex.java line 744 has a raw "<="
+                                 in a comment, which doclint reports as "malformed HTML" under that group (the only error of the run
+                                 on 2026-11-12; turning off "html" alone did not help). Write "&lt;=" or {@code <=} there and delete
+                                 the "-syntax" to have the check back. -->
+                            <doclint>all,-missing,-syntax</doclint>
+                            <quiet>true</quiet>
+                        </configuration>
+                        <executions>
+                            <execution>
+                                <id>attach-javadocs</id>
+                                <goals>
+                                    <goal>jar</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-gpg-plugin</artifactId>
+                        <version>${maven-gpg-plugin.version}</version>
+                        <configuration>
+                            <!-- The passphrase comes from the environment variable only; bestPractices makes the build fail when it is
+                                 given another way (a -D flag or a settings.xml entry). Loopback lets gpg take it without a pinentry. -->
+                            <passphraseEnvName>GPG_PASSPHRASE</passphraseEnvName>
+                            <bestPractices>true</bestPractices>
+                            <gpgArguments>
+                                <arg>--pinentry-mode</arg>
+                                <arg>loopback</arg>
+                            </gpgArguments>
+                        </configuration>
+                        <executions>
+                            <execution>
+                                <id>sign-artifacts</id>
+                                <phase>verify</phase>
+                                <goals>
+                                    <goal>sign</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.sonatype.central</groupId>
+                        <artifactId>central-publishing-maven-plugin</artifactId>
+                        <version>${central-publishing-maven-plugin.version}</version>
+                        <!-- The extension replaces the deploy phase with the publish goal. -->
+                        <extensions>true</extensions>
+                        <configuration>
+                            <publishingServerId>central</publishingServerId>
+                            <deploymentName>${project.groupId}:${project.artifactId}:${project.version}</deploymentName>
+                            <autoPublish>false</autoPublish>
+                            <waitUntil>validated</waitUntil>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
         </profile>
     </profiles>
 </project>

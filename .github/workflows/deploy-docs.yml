@@ -1,15 +1,22 @@
-# Publishes the documentation to https://docs.humem.ai/tiervec/dev/ as the version `dev`: the docs of main, labelled experimental
-# and unreleased because the library has no release. The pages are pushed with mike into the shared humemai/humemai-docs repository
-# under the prefix `tiervec`. There is no `latest` alias yet, and no tag trigger: both come with the first release (docs/RELEASING.md).
+# Publishes the documentation to https://docs.humem.ai/tiervec/ with mike, into the shared humemai/humemai-docs repository under the
+# prefix `tiervec`. Two kinds of version:
+#  - `dev`, on every push to main that changes a doc file: the docs of main, labelled experimental and unreleased.
+#  - A release, on the push of a bare version tag such as `0.1.0` (docs/RELEASING.md): the docs of that tag, deployed as `<tag>` with
+#    the alias `latest`. `latest` becomes the default version of the site, so https://docs.humem.ai/tiervec/ opens the newest release.
+#    Once a release exists, a push to main updates `dev` and leaves the default on `latest`.
+# A tag push ignores the `paths` filter below (GitHub does not evaluate path filters for tags). A deploy that failed can be run again
+# with workflow_dispatch on the tag (a branch other than main is refused).
 #
-# It never runs on a pull request and never from a branch other than main. It needs the organization secret HUMEMAI_DOCS_TOKEN,
-# which humemai/humemai-docs accepts a push with. Actions are pinned to full commit SHAs (see lint-workflows.yml).
+# It never runs on a pull request. It needs the organization secret HUMEMAI_DOCS_TOKEN, which humemai/humemai-docs accepts a push
+# with. Actions are pinned to full commit SHAs (see lint-workflows.yml).
 name: Deploy docs
 
 on:
   push:
     branches:
       - main
+    tags:
+      - '[0-9]+.[0-9]+.[0-9]+'
     paths:
       - 'README.md'
       - 'CHANGELOG.md'
@@ -32,16 +39,31 @@ concurrency:
 
 jobs:
   deploy:
-    name: deploy docs (dev)
-    if: github.ref == 'refs/heads/main'
+    name: deploy docs (${{ github.ref_type == 'tag' && 'release' || 'dev' }})
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
       DOCS_REPO: humemai/humemai-docs
       DOCS_BRANCH: main
       DOCS_PREFIX: tiervec
-      DOCS_VERSION: dev
     steps:
+      - name: Decide the version
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [ "$REF_TYPE" = "tag" ]; then
+            if ! [[ "$REF_NAME" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "::error::the tag '$REF_NAME' is not a bare version such as 0.1.0"; exit 1
+            fi
+            { echo "DOCS_RELEASE=true"; echo "DOCS_VERSION=$REF_NAME"; echo "DOCS_TITLE=$REF_NAME"; } >> "$GITHUB_ENV"
+          elif [ "$REF_TYPE" = "branch" ] && [ "$REF_NAME" = "main" ]; then
+            { echo "DOCS_RELEASE=false"; echo "DOCS_VERSION=dev"; echo "DOCS_TITLE=dev (experimental, unreleased)"; } >> "$GITHUB_ENV"
+          else
+            echo "::error::docs are deployed from main (dev) or from a version tag, not from $REF_TYPE '$REF_NAME'"; exit 1
+          fi
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -83,18 +105,42 @@ jobs:
       - name: Deploy with mike
         working-directory: humemai-docs
         run: |
-          uv run --no-project --python 3.12 --with-requirements ../docs-site/requirements.txt \
-            mike deploy \
-            --deploy-prefix "$DOCS_PREFIX" \
-            --branch "$DOCS_BRANCH" \
-            --push \
-            --config-file ../mkdocs.yml \
-            --title "dev (experimental, unreleased)" \
-            "$DOCS_VERSION"
-          uv run --no-project --python 3.12 --with-requirements ../docs-site/requirements.txt \
+          set -euo pipefail
+          mike() {
+            uv run --no-project --python 3.12 --with-requirements ../docs-site/requirements.txt mike "$@"
+          }
+          if [ "$DOCS_RELEASE" = "true" ]; then
+            # A release: the version and the alias `latest` (the alias moves to this version), and the site default is `latest`.
+            mike deploy --update-aliases \
+              --deploy-prefix "$DOCS_PREFIX" \
+              --branch "$DOCS_BRANCH" \
+              --push \
+              --config-file ../mkdocs.yml \
+              --title "$DOCS_TITLE" \
+              "$DOCS_VERSION" latest
             mike set-default \
-            --deploy-prefix "$DOCS_PREFIX" \
-            --branch "$DOCS_BRANCH" \
-            --push \
-            --config-file ../mkdocs.yml \
-            "$DOCS_VERSION"
+              --deploy-prefix "$DOCS_PREFIX" \
+              --branch "$DOCS_BRANCH" \
+              --push \
+              --config-file ../mkdocs.yml \
+              latest
+          else
+            mike deploy \
+              --deploy-prefix "$DOCS_PREFIX" \
+              --branch "$DOCS_BRANCH" \
+              --push \
+              --config-file ../mkdocs.yml \
+              --title "$DOCS_TITLE" \
+              "$DOCS_VERSION"
+            # Until the first release the site default is `dev`. From the first release on it is `latest` and a push to main leaves it.
+            if grep -q '"latest"' "$DOCS_PREFIX/versions.json"; then
+              echo "A release exists: the default stays on latest"
+            else
+              mike set-default \
+                --deploy-prefix "$DOCS_PREFIX" \
+                --branch "$DOCS_BRANCH" \
+                --push \
+                --config-file ../mkdocs.yml \
+                "$DOCS_VERSION"
+            fi
+          fi

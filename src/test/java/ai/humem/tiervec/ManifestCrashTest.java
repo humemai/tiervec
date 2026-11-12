@@ -91,7 +91,7 @@ class ManifestCrashTest {
         return Manifest.of(2, fp, List.of(m1.entries().get(0), e2));
     }
 
-    // ---- U5: a crash after every step of the publish ----
+    // ---- a crash after every step of the publish ----
 
     @ParameterizedTest(name = "crash after {0}")
     @EnumSource(FaultHook.Step.class)
@@ -165,7 +165,7 @@ class ManifestCrashTest {
         assertEquals(m1, Manifest.readLatest(dir));
     }
 
-    // ---- U6: the newest manifest is damaged ----
+    // ---- the newest manifest is damaged ----
 
     /** both generations published, nothing cleaned (the state between steps 7 and 8) */
     private Manifest twoGenerations() throws IOException {

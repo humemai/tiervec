@@ -218,7 +218,7 @@ public final class IvfTest {
         // Filtered probing stops when rerankFactor * k (50) QUALIFYING candidates are in the heap (the heap only receives vectors that pass
         // allow) and it ends in a full scan, which is exact, when fewer qualify (1/100 at n=6000 measured 1.0000). At 1/10 and n=6000 about 420
         // vectors qualify, so the stop rule looks at the nearest ~500 scanned vectors only, and a true top-10 neighbour just outside them is
-        // missed: measured 0.886 at n=6000 (scalar run, 2026-11-07; the vector run is in the same log, step IvfTest 6000) against 1.0000 at
+        // missed: measured 0.886 at n=6000 (scalar run) against 1.0000 at
         // n=20000. The floor therefore depends on n: 0.9 from n=10000, 0.85 below (about 3 points under the n=6000 measurement).
         double fl = n >= 10000 ? 0.9 : 0.85;
         double[] thr = {fl, fl, n >= 10000 ? 0.8 : 0.85};

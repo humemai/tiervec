@@ -22,8 +22,8 @@ import java.util.function.LongPredicate;
 import java.util.function.Supplier;
 
 /**
- * Tiered vector index for agent memory: a bounded exact TAIL in front of immutable graph SEGMENTS (the LSM shape of the 2026-11-07
- * vector program, requirements R1 to R10).
+ * Tiered vector index for agent memory: a bounded exact TAIL in front of immutable graph SEGMENTS (an LSM-style layout: writes go to
+ * the tail, a seal turns the tail into a segment, merges keep the number of segments small).
  *
  * <p>Source of truth. The vectors in the records are the truth; the segments (graphs) and the floor map are DERIVED data. After a crash
  * the engine would re-read its records and call {@link #rebuildFrom(Iterable)}: everything (tail, segments, floor) is reconstructed
@@ -64,7 +64,7 @@ import java.util.function.Supplier;
  * reads, a replaced view with readers is held, and the remaining entries are dropped once those searches are done (by the worker, or by
  * awaitIdle, mergeNow, sealNow or checkpoint on the calling thread).
  *
- * <p>Size-ratio trigger (fix7, {@code mergeTriggerRatio} X, default 0 = off and the code is then the old code). The segment with the most live rows is the BIG one. When the live rows of all the other
+ * <p>Size-ratio trigger ({@code mergeTriggerRatio} X, default 0 = off: merges are then picked by the count rule alone). The segment with the most live rows is the BIG one. When the live rows of all the other
  * segments together exceed X times the live rows of the big one, ALL segments are merged into one (the small ones go into the big one). Otherwise, when the count exceeds {@code maxSegments} and
  * maxSegments is at least 2, the count rule picks among the SMALL segments only (the big one is never a candidate), so the small segments merge among themselves and the big one is rewritten only by the
  * ratio rule; with maxSegments 1 the count rule includes the big one (a merge at every seal). With a large maxSegments the small segments pile up until the ratio fires. A merge into the big segment
@@ -128,22 +128,22 @@ public final class TieredIndex implements VecIndex {
      * maxSegments: merge when exceeded (default 8). mergeFan: smallest segments merged at once (default 4). deadFraction: compact a
      * segment when this share of it is hidden (default 0.3). mergeRatePerSec: merge builder insert rate cap, 0 = unlimited.
      * hardTailFactor: back pressure threshold. tailQuant: NONE (exact fp32) or SQ8. graph: segment graph parameters (efSearch is the
-     * search beam). buildThreads: threads of one seal or merge build. splitBeam (fix5, 2026-11-07, default false = the old behaviour, the
+     * search beam). buildThreads: threads of one seal or merge build. splitBeam (default false = the
      * full beam in every segment): when true and more than one segment is searched, segment s gets the beam max(k, ceil(ef * rows(s) / rows of
      * all searched segments)) instead of ef. tailQuant is the tail kernel: NONE scans fp32, SQ8 scans int8 codes (FlatIndex default kernel
-     * F8X4) and reranks the best 5 * k candidates in fp32. mergeTriggerRatio (fix7, 2026-11-07, default 0 = off, the old behaviour bit for bit): the size-ratio merge trigger. When it is above 0 and
+     * F8X4) and reranks the best 5 * k candidates in fp32. mergeTriggerRatio (default 0 = off): the size-ratio merge trigger. When it is above 0 and
      * the live rows of all segments except the largest exceed mergeTriggerRatio times the live rows of the largest, the worker merges ALL segments into one (the small ones go into the big one); otherwise
      * the count rule (maxSegments, mergeFan) applies to the small segments only (the largest is not a candidate) when maxSegments is at least 2, and to all segments when it is 1 (merge at every seal).
      */
     public record Config(int tailLimit, long tailAgeMs, int smallLimit, int maxSegments, int mergeFan, double deadFraction,
                          int mergeRatePerSec, int hardTailFactor, Quant tailQuant, GraphIndex.Params graph, int buildThreads, boolean splitBeam, double mergeTriggerRatio) {
-        /** the 12-component form from before fix7: mergeTriggerRatio 0, the old behaviour (existing callers and tests keep compiling) */
+        /** the 12-component form without mergeTriggerRatio: it is 0 (off) */
         public Config(int tailLimit, long tailAgeMs, int smallLimit, int maxSegments, int mergeFan, double deadFraction,
                       int mergeRatePerSec, int hardTailFactor, Quant tailQuant, GraphIndex.Params graph, int buildThreads, boolean splitBeam) {
             this(tailLimit, tailAgeMs, smallLimit, maxSegments, mergeFan, deadFraction, mergeRatePerSec, hardTailFactor, tailQuant, graph, buildThreads, splitBeam, 0.0);
         }
 
-        /** the 11-component form from before fix5: splitBeam false, the old behaviour (existing callers and tests keep compiling) */
+        /** the 11-component form without splitBeam and mergeTriggerRatio: splitBeam is false and mergeTriggerRatio is 0 (off) */
         public Config(int tailLimit, long tailAgeMs, int smallLimit, int maxSegments, int mergeFan, double deadFraction,
                       int mergeRatePerSec, int hardTailFactor, Quant tailQuant, GraphIndex.Params graph, int buildThreads) {
             this(tailLimit, tailAgeMs, smallLimit, maxSegments, mergeFan, deadFraction, mergeRatePerSec, hardTailFactor, tailQuant, graph, buildThreads, false, 0.0);
@@ -197,11 +197,11 @@ public final class TieredIndex implements VecIndex {
         }
     }
 
-    /** counters for the report. segmentSizes (fix3, 2026-11-07): rows of each segment, oldest first, hidden copies included; its length is segments. fix5 (2026-11-07): adds (calls of add), mergeWriteAmp (mergedVectors / adds, 0 when adds is 0),
+    /** counters for the report. segmentSizes: rows of each segment, oldest first, hidden copies included; its length is segments. adds (calls of add), mergeWriteAmp (mergedVectors / adds, 0 when adds is 0),
      *  totalWriteAmp ((sealedVectors + mergedVectors) / adds), maxSealMillis and maxMergeMillis (the longest single seal or merge).
-     *  fix6 (2026-11-07): the task log, one slot per finished seal or merge in finish order: taskKinds (1 seal, 2 merge), taskStartNs and taskEndNs (System.nanoTime(), the harness clock; end is the instant after the swap),
+     *  The task log, one slot per finished seal or merge in finish order: taskKinds (1 seal, 2 merge), taskStartNs and taskEndNs (System.nanoTime() values; end is the instant after the swap),
      *  taskRows (rows built); taskDropped counts tasks that did not fit the 4096 slots.
-     *  fix7 (2026-11-07): bigMerges and bigMergedVectors count the merges that rewrote the segment with the most live rows at pick time (a forced mergeNow included) and the rows they built; both are parts of merges and mergedVectors */
+     *  bigMerges and bigMergedVectors count the merges that rewrote the segment with the most live rows at pick time (a forced mergeNow included) and the rows they built; both are parts of merges and mergedVectors */
     public record Stats(long seals, long merges, int tailSize, int segments, long bytesHeld, long sealMillis, long mergeMillis,
                         int floorEntries, long failures, int live, long backpressureWaits, long sealedVectors, long mergedVectors,
                         int[] segmentSizes, long adds, double mergeWriteAmp, double totalWriteAmp, long maxSealMillis, long maxMergeMillis,
@@ -378,11 +378,11 @@ public final class TieredIndex implements VecIndex {
     private final AtomicLong seals = new AtomicLong(), merges = new AtomicLong(), sealNanos = new AtomicLong(), mergeNanos = new AtomicLong();
     private final AtomicLong failures = new AtomicLong(), backpressure = new AtomicLong(), sealedVectors = new AtomicLong(), mergedVectors = new AtomicLong();
     private final AtomicLong maxSealNanos = new AtomicLong(), maxMergeNanos = new AtomicLong();
-    private final AtomicLong bigMerges = new AtomicLong(), bigMergedVectors = new AtomicLong(); // fix7: merges that rewrote the largest segment, and the rows they built
-    private volatile long addsCount; // add() calls (fix5); incremented under mu
+    private final AtomicLong bigMerges = new AtomicLong(), bigMergedVectors = new AtomicLong(); // merges that rewrote the largest segment, and the rows they built
+    private volatile long addsCount; // add() calls; incremented under mu
     private final Thread worker;
 
-    // fix6 (2026-11-07, README "Tier p99 under heavy inserts"): the seal and merge intervals as System.nanoTime() stamps, the clock the harness uses for its own timestamps. doSeal and doMerge always run
+    // task log: the seal and merge intervals as System.nanoTime() stamps, so a benchmark can compare them with its own timestamps. doSeal and doMerge always run
     // under the work lock (the worker loop, sealNow, mergeNow), so there is one writer; stats() reads the slots below taskCount, which is written after the slot (volatile).
     private static final int TASK_LOG_CAP = 4096;
     private final int[] taskKind = new int[TASK_LOG_CAP];
@@ -391,10 +391,10 @@ public final class TieredIndex implements VecIndex {
     private final long[] taskEnd = new long[TASK_LOG_CAP];
     private volatile int taskCount;
     private final AtomicLong taskDropped = new AtomicLong();
-    /** fix6: seal builds are throttled to this many inserts per second (0 = unthrottled, the old behaviour); a harness knob set by setSealRatePerSec, not a Config component */
+    /** seal builds are throttled to this many inserts per second (0 = unthrottled); a benchmark knob set by setSealRatePerSec, not a Config component */
     private volatile int sealRate;
 
-    /** fix6: one finished task (kind 1 seal, 2 merge) into the log; the caller holds the work lock */
+    /** one finished task (kind 1 seal, 2 merge) into the log; the caller holds the work lock */
     private void logTask(int kind, long startNs, long endNs, int rows) {
         int i = taskCount;
         if (i >= TASK_LOG_CAP) {
@@ -678,7 +678,7 @@ public final class TieredIndex implements VecIndex {
         int searched = 0;
         double scanBelow = filterScanBelow;
         int ef = Math.max(k, efSearch);
-        long sizeSum = 0; // fix5 splitBeam only: rows of the segments that will be searched; 0 (the default) keeps the full beam ef in every segment
+        long sizeSum = 0; // splitBeam only: rows of the segments that will be searched; 0 (the default) keeps the full beam ef in every segment
         if (cfg.splitBeam() && segs.length > 1) {
             for (Segment t : segs) if (t.n > 0 && t.dead < t.n) sizeSum += t.n;
         }
@@ -824,7 +824,7 @@ public final class TieredIndex implements VecIndex {
             if (ns >= 2 || segs[0].dead > 0) return new ArrayList<>(Arrays.asList(segs));
             return null;
         }
-        // fix7: the size-ratio trigger; mergeTriggerRatio 0 (the default) skips this block, and cand below is segs itself, so the rest is the old code
+        // the size-ratio trigger; mergeTriggerRatio 0 (the default) skips this block, and cand below is segs itself, so the count rule sees every segment
         if (cfg.mergeTriggerRatio() > 0.0 && ns >= 2) {
             int big = largestIndex(segs);
             long bigLive = segs[big].n - segs[big].dead, smallLive = 0;
@@ -833,7 +833,7 @@ public final class TieredIndex implements VecIndex {
         }
         if (ns > cfg.maxSegments()) {
             Segment[] cand = segs;
-            if (cfg.mergeTriggerRatio() > 0.0 && cfg.maxSegments() >= 2) { // fix7: the small segments merge among themselves; the big one only through the ratio rule above
+            if (cfg.mergeTriggerRatio() > 0.0 && cfg.maxSegments() >= 2) { // the small segments merge among themselves; the big one only through the ratio rule above
                 int big = largestIndex(segs);
                 cand = new Segment[ns - 1];
                 for (int i = 0, j = 0; i < ns; i++) if (i != big) cand[j++] = segs[i];
@@ -861,7 +861,7 @@ public final class TieredIndex implements VecIndex {
         return one;
     }
 
-    /** fix7: index of the segment with the most live rows (n - dead); ties go to the oldest (lowest index) */
+    /** index of the segment with the most live rows (n - dead); ties go to the oldest (lowest index) */
     private static int largestIndex(Segment[] segs) {
         int best = 0;
         for (int i = 1; i < segs.length; i++) if (segs[i].n - segs[i].dead > segs[best].n - segs[best].dead) best = i;
@@ -956,7 +956,7 @@ public final class TieredIndex implements VecIndex {
         View v0 = view;
         List<Segment> picked = pickMerge(v0.segs, force);
         if (picked == null || picked.isEmpty()) return false;
-        final boolean intoLargest = picked.contains(v0.segs[largestIndex(v0.segs)]); // fix7: this merge rewrites the largest segment
+        final boolean intoLargest = picked.contains(v0.segs[largestIndex(v0.segs)]); // this merge rewrites the largest segment
         activity = 2;
         try {
             int total = 0;
@@ -1059,7 +1059,7 @@ public final class TieredIndex implements VecIndex {
     private SealedGraph build(long[] ids, int n, VecSource src, boolean throttle) {
         GraphIndex gi = new GraphIndex(dim, metric, cfg.graph());
         int th = Math.max(1, Math.min(cfg.buildThreads(), n / 256 + 1));
-        int rate = throttle ? cfg.mergeRatePerSec() : sealRate; // fix6: sealRate is 0 (unthrottled) unless the harness sets it
+        int rate = throttle ? cfg.mergeRatePerSec() : sealRate; // sealRate is 0 (unthrottled) unless a benchmark sets it
         if (th == 1) {
             addRange(gi, ids, src, 0, n, rate);
         } else {
@@ -1576,7 +1576,7 @@ public final class TieredIndex implements VecIndex {
     public Stats stats() {
         View v = view;
         final long a = addsCount, sv = sealedVectors.get(), mv = mergedVectors.get();
-        final int tc = taskCount; // fix6: published task slots only
+        final int tc = taskCount; // published task slots only
         return new Stats(seals.get(), merges.get(), pendingTail(), v.segs.length, bytesHeld(), sealNanos.get() / 1_000_000L,
                 mergeNanos.get() / 1_000_000L, floor.size(), failures.get(), live.get(), backpressure.get(), sealedVectors.get(),
                 mergedVectors.get(), sizesOf(v), a, a > 0 ? (double) mv / a : 0.0, a > 0 ? (double) (sv + mv) / a : 0.0,

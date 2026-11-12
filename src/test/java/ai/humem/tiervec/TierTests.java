@@ -500,7 +500,7 @@ public final class TierTests {
 
 
     /**
-     * The R4 number: one agent, one turn = 1 insert then 4 queries (as in the agent-memory study), the tail cap far from reached, seals and
+     * Agent-memory rate: one agent, one turn = 1 insert then 4 queries (the access pattern of an agent memory), the tail cap far from reached, seals and
      * merges running in the background. Query latency per phase (quiet, during seal, during merge) with the sample counts.
      */
     static void testAgentRate() {

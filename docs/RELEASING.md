@@ -57,6 +57,6 @@ A tag is never moved or deleted. A mistake in a release is fixed by the next PAT
 These open points are named in the repository and are settled before `0.1.0` is tagged:
 
 - Settled: the Java package is `ai.humem.tiervec` and the Maven coordinates are `ai.humem:tiervec`. The package was renamed before the first release, so the rename is not a breaking change. After the release a rename would be one.
-- Comments and Javadoc in the sources still use names from the first experiment ([STATUS.md](STATUS.md#import-notes)).
+- Settled: comments and Javadoc in the sources use plain wording. The requirement ids, fix numbers and rule names of the first experiment are gone ([STATUS.md](STATUS.md#import-notes)).
 - The supported surface is listed in [API.md](API.md).
 - The documentation site publishes only the label `dev` ([docs.humem.ai/tiervec/dev](https://docs.humem.ai/tiervec/dev/)), because there is no release and no `latest` alias. The release pull request gives `deploy-docs.yml` a tag trigger that publishes the release version with the alias `latest`, and `dev` stays as the label of `main`.

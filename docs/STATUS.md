@@ -84,7 +84,7 @@ The threaded program (`GraphConcurrencyTest`) therefore checks read-your-writes 
 ## Import notes
 
 - The Java package is `ai.humem.tiervec`, the name of the library. It was renamed from the package of the first import before the first release, so it is not a breaking change. The system property that forces the scalar twins is `ai.humem.tiervec.scalar`.
-- Comments and Javadoc in the sources still use experiment-internal names (requirement ids, fix numbers, rule names). They will be cleaned up when the API is settled.
+- Comments and Javadoc in the sources were rewritten in plain words: the experiment-internal names (requirement ids, fix numbers, rule names) are gone, and no code changed in that edit.
 - The graph test helper `T` was renamed `GraphT`, because the flat tests have their own `T` and both now live in one module and one package.
 - The test helpers got an `exitOnFailure` flag (default true, so a program run alone still ends the JVM on failure), and the end of each program's `main` is guarded by it. A JUnit wrapper sets it to false and reads the counters instead, because a `System.exit` would end the surefire JVM.
 - The micro-benchmark `FlatMicro` and the benchmark harness of the experiment are not part of this repository. `Bench` and `NativeSmoke` are new programs written for it, not imports.

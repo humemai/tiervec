@@ -25,7 +25,7 @@ Non-goals:
 - `partly`: a form of the guarantee exists, or it is built and no dedicated test checks it. The line says what is missing.
 - `planned`: not built. The issue number is the tracking issue, and the acceptance test in that issue is the bar.
 
-Names of planned interfaces and methods are descriptive, not final. The Java package is `com.humemai.vec` today, and a rename before the first release is still open (see [STATUS.md](STATUS.md)).
+Names of planned interfaces and methods are descriptive, not final. The Java package is `ai.humem.tiervec`.
 
 ## Summary
 
@@ -181,7 +181,7 @@ The adapter is the host's code. It sits between the host's classes and the libra
 
 ## Status of every guarantee
 
-Rows marked `exists today` or `partly` name the class and method, and the test that checks them where one exists. Tests are in `src/test/java/com/humemai/vec`. `TierTests` is the tier program, run one test at a time by `TierSuiteTest` in the fast job, and `TierConcurrentLongTest` runs the long threaded test in the slow job.
+Rows marked `exists today` or `partly` name the class and method, and the test that checks them where one exists. Tests are in `src/test/java/ai/humem/tiervec`. `TierTests` is the tier program, run one test at a time by `TierSuiteTest` in the fast job, and `TierConcurrentLongTest` runs the long threaded test in the slow job.
 
 | Guarantee | Status | Class and method | Checked by | Issue |
 |---|---|---|---|---|

@@ -49,7 +49,7 @@ mvn -B -ntp verify            # fast tests: Vector API kernels, then the scalar 
 mvn -B -ntp verify -Pslow     # the long concurrency and stress tests (tag "slow")
 ```
 
-The tests are the test programs of the experiment, wrapped as JUnit 5 tests. A wrapper runs the program, asserts that no check failed, and asserts that at least the expected number of checks ran. The benchmark harness is not part of the Maven build: [docs/BENCHMARKS.md](docs/BENCHMARKS.md) says how to compile and run it.
+The tests are test programs, wrapped as JUnit 5 tests. A wrapper runs the program, asserts that no check failed, and asserts that at least the expected number of checks ran. The benchmark harness is not part of the Maven build: [docs/BENCHMARKS.md](docs/BENCHMARKS.md) says how to compile and run it.
 
 ## Native image
 
@@ -58,15 +58,15 @@ The library runs in a GraalVM native image. The CI job `native image smoke` buil
 - In an image every kernel that has a Vector API form uses it through `NKernels` (flat, IVF, and graph): the fp32 `dot` and `l2sq`, the int8 dot, the SQ8 dots, and `block16`. The species is fixed when the image is built: 256 bits on x86-64, 128 bits on aarch64 (where the Vector API has no 32-bit byte species, so the byte kernels load 64 or 128 bits of bytes and split them into parts). The Vector API kernels of the JVM are more than 10 times slower than scalar code in an image, so the image does not use them; `NKernels` is the form that the image compiles to SIMD code.
 - `hamming` has no Vector API form and stays scalar, in an image and on a JVM. AVX-512 and SVE are not used (the species stay 256 and 128 bits until measured).
 - A result in an image can differ from a result on a JVM by rounding, because the lane sum of `NKernels` has the order of the instruction. Results are still bitwise equal between two calls on equal data within one image.
-- To build an image with the Vector API kernels, give the image builder `--add-modules jdk.incubator.vector -H:+VectorAPISupport`. The jar carries `META-INF/native-image/com.humemai/tiervec/native-image.properties`, which sets `--initialize-at-build-time=com.humemai.vec.NKernels` for an application that has the jar on its class path; the species must be fixed at build time, or the kernels are slow. `-H:+VectorAPISupport` is an experimental option of GraalVM 25, and it needs GraalVM 25 or newer.
-- Without `--add-modules jdk.incubator.vector` the image has the scalar twins for every kernel. `-Dhumemai.vec.scalar=true` forces the scalar twins in an image as well, when the property is set before the library is first used (an image takes `-D` options on its command line).
+- To build an image with the Vector API kernels, give the image builder `--add-modules jdk.incubator.vector -H:+VectorAPISupport`. The jar carries `META-INF/native-image/ai.humem/tiervec/native-image.properties`, which sets `--initialize-at-build-time=ai.humem.tiervec.NKernels` for an application that has the jar on its class path; the species must be fixed at build time, or the kernels are slow. `-H:+VectorAPISupport` is an experimental option of GraalVM 25, and it needs GraalVM 25 or newer.
+- Without `--add-modules jdk.incubator.vector` the image has the scalar twins for every kernel. `-Dai.humem.tiervec.scalar=true` forces the scalar twins in an image as well, when the property is set before the library is first used (an image takes `-D` options on its command line).
 - The smoke program prints informational `SPEED` lines, one per kernel (`dot`, `dotI8`, `dotF8`, `dotF8x4`, and `block16` per block of 16 vectors), with the median time of 1,000,000 calls on 768 dimensions next to the scalar twin. They are not a bar.
 
 ## Requirements
 
 - JDK 21 or newer. CI builds and tests with Temurin 21 and 25 on x86-64 Linux, and runs the fast tests on arm64 Linux (JDK 21 and 25) and arm64 macOS (JDK 21). The job `fast tests (Windows x64, JDK 21)` runs the fast tests on Windows x64 (not the slow tests).
 - Maven 3.9 or newer.
-- The Vector API is an incubator module in these JDKs. Compile with `--add-modules jdk.incubator.vector`, and run with it to get the Vector API kernels; the `pom.xml` sets it for the compiler and for the test JVMs. At run time the module is optional: every kernel (flat, IVF, and graph) falls back to its scalar twin when the module is missing, or when `-Dhumemai.vec.scalar=true` is set.
+- The Vector API is an incubator module in these JDKs. Compile with `--add-modules jdk.incubator.vector`, and run with it to get the Vector API kernels; the `pom.xml` sets it for the compiler and for the test JVMs. At run time the module is optional: every kernel (flat, IVF, and graph) falls back to its scalar twin when the module is missing, or when `-Dai.humem.tiervec.scalar=true` is set.
 - On a JVM with the Vector API, x86-64 vectorizes the fp32 `dot` and `l2sq`, the int8 dot, the SQ8 dots, and `block16`. On aarch64 (NEON, 128-bit float lanes) the fp32 `dot` and `l2sq` use the JVM kernels and the int8 dot, the SQ8 dots, and `block16` use the 128-bit forms of `NKernels`. `hamming` is scalar everywhere. A JVM with 128-bit lanes that is not aarch64 runs those four as scalar code. AVX-512 and SVE are not used ([#52](https://github.com/humemai/tiervec/issues/52)).
 - Nothing else at run time. JUnit 5 is a test dependency.
 

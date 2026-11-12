@@ -46,6 +46,41 @@ The library runs in a GraalVM native image. The CI job `native image smoke` buil
 - On a JVM with the Vector API, x86-64 vectorizes the fp32 `dot` and `l2sq`, the int8 dot, the SQ8 dots, and `block16`. On aarch64 (NEON, 128-bit float lanes) the fp32 `dot` and `l2sq` use the JVM kernels and the int8 dot, the SQ8 dots, and `block16` use the 128-bit forms of `NKernels`. `hamming` is scalar everywhere. A JVM with 128-bit lanes that is not aarch64 runs those four as scalar code. AVX-512 and SVE are not used ([#52](https://github.com/humemai/tiervec/issues/52)).
 - Nothing else at run time. JUnit 5 is a test dependency.
 
+## Platform support
+
+There are three tiers. For tier 1, each row names the CI job that proves it. A job marked "required" must pass before a pull request can merge into `main`. The other jobs run on every pull request but do not block it. All jobs run on GitHub-hosted runners.
+
+**Tier 1: tested in CI on every change**
+
+| Platform | Run by the job | CI job | Required |
+|---|---|---|---|
+| Linux x86-64, Temurin 21 | fast tests | `fast tests (JDK 21)` | yes |
+| Linux x86-64, Temurin 25 | fast tests | `fast tests (JDK 25)` | yes |
+| Workflow hygiene (actions pinned to a commit SHA) | lint | `Ensure SHA pinned actions` | yes |
+| Linux x86-64, Temurin 21 and 25 | slow tests (long concurrency and stress) | `slow tests (JDK 21)`, `slow tests (JDK 25)` | no |
+| Linux arm64, Temurin 21 and 25 | fast tests | `fast tests (arm64 Linux, JDK 21)`, `fast tests (arm64 Linux, JDK 25)` | no |
+| macOS arm64, Temurin 21 | fast tests | `fast tests (arm64 macOS, JDK 21)` | no |
+| Windows x64, Temurin 21 | fast tests | `fast tests (Windows x64, JDK 21)` | no |
+| Linux x86-64, GraalVM Community 21.0.2 | native image smoke, scalar kernels | `native image smoke` | no |
+| Linux arm64, GraalVM Community 21.0.2 | native image smoke, scalar kernels | `native image smoke (arm64 Linux)` | no |
+| macOS arm64, GraalVM Community 21.0.2 | native image smoke, scalar kernels | `native image smoke (macOS arm64)` | no |
+| Linux x86-64, GraalVM Community 25.0.2 | native image smoke, Vector API kernels | `native image smoke (vector, x86-64 Linux)` | no |
+| Linux arm64, GraalVM Community 25.0.2 | native image smoke, Vector API kernels | `native image smoke (vector, arm64 Linux)` | no |
+| macOS arm64, GraalVM Community 25.0.2 | native image smoke, Vector API kernels | `native image smoke (vector, macOS arm64)` | no |
+| Windows x64, GraalVM Community 25.0.2 | native image smoke, Vector API kernels | `native image smoke (vector, Windows x64)` | no |
+
+The slow tests run on Linux x86-64 only. There is no scalar-kernel native image job on Windows. The native image jobs run only when `src/main`, `src/smoke` or their workflow file change.
+
+**Tier 2: measured.** None yet. No benchmark numbers are published in this repository. The `SPEED` lines that the native image jobs print are informational, and the one measurement in the repository (the graph self-search recall in [docs/STATUS.md](docs/STATUS.md#graph-self-search-recall)) does not record its hardware. The shared GitHub runners are not a benchmark machine: a timing from them is a ratio between two things measured in the same run, not an absolute speed. A row moves here when its numbers and its hardware are published.
+
+**Tier 3: best effort.** The code is plain Java 21 and has no native dependency, so it is expected to work, but nothing checks it and a problem there is fixed when it is cheap to do.
+
+- macOS on Intel (x86-64): no CI job.
+- Other JDK vendors and other JDK versions than 21 and 25: only Temurin 21 and 25 are tested.
+- Other Linux distributions and other CPU features: the CI runners fix them. AVX-512 and SVE are not used ([#52](https://github.com/humemai/tiervec/issues/52)).
+
+**Out:** Windows on ARM, until GraalVM and the libraries around it support it. Nothing here builds or tests it.
+
 ## Documentation
 
 - [docs/DESIGN.md](docs/DESIGN.md): the architecture and the knobs of the tier configuration.

@@ -2,7 +2,7 @@
 
 A tiered vector index for agent-memory databases on the JVM.
 
-**Status: experimental and private.** The sources of the first experiment are imported and build with Maven, and their tests run in CI on JDK 21 and 25, and the fast tests also on arm64 (Linux and macOS) and on Windows x64. There is no release, the API is not stable, nothing is wired into a database engine yet, and no measurements are published. See [docs/STATUS.md](docs/STATUS.md).
+**Status: experimental.** The API is not stable, there is no release, and nothing is wired into a database engine yet. No benchmark numbers are published. [What is proven](#what-is-proven) says what the repository shows today, and [docs/STATUS.md](docs/STATUS.md) has the detail.
 
 ## What it is
 
@@ -17,6 +17,30 @@ The design follows the workload of an agent's memory: many small and medium coll
 - **Pure Java**, no native dependencies. It also builds into a GraalVM native image, where every kernel except hamming (fp32, int8, SQ8, and block) uses the Vector API too (see [Native image](#native-image)).
 
 The repository also holds a standalone IVF (inverted file) index, which is not a tier segment yet. The host engine would own persistence, transactions and recovery: the tier can rebuild all of its derived state from the raw vectors. Serialization exists for the flat index and, as a first cut, for a settled tier: segment files with a manifest, written by `TieredIndex.checkpoint` and read by `TieredIndex.open` ([docs/SEGMENT-FORMAT.md](docs/SEGMENT-FORMAT.md)). [docs/DESIGN.md](docs/DESIGN.md) describes what the code does.
+
+## What is proven
+
+Every row says what the repository itself shows, and links the evidence. "Not measured yet" means no number is published here.
+
+| Question | Where it stands | Evidence |
+|---|---|---|
+| Does it build and pass its tests? | Yes, on Linux x86-64 (JDK 21 and 25, fast and slow tests), Linux arm64, macOS arm64 and Windows x64 (fast tests only on these three). Native image smoke jobs run on the same four platforms. | [Platform support](#platform-support), [docs/STATUS.md](docs/STATUS.md#what-exists) |
+| Sizes the tests use | The tests run on small collections. The long id-reuse test (`RidReuseBigLongTest`) and the long IVF program use 20,000 vectors, and the threaded graph program stays below 67,000. A self-search probe on the graph index ran at 100,000 to 200,000 vectors. | [docs/STATUS.md](docs/STATUS.md#graph-self-search-recall) |
+| Speed and recall at scale | Not measured yet. No benchmark numbers are published in this repository, and nothing here is proven at 1,000,000 vectors or at 10,000,000. | [docs/STATUS.md](docs/STATUS.md) |
+| Concurrent readers and writers | Tested at small sizes: threaded programs of 5 to 60 seconds, batch stress tests, and tests that hold a search inside a merge or a seal. Concurrent writers at scale: not proven. | [docs/STATUS.md](docs/STATUS.md#record-id-reuse-and-tombstones) |
+| Deletes, updates, reused ids, atomic batches | Tested, including races between a search and a merge or a rebuild. The races found so far ([#3](https://github.com/humemai/tiervec/issues/3), [#26](https://github.com/humemai/tiervec/issues/26), [#28](https://github.com/humemai/tiervec/issues/28)) have tests. | [docs/STATUS.md](docs/STATUS.md#record-id-reuse-and-tombstones), [docs/STATUS.md](docs/STATUS.md#atomic-batches) |
+| Restart and recovery | A settled tier can be checkpointed and reopened. Tests stop the publish after each step (a simulated process kill), flip bits in every byte that a CRC covers, and forge files with valid CRCs. Power loss is not tested. | [docs/SEGMENT-FORMAT.md](docs/SEGMENT-FORMAT.md), [docs/STATUS.md](docs/STATUS.md#id-epoch-and-replay) |
+| Native image | Smoke tests build and run an image and compare every answer with an exact scan. They do not cover segment files, `rebuildFrom` or concurrent writers. The image is not published. | [docs/STATUS.md](docs/STATUS.md#what-does-not-exist-yet) |
+| Inside a database engine | No. Nothing here is wired into ArcadeDB or any other engine. | [docs/PROVIDER-CONTRACT.md](docs/PROVIDER-CONTRACT.md#status-of-every-guarantee) |
+| Release | None. The version is `0.1.0-SNAPSHOT` and the API is not stable. | [docs/STATUS.md](docs/STATUS.md#what-does-not-exist-yet) |
+
+**Known limits**
+
+- Graph search is approximate. At the default `ef` (100), a query equal to an inserted vector is missed at about 1.2e-4 to 4.0e-4 per probe at 100,000 to 200,000 vectors, and the rate rises with the size of the index. A search at `ef` 1000 found 1,254 of the 1,260 misses that were diagnosed. The hardware of this measurement is not recorded. ([details](docs/STATUS.md#graph-self-search-recall))
+- A filtered search with a small allowed share (about 0.01) spends most of its cost on a walk that falls back to an exact scan. The opt-in `filterScanBelow` skips the walk, it is off by default, and the range of shares where it pays is not measured yet ([#12](https://github.com/humemai/tiervec/issues/12), [docs/DESIGN.md](docs/DESIGN.md#graph-index)).
+- `checkpoint` writes a settled tier only: no tail, no tombstones. Reads copy the file into memory, with no memory mapping ([docs/SEGMENT-FORMAT.md](docs/SEGMENT-FORMAT.md#what-the-first-cut-leaves-out)).
+- A search that meets a batch waits for it, and a stream of batches that follow each other faster than one scan takes can starve a search ([docs/STATUS.md](docs/STATUS.md#atomic-batches)).
+- In a native image a result can differ from the JVM by rounding. AVX-512 and SVE are not used ([#52](https://github.com/humemai/tiervec/issues/52)).
 
 ## Build and test
 

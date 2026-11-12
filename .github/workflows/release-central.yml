@@ -7,9 +7,13 @@
 #    credentials, so it cannot publish: the bundle is uploaded to the run as an artifact and nowhere else. On a pull request it keeps a
 #    Javadoc error or a broken release profile out of main. It is not a required check.
 #  - Publish (the release `published` event, or workflow_dispatch with dry-run=false on a tag): only for a bare version tag, for example
-#    `0.1.0`, that equals the version in pom.xml and whose commit is on main. It imports the signing key from the repository secrets and
-#    uploads the bundle to the Central Portal. autoPublish is false: the deployment stops at VALIDATED and the maintainer presses
-#    Publish in the portal, so nothing goes public without that click.
+#    `0.1.1`, that equals the version in pom.xml and whose commit is on main, and only when the version is not on Central yet. Creating
+#    the GitHub release is the deliberate act that starts it. It imports the signing key from the repository secrets, uploads the bundle
+#    to the Central Portal and, with auto-publish (the default), lets the Portal publish it as soon as it is valid. It then waits for
+#    the files on repo1.maven.org and verifies them (.github/scripts/verify-central-release.sh): checksums, signatures, the jars compared
+#    with the jars this run built, and a resolution in a fresh local Maven repository. A failed verification fails the run and never
+#    unpublishes: a Central version cannot be taken back, the fix is the next patch release. With auto-publish=false (workflow_dispatch
+#    only) the deployment stops at VALIDATED and the maintainer presses Publish in the portal.
 #
 # Repository secrets (names only here): CENTRAL_USERNAME and CENTRAL_PASSWORD (the Central Portal user token), GPG_PRIVATE_KEY (armored
 # private key) and GPG_PASSPHRASE. A value is never echoed, never put on a command line and never written to a file: the settings.xml
@@ -27,12 +31,16 @@ on:
         description: 'Dry run: build, sign with a throwaway key and check the bundle, but publish nothing'
         type: boolean
         default: true
+      auto-publish:
+        description: 'Publish run only: let the Portal publish the deployment once it is valid (false: stop at VALIDATED and publish in the portal by hand)'
+        type: boolean
+        default: true
   pull_request:
     paths:
       - 'pom.xml'
       - 'src/main/**'
       - '.github/workflows/release-central.yml'
-      - '.github/scripts/import-signing-key.sh'
+      - '.github/scripts/**'
 
 permissions:
   contents: read
@@ -47,7 +55,11 @@ jobs:
     name: ${{ (github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && !inputs.dry-run)) && 'central publish' || 'central dry run' }}
     if: github.repository == 'humemai/tiervec'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # A publish run waits for the Portal (up to 60 minutes), then for repo1.maven.org (up to 60 minutes), after the build.
+    timeout-minutes: ${{ (github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && !inputs.dry-run)) && 150 || 45 }}
+    outputs:
+      verified: ${{ steps.verify.outputs.verified }}
+      version: ${{ steps.verify.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -59,6 +71,7 @@ jobs:
         env:
           EVENT: ${{ github.event_name }}
           INPUT_DRY_RUN: ${{ inputs.dry-run }}
+          INPUT_AUTO_PUBLISH: ${{ inputs.auto-publish }}
           REF_TYPE: ${{ github.ref_type }}
           REF_NAME: ${{ github.ref_name }}
           RELEASE_TAG: ${{ github.event.release.tag_name }}
@@ -66,13 +79,17 @@ jobs:
           set -euo pipefail
           case "$EVENT" in
             release)
-              dry_run=false ;;
+              dry_run=false; auto_publish=true ;;
             pull_request)
-              dry_run=true ;;
+              dry_run=true; auto_publish=false ;;
             workflow_dispatch)
               case "$INPUT_DRY_RUN" in
                 true|false) dry_run="$INPUT_DRY_RUN" ;;
                 *) echo "::error::dry-run must be true or false, got '$INPUT_DRY_RUN'"; exit 1 ;;
+              esac
+              case "$INPUT_AUTO_PUBLISH" in
+                true|false) auto_publish="$INPUT_AUTO_PUBLISH" ;;
+                *) echo "::error::auto-publish must be true or false, got '$INPUT_AUTO_PUBLISH'"; exit 1 ;;
               esac ;;
             *)
               echo "::error::unexpected event $EVENT"; exit 1 ;;
@@ -99,8 +116,18 @@ jobs:
             fi
           fi
 
-          echo "mode: dry_run=$dry_run, version $pom_version, $REF_TYPE $REF_NAME"
-          { echo "DRY_RUN=$dry_run"; echo "POM_VERSION=$pom_version"; } >> "$GITHUB_ENV"
+          # A dry run never publishes, whatever the input says.
+          if [ "$dry_run" = "true" ]; then
+            auto_publish=false
+          fi
+
+          echo "mode: dry_run=$dry_run, auto_publish=$auto_publish, version $pom_version, $REF_TYPE $REF_NAME"
+          { echo "DRY_RUN=$dry_run"; echo "AUTO_PUBLISH=$auto_publish"; echo "POM_VERSION=$pom_version"; } >> "$GITHUB_ENV"
+
+      # A published version cannot be changed, so a re-run must not try again: the version directory on repo1.maven.org must not exist.
+      - name: Refuse a version that is already on Central (publish)
+        if: env.DRY_RUN == 'false'
+        run: bash .github/scripts/check-central-absent.sh --version "$POM_VERSION"
 
       - name: Check that the four secrets are present (publish only)
         if: env.DRY_RUN == 'false'
@@ -131,6 +158,16 @@ jobs:
           java -version
           mvn -B -ntp -version
           gpg --version | head -n 2
+
+      # The scripts the publish run depends on are checked here, on every pull request that changes them. The tests use a local server
+      # for repo1 and the key server and a Maven stub: nothing reaches Central.
+      - name: Check and test the Central scripts (dry run)
+        if: env.DRY_RUN == 'true'
+        run: |
+          set -euo pipefail
+          for script in .github/scripts/*.sh; do bash -n "$script"; done
+          shellcheck .github/scripts/*.sh
+          bash .github/scripts/test-central-scripts.sh
 
       - name: Private GnuPG home
         run: |
@@ -168,7 +205,7 @@ jobs:
           armored="$(printf '%s\n' "$GPG_PASSPHRASE" | gpg --batch --pinentry-mode loopback --passphrase-fd 0 --armor --export-secret-keys)"
           rehearsal_home="$(mktemp -d "$RUNNER_TEMP/gnupg-rehearsal.XXXXXX")"
           chmod 700 "$rehearsal_home"
-          GNUPGHOME="$rehearsal_home" GPG_PRIVATE_KEY="$armored" bash .github/scripts/import-signing-key.sh
+          GNUPGHOME="$rehearsal_home" GPG_PRIVATE_KEY="$armored" GITHUB_ENV=/dev/null bash .github/scripts/import-signing-key.sh
           GNUPGHOME="$rehearsal_home" gpgconf --kill gpg-agent || true
           rm -rf "$rehearsal_home"
 
@@ -190,9 +227,11 @@ jobs:
           grep -n -m1 '^    <version>' pom.xml
 
       # The dry run has no Central credentials and no settings.xml: the upload is skipped (skipUpload) and could not authenticate anyway.
+      # It passes the same publish properties as the publish run, so the plugin reads and validates exactly the configuration of a real
+      # publish (autoPublish true, waitUntil published, waitMaxTime) in every dry run. With skipUpload nothing is sent to Central.
       - name: Build, sign and write the bundle (dry run)
         if: env.DRY_RUN == 'true'
-        run: mvn -B -ntp deploy -Prelease -DskipTests -DskipUpload=true
+        run: mvn -B -ntp deploy -Prelease -DskipTests -DskipUpload=true -Dcentral.autoPublish=true -Dcentral.waitUntil=published
 
       - name: Check the bundle (dry run)
         if: env.DRY_RUN == 'true'
@@ -254,8 +293,10 @@ jobs:
           if-no-files-found: error
 
       # Publish: the credentials reach Maven only through environment variables. The settings.xml has references to them, mode 600,
-      # in the runner temp directory, and is removed by the last step.
-      - name: Build, sign and upload the bundle (publish)
+      # in the runner temp directory, and is removed when the step ends and again by the last step. With auto-publish the Portal
+      # publishes the deployment once it is valid and the plugin waits until it is PUBLISHED (waitMaxTime in pom.xml); an expired token
+      # shows up here as an HTTP 401.
+      - name: Build, sign, upload and publish the bundle (publish)
         if: env.DRY_RUN == 'false'
         env:
           CENTRAL_USERNAME: ${{ secrets.CENTRAL_USERNAME }}
@@ -267,6 +308,7 @@ jobs:
           settings="$(mktemp "$RUNNER_TEMP/central-settings.XXXXXX")"
           echo "SETTINGS_FILE=$settings" >> "$GITHUB_ENV"
           chmod 600 "$settings"
+          trap 'rm -f "$settings"' EXIT
           cat > "$settings" <<'XML'
           <settings xmlns="http://maven.apache.org/SETTINGS/1.2.0">
             <servers>
@@ -279,12 +321,36 @@ jobs:
           </settings>
           XML
           test "$(stat -c %a "$settings")" = 600
-          mvn -B -ntp -s "$settings" deploy -Prelease
+          if [ "$AUTO_PUBLISH" = "true" ]; then
+            publish_args=(-Dcentral.autoPublish=true -Dcentral.waitUntil=published)
+          else
+            publish_args=()
+          fi
+          mvn -B -ntp -s "$settings" deploy -Prelease "${publish_args[@]}"
           {
             echo "### Central upload for $POM_VERSION"
             echo
-            echo "The bundle was uploaded and validated. It is not published: open https://central.sonatype.com/publishing/deployments, check the deployment of ai.humem:tiervec:$POM_VERSION, and press Publish."
+            if [ "$AUTO_PUBLISH" = "true" ]; then
+              echo "The bundle was uploaded, validated and published by the Central Portal. The next step waits for the files on repo1.maven.org and verifies them."
+            else
+              echo "The bundle was uploaded and validated. It is not published (auto-publish is false): open https://central.sonatype.com/publishing/deployments, check the deployment of ai.humem:tiervec:$POM_VERSION, and press Publish. Then run the workflow Verify on Maven Central for $POM_VERSION."
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # The Central sync from the Portal to repo1.maven.org takes minutes, so the script waits up to 60 minutes for the pom. It needs no
+      # credential: the public key comes from a key server, by the fingerprint the import step kept. The jars are compared with the jars in
+      # target/ that this run built and signed.
+      - name: Verify the published version on Central (publish)
+        id: verify
+        if: env.DRY_RUN == 'false' && env.AUTO_PUBLISH == 'true'
+        run: |
+          set -euo pipefail
+          if ! [[ "${SIGNING_KEY_FPR:-}" =~ ^[0-9A-F]{40}$ ]]; then
+            echo "::error::the signing step did not keep a key fingerprint"; exit 1
+          fi
+          bash .github/scripts/verify-central-release.sh --version "$POM_VERSION" --fingerprint "$SIGNING_KEY_FPR" \
+            --built-dir target --deadline-seconds 3600 --interval-seconds 30 --summary "$GITHUB_STEP_SUMMARY"
+          { echo "verified=true"; echo "version=$POM_VERSION"; } >> "$GITHUB_OUTPUT"
 
       - name: Remove the settings file and the GnuPG home
         if: always()
@@ -294,3 +360,41 @@ jobs:
             gpgconf --kill gpg-agent || true
             rm -rf "$GNUPGHOME"
           fi
+
+  # The first version that passes the verification meets the done-when of issue #62 (a project resolves ai.humem:tiervec from Central), so
+  # this job comments on it and closes it. After that the issue is closed and this job only says so: a later version has no tracking
+  # issue (releases are tracked by milestone, and a milestone or a GitHub release cannot take a comment). It has its own job so that
+  # `issues: write` is not granted to the job that holds the signing key and the Central token. It never fails the run.
+  announce:
+    name: announce on issue 62
+    needs: release
+    if: needs.release.outputs.verified == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    continue-on-error: true
+    permissions:
+      issues: write
+    steps:
+      - name: Comment on issue 62 and close it, the first time only
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          VERSION: ${{ needs.release.outputs.version }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          state="$(gh api "repos/$REPO/issues/62" --jq .state)"
+          if [ "$state" != "open" ]; then
+            echo "issue 62 is $state: its done-when was met by an earlier version, no comment for $VERSION"
+            exit 0
+          fi
+          body="$RUNNER_TEMP/comment.md"
+          {
+            echo "\`ai.humem:tiervec:$VERSION\` is on Maven Central and the publish run verified it: [$RUN_URL]($RUN_URL)."
+            echo
+            echo "The run waited for the files on \`repo1.maven.org\`, checked every checksum and every signature against the public signing key from the key server, compared the jars with the jars it built, and resolved \`ai.humem:tiervec:$VERSION\` in a fresh local Maven repository with an isolated settings file."
+            echo
+            echo "The done-when of this issue is met (a project resolves the artifact by its coordinates from Maven Central), so this issue is closed."
+          } > "$body"
+          gh api --method POST "repos/$REPO/issues/62/comments" -F body=@"$body"
+          gh api --method PATCH "repos/$REPO/issues/62" -f state=closed -f state_reason=completed

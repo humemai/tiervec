@@ -4,6 +4,10 @@ All notable changes to tiervec are in this file. The layout follows [Keep a Chan
 
 ## Unreleased
 
+### Changed
+
+- Creating the GitHub release now publishes to Maven Central by itself and verifies the result (checksums, signatures, the built jars, a resolution from a fresh local repository), so the Publish click in the Central Portal is gone ([docs/RELEASING.md](docs/RELEASING.md#the-publish-run)).
+
 ## 0.1.0 - 2026-11-12
 
 The first release. It is the sources of the first experiment, imported and brought to the supported surface in [docs/API.md](docs/API.md). Nothing was released under the old package name. Details are in [docs/STATUS.md](docs/STATUS.md).

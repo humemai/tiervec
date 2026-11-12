@@ -6,6 +6,7 @@
 #   GPG_PRIVATE_KEY  the armored private key
 #   GPG_PASSPHRASE   its passphrase
 # The key reaches gpg on standard input and nothing here prints it. The runner masks the secrets in the log.
+# Output: when GITHUB_ENV is set, the line SIGNING_KEY_FPR=<fingerprint of the primary key> is appended to it (a public value).
 set -euo pipefail
 
 : "${GNUPGHOME:?GNUPGHOME must name a private GnuPG home}"
@@ -27,6 +28,10 @@ if [ "$count" != "1" ]; then
 fi
 fingerprint="$(gpg --batch --list-secret-keys --with-colons | awk -F: '/^fpr:/ { print $10; exit }')"
 echo "signing key fingerprint: $fingerprint"
+# The publish run verifies the files on Central against this key later (verify-central-release.sh), so it keeps the fingerprint.
+if [ -n "${GITHUB_ENV:-}" ]; then
+  echo "SIGNING_KEY_FPR=$fingerprint" >> "$GITHUB_ENV"
+fi
 
 # Sign and verify a probe file now, so a wrong passphrase fails here and not after the build.
 probe="$(mktemp "${RUNNER_TEMP:-/tmp}/probe.XXXXXX")"

@@ -68,6 +68,16 @@
         <maven-gpg-plugin.version>3.2.8</maven-gpg-plugin.version>
         <central-publishing-maven-plugin.version>0.12.0</central-publishing-maven-plugin.version>
 
+        <!-- Publishing through the Central Portal (profile release). The defaults upload and stop at VALIDATED, so a local build and the dry
+             run can never publish. The publish run of .github/workflows/release-central.yml passes -Dcentral.autoPublish=true and
+             -Dcentral.waitUntil=published: the Portal publishes the deployment once it is valid, and the plugin waits until the deployment is
+             PUBLISHED. waitMaxTime is in seconds (plugin 0.12.0 refuses less than 1800) and waitPollingInterval is the pause between status
+             checks (it refuses less than 5). -->
+        <central.autoPublish>false</central.autoPublish>
+        <central.waitUntil>validated</central.waitUntil>
+        <central.waitMaxTime>3600</central.waitMaxTime>
+        <central.waitPollingInterval>15</central.waitPollingInterval>
+
         <!-- Test selection by JUnit tag. Default run: everything except the tags "slow" and "scalar". "scalar" tests run in their own
              surefire execution (scalar-twin) with -Dai.humem.tiervec.scalar=true. Profile "slow" runs only the slow tag. -->
         <test.groups></test.groups>
@@ -169,8 +179,10 @@
         </profile>
 
         <!-- Profile "release" is what Maven Central requires for ai.humem:tiervec: the sources jar, the javadoc jar, a GnuPG signature on
-             every artifact, and one bundle uploaded to the Central Portal. The upload is not published by itself: autoPublish is false,
-             so the deployment stops at VALIDATED and the maintainer presses Publish in the portal.
+             every artifact, and one bundle uploaded to the Central Portal. By default the upload is not published: autoPublish is false
+             (property central.autoPublish), so the deployment stops at VALIDATED. Only the publish run of the workflow sets the property
+             to true, and then the Portal publishes the deployment as soon as it is valid. A deployment that stopped at VALIDATED is published
+             by the maintainer in the portal (docs/RELEASING.md).
              Run it through .github/workflows/release-central.yml only (docs/RELEASING.md). Secrets are environment variables, never a
              file or a flag: GPG_PASSPHRASE for the signing key, and CENTRAL_USERNAME and CENTRAL_PASSWORD through the server "central"
              of a settings.xml.
@@ -252,8 +264,10 @@
                         <configuration>
                             <publishingServerId>central</publishingServerId>
                             <deploymentName>${project.groupId}:${project.artifactId}:${project.version}</deploymentName>
-                            <autoPublish>false</autoPublish>
-                            <waitUntil>validated</waitUntil>
+                            <autoPublish>${central.autoPublish}</autoPublish>
+                            <waitUntil>${central.waitUntil}</waitUntil>
+                            <waitMaxTime>${central.waitMaxTime}</waitMaxTime>
+                            <waitPollingInterval>${central.waitPollingInterval}</waitPollingInterval>
                         </configuration>
                     </plugin>
                 </plugins>

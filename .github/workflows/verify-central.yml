@@ -1,0 +1,48 @@
+# Checks a version of ai.humem:tiervec that is already on Maven Central (issue #62; docs/RELEASING.md). It publishes nothing and has no
+# secret and no write permission. Use it when the publish run of release-central.yml stopped before its own verification (auto-publish
+# false and the portal button pressed by hand, or a run that timed out while the Portal was publishing), and to check an old version again.
+# It runs .github/scripts/verify-central-release.sh: the files are on repo1.maven.org, every checksum matches, every signature is valid and
+# made by the given key (fetched from keyserver.ubuntu.com), and a fresh local Maven repository resolves the artifact. It cannot compare
+# the jars with a build, because it has none; the publish run does that. A failure never unpublishes anything: a Central version cannot be
+# taken back. Actions are pinned to full commit SHAs (see lint-workflows.yml).
+name: Verify on Maven Central
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version to check, for example 0.1.1 (no v, no SNAPSHOT)'
+        type: string
+        required: true
+      fingerprint:
+        description: 'Fingerprint of the release signing key (40 hex digits; the publish run prints it as "signing key fingerprint")'
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: verify on Central
+    if: github.repository == 'humemai/tiervec'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Verify
+        env:
+          VERSION: ${{ inputs.version }}
+          FINGERPRINT: ${{ inputs.fingerprint }}
+        run: |
+          set -euo pipefail
+          bash .github/scripts/verify-central-release.sh --version "$VERSION" --fingerprint "$FINGERPRINT" \
+            --no-built-compare --deadline-seconds 1800 --interval-seconds 30 --summary "$GITHUB_STEP_SUMMARY"

@@ -59,3 +59,4 @@ These open points are named in the repository and are settled before `0.1.0` is 
 - The Java package is `com.humemai.vec` and the Maven group is `ai.humem`. A rename before the first release is open ([STATUS.md](STATUS.md#import-notes)). After the release it is a breaking change.
 - Comments and Javadoc in the sources still use names from the first experiment ([STATUS.md](STATUS.md#import-notes)).
 - The supported surface is listed in [API.md](API.md).
+- The documentation site publishes only the label `dev` ([docs.humem.ai/tiervec/dev](https://docs.humem.ai/tiervec/dev/)), because there is no release and no `latest` alias. The release pull request gives `deploy-docs.yml` a tag trigger that publishes the release version with the alias `latest`, and `dev` stays as the label of `main`.

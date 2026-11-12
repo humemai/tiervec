@@ -1,0 +1,15 @@
+/*
+ * The "experimental, unreleased" banner at the top of every page. It adds no colour and no font:
+ * it only reads the variables that brand/css/mkdocs.css sets (oxblood on light, rose on dark).
+ */
+.md-typeset .hm-banner {
+  margin: 1em 0 1.5em;
+  padding: 0.7em 1em;
+  border-left: 0.25rem solid var(--md-typeset-a-color);
+  border-radius: 0.2rem;
+  background-color: var(--md-accent-fg-color--transparent);
+}
+
+.md-typeset .hm-banner p {
+  margin: 0;
+}

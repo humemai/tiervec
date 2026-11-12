@@ -6,3 +6,5 @@ out/
 .idea/
 .vscode/
 .notes/
+/site/
+__pycache__/

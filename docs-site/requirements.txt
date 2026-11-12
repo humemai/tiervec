@@ -1,0 +1,6 @@
+# Pins for the documentation build (MkDocs Material, with mike for versioned publishing). The same
+# versions as the docs of humemai/audit-ready-memory. Dependabot raises the bumps; the build runs
+# with `uv run --no-project --python 3.12 --with-requirements docs-site/requirements.txt mkdocs build --strict`.
+mkdocs==1.6.1
+mkdocs-material==9.7.6
+mike==2.2.0

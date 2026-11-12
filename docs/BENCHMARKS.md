@@ -1,6 +1,6 @@
 # Benchmarks
 
-The harness is `src/bench/java/com/humemai/vec/Bench.java`. It builds a `TieredIndex` from seeded data, compares every answer with an exact scan that it computes itself, and writes one result file that names the machine, the JDK and the commit. It measures one question set: recall and latency of the tier at a size, unfiltered and filtered, and what happens when writers and searchers run at once. [Issue #12](https://github.com/humemai/tiervec/issues/12) (the range of allowed shares where an exact scan beats the graph walk) is the first user.
+The harness is `src/bench/java/ai/humem/tiervec/Bench.java`. It builds a `TieredIndex` from seeded data, compares every answer with an exact scan that it computes itself, and writes one result file that names the machine, the JDK and the commit. It measures one question set: recall and latency of the tier at a size, unfiltered and filtered, and what happens when writers and searchers run at once. [Issue #12](https://github.com/humemai/tiervec/issues/12) (the range of allowed shares where an exact scan beats the graph walk) is the first user.
 
 Numbers from the harness are directional unless a study states its claim, its arms, its number of runs and its bound before it runs (see "How to read measurements" in [ROADMAP.md](ROADMAP.md#how-to-read-measurements)). One run is one sample. A result file says what the run did on one machine, not what the library does on every machine.
 
@@ -12,7 +12,7 @@ Maven does not compile the harness, as with `src/smoke`. Compile it with the lib
 mkdir -p target/bench/classes
 find src/main/java src/bench/java -name '*.java' > target/bench/sources.txt
 javac -d target/bench/classes --add-modules jdk.incubator.vector @target/bench/sources.txt
-java -Xmx14g --add-modules jdk.incubator.vector -cp target/bench/classes com.humemai.vec.Bench \
+java -Xmx14g --add-modules jdk.incubator.vector -cp target/bench/classes ai.humem.tiervec.Bench \
   --host-label my-laptop --out results/$(date +%F)-my-laptop.txt
 ```
 
@@ -86,7 +86,7 @@ The run fails (exit code 1) when:
 ## Rules for a run that is meant to be read
 
 1. Pin the process to cores of one kind and run nothing else beside it. Write down the cores: the file records `cpusAllowedList`. A laptop on battery, with a turbo that varies, or with its low-power cores, is a directional measurement.
-2. Use a JDK that CI tests (Temurin 21 or 25), name it in the file (`JDK`), and keep the Vector API module on, unless the run is the scalar one on purpose (`-Dhumemai.vec.scalar=true`).
+2. Use a JDK that CI tests (Temurin 21 or 25), name it in the file (`JDK`), and keep the Vector API module on, unless the run is the scalar one on purpose (`-Dai.humem.tiervec.scalar=true`).
 3. A claim needs the runs that [ROADMAP.md](ROADMAP.md#how-to-read-measurements) asks for, each in a fresh JVM, and a bound that was written down before the first run. One run is a description.
 4. Commit the file with its commit SHA inside, in `results/`, and say in the table row of the README what it covers.
 5. Do not compare files from different machines or different JDK builds as if only the library changed.

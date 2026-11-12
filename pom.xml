@@ -35,7 +35,7 @@
         <maven-jar-plugin.version>3.5.1</maven-jar-plugin.version>
 
         <!-- Test selection by JUnit tag. Default run: everything except the tags "slow" and "scalar". "scalar" tests run in their own
-             surefire execution (scalar-twin) with -Dhumemai.vec.scalar=true. Profile "slow" runs only the slow tag. -->
+             surefire execution (scalar-twin) with -Dai.humem.tiervec.scalar=true. Profile "slow" runs only the slow tag. -->
         <test.groups></test.groups>
         <test.excludedGroups>slow,scalar</test.excludedGroups>
         <test.scalar.skip>false</test.scalar.skip>
@@ -108,7 +108,7 @@
                         </goals>
                         <configuration>
                             <skip>${test.scalar.skip}</skip>
-                            <argLine>-Xmx${test.heap} --add-modules jdk.incubator.vector -Dhumemai.vec.scalar=true</argLine>
+                            <argLine>-Xmx${test.heap} --add-modules jdk.incubator.vector -Dai.humem.tiervec.scalar=true</argLine>
                             <groups>scalar</groups>
                             <excludedGroups>slow</excludedGroups>
                         </configuration>

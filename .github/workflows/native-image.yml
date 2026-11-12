@@ -90,15 +90,15 @@ jobs:
           javac -d target/smoke/classes --add-modules jdk.incubator.vector @target/smoke/sources.txt
       - name: Control run on the JVM with the Vector API module
         run: |
-          timeout 600 java -Xmx1g --add-modules jdk.incubator.vector -cp target/smoke/classes com.humemai.vec.NativeSmoke jvm-vector | tee target/smoke/jvm-vector.log
+          timeout 600 java -Xmx1g --add-modules jdk.incubator.vector -cp target/smoke/classes ai.humem.tiervec.NativeSmoke jvm-vector | tee target/smoke/jvm-vector.log
           grep -q '^NATIVE-SMOKE OK (jvm-vector)' target/smoke/jvm-vector.log
-      # src/main/resources is on the class path so that the builder reads META-INF/native-image/com.humemai/tiervec/native-image.properties
-      # (--initialize-at-build-time=com.humemai.vec.NKernels), as it does for an application that has the jar. The two options below are the
+      # src/main/resources is on the class path so that the builder reads META-INF/native-image/ai.humem/tiervec/native-image.properties
+      # (--initialize-at-build-time=ai.humem.tiervec.NKernels), as it does for an application that has the jar. The two options below are the
       # ones the properties file does not set.
       - name: Build the native image with the Vector API
         run: |
           start=$(date +%s)
-          native-image -cp target/smoke/classes:src/main/resources --no-fallback --add-modules jdk.incubator.vector -H:+VectorAPISupport -o target/smoke/tiervec-smoke-vector com.humemai.vec.NativeSmoke
+          native-image -cp target/smoke/classes:src/main/resources --no-fallback --add-modules jdk.incubator.vector -H:+VectorAPISupport -o target/smoke/tiervec-smoke-vector ai.humem.tiervec.NativeSmoke
           echo "native-image build: $(( $(date +%s) - start )) s"
           ls -l target/smoke/tiervec-smoke-vector
       - name: Run the native image with the Vector API
@@ -135,11 +135,11 @@ jobs:
           find src/main/java src/smoke/java -name '*.java' > target/smoke/sources.txt
           javac -d target/smoke/classes --add-modules jdk.incubator.vector @target/smoke/sources.txt
       - name: Control run on the JVM without the Vector API module
-        run: timeout 600 java -Xmx1g -cp target/smoke/classes com.humemai.vec.NativeSmoke jvm
+        run: timeout 600 java -Xmx1g -cp target/smoke/classes ai.humem.tiervec.NativeSmoke jvm
       - name: Build the native image
         run: |
           start=$(date +%s)
-          native-image -cp target/smoke/classes --no-fallback -o target/smoke/tiervec-smoke com.humemai.vec.NativeSmoke
+          native-image -cp target/smoke/classes --no-fallback -o target/smoke/tiervec-smoke ai.humem.tiervec.NativeSmoke
           echo "native-image build: $(( $(date +%s) - start )) s"
           ls -l target/smoke/tiervec-smoke
       - name: Run the native image
@@ -174,11 +174,11 @@ jobs:
           find src/main/java src/smoke/java -name '*.java' > target/smoke/sources.txt
           javac -d target/smoke/classes --add-modules jdk.incubator.vector @target/smoke/sources.txt
       - name: Control run on the JVM without the Vector API module
-        run: timeout 600 java -Xmx1g -cp target/smoke/classes com.humemai.vec.NativeSmoke jvm
+        run: timeout 600 java -Xmx1g -cp target/smoke/classes ai.humem.tiervec.NativeSmoke jvm
       - name: Build the native image
         run: |
           start=$(date +%s)
-          native-image -cp target/smoke/classes --no-fallback -o target/smoke/tiervec-smoke com.humemai.vec.NativeSmoke
+          native-image -cp target/smoke/classes --no-fallback -o target/smoke/tiervec-smoke ai.humem.tiervec.NativeSmoke
           echo "native-image build: $(( $(date +%s) - start )) s"
           ls -l target/smoke/tiervec-smoke
       - name: Run the native image
@@ -220,11 +220,11 @@ jobs:
           find src/main/java src/smoke/java -name '*.java' > target/smoke/sources.txt
           javac -d target/smoke/classes --add-modules jdk.incubator.vector @target/smoke/sources.txt
       - name: Control run on the JVM without the Vector API module
-        run: timeout 600 java -Xmx1g -cp target/smoke/classes com.humemai.vec.NativeSmoke jvm
+        run: timeout 600 java -Xmx1g -cp target/smoke/classes ai.humem.tiervec.NativeSmoke jvm
       - name: Build the native image
         run: |
           start=$(date +%s)
-          native-image -cp target/smoke/classes --no-fallback -o target/smoke/tiervec-smoke com.humemai.vec.NativeSmoke
+          native-image -cp target/smoke/classes --no-fallback -o target/smoke/tiervec-smoke ai.humem.tiervec.NativeSmoke
           echo "native-image build: $(( $(date +%s) - start )) s"
           ls -l target/smoke/tiervec-smoke
       - name: Run the native image
@@ -270,12 +270,12 @@ jobs:
       - name: Control run on the JVM with the Vector API module
         timeout-minutes: 10
         run: |
-          java -Xmx1g --add-modules jdk.incubator.vector -cp target/smoke/classes com.humemai.vec.NativeSmoke jvm-vector | tee target/smoke/jvm-vector.log
+          java -Xmx1g --add-modules jdk.incubator.vector -cp target/smoke/classes ai.humem.tiervec.NativeSmoke jvm-vector | tee target/smoke/jvm-vector.log
           grep -q '^NATIVE-SMOKE OK (jvm-vector)' target/smoke/jvm-vector.log
       - name: Build the native image with the Vector API
         run: |
           start=$(date +%s)
-          native-image.cmd -cp "target/smoke/classes;src/main/resources" --no-fallback --add-modules jdk.incubator.vector -H:+VectorAPISupport -o target/smoke/tiervec-smoke-vector com.humemai.vec.NativeSmoke
+          native-image.cmd -cp "target/smoke/classes;src/main/resources" --no-fallback --add-modules jdk.incubator.vector -H:+VectorAPISupport -o target/smoke/tiervec-smoke-vector ai.humem.tiervec.NativeSmoke
           echo "native-image build: $(( $(date +%s) - start )) s"
           ls -l target/smoke/tiervec-smoke-vector.exe
       - name: Run the native image with the Vector API

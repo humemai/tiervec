@@ -18,3 +18,7 @@ There is no release yet. This section holds what the first release (`0.1.0`) wil
 - CI on JDK 21 and 25, with the fast tests also on arm64 and on Windows x64.
 - The supported public surface and the stability policy ([docs/API.md](docs/API.md)).
 - A benchmark harness for the tier (`src/bench`, [docs/BENCHMARKS.md](docs/BENCHMARKS.md)) with a CI smoke at 10,000 vectors. No result file is published yet.
+
+### Changed
+
+- Package renamed from `com.humemai.vec` to `ai.humem.tiervec` (no other change). The system property that forces the scalar twins was renamed with it, from `humemai.vec.scalar` to `ai.humem.tiervec.scalar`.

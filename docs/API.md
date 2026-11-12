@@ -2,7 +2,7 @@
 
 This page says what a host may depend on and what may change. It describes the code on `main` (version `0.1.0-SNAPSHOT`). There is no release yet.
 
-All classes live in one Java package, `com.humemai.vec`, and every class that a host needs is public. Some other classes are public only because the classes of the library call each other. This page separates the two groups. Whether the package will be renamed before the first release is open (see [STATUS.md](STATUS.md#import-notes)). A rename before 0.1.0 does not count as a breaking change.
+All classes live in one Java package, `ai.humem.tiervec`, and every class that a host needs is public. Some other classes are public only because the classes of the library call each other. This page separates the two groups. The package has the name of the library, and the Maven coordinates are `ai.humem:tiervec`.
 
 ## Supported classes
 

@@ -33,11 +33,11 @@ body:
     id: vector_api
     attributes:
       label: Vector API
-      description: The Vector API is an incubator module in the JDK. Without it, or with `-Dhumemai.vec.scalar=true`, every kernel uses its scalar twin.
+      description: The Vector API is an incubator module in the JDK. Without it, or with `-Dai.humem.tiervec.scalar=true`, every kernel uses its scalar twin.
       options:
         - On (run with --add-modules jdk.incubator.vector)
         - Off (the module is missing)
-        - Off (-Dhumemai.vec.scalar=true)
+        - Off (-Dai.humem.tiervec.scalar=true)
         - GraalVM native image
         - I do not know
     validations:

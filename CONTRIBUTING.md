@@ -1,6 +1,6 @@
 # Contributing to tiervec
 
-tiervec is a Java library of vector-index algorithms that is meant to run inside a database engine. It is experimental: there is no release and the API is not stable yet (see [docs/STATUS.md](docs/STATUS.md)). Small, focused contributions are welcome.
+tiervec is a Java library of vector-index algorithms that is meant to run inside a database engine. It is experimental: the first release is `0.1.0` and the API is not stable yet (see [docs/STATUS.md](docs/STATUS.md)). Small, focused contributions are welcome.
 
 ## Licence
 

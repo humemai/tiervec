@@ -2,7 +2,7 @@
 
 A tiered vector index for agent-memory databases on the JVM.
 
-**Status: experimental.** The API is not stable, there is no release, and nothing is wired into a database engine yet. No benchmark numbers are published. [What is proven](#what-is-proven) says what the repository shows today, and [docs/STATUS.md](docs/STATUS.md) has the detail.
+**Status: experimental.** The API is not stable, the first release is `0.1.0`, and nothing is wired into a database engine yet. No benchmark numbers are published. [What is proven](#what-is-proven) says what the repository shows today, and [docs/STATUS.md](docs/STATUS.md) has the detail.
 
 ## What it is
 
@@ -32,7 +32,7 @@ Every row says what the repository itself shows, and links the evidence. "Not me
 | Restart and recovery | A settled tier can be checkpointed and reopened. Tests stop the publish after each step (a simulated process kill), flip bits in every byte that a CRC covers, and forge files with valid CRCs. Power loss is not tested. | [docs/SEGMENT-FORMAT.md](docs/SEGMENT-FORMAT.md), [docs/STATUS.md](docs/STATUS.md#id-epoch-and-replay) |
 | Native image | Smoke tests build and run an image and compare every answer with an exact scan. They do not cover segment files, `rebuildFrom` or concurrent writers. The image is not published. | [docs/STATUS.md](docs/STATUS.md#what-does-not-exist-yet) |
 | Inside a database engine | No. Nothing here is wired into ArcadeDB or any other engine. | [docs/PROVIDER-CONTRACT.md](docs/PROVIDER-CONTRACT.md#status-of-every-guarantee) |
-| Release | None. The version is `0.1.0-SNAPSHOT` and the API is not stable. | [docs/STATUS.md](docs/STATUS.md#what-does-not-exist-yet) |
+| Release | `0.1.0` is the first release. The Maven coordinates are `ai.humem:tiervec`. The API is not stable. | [CHANGELOG.md](CHANGELOG.md), [docs/RELEASING.md](docs/RELEASING.md) |
 
 **Known limits**
 
@@ -107,7 +107,7 @@ The slow tests run on Linux x86-64 only. There is no scalar-kernel native image 
 
 ## Documentation
 
-The pages below are published at <https://docs.humem.ai/tiervec/dev/> as the `dev` version. It follows `main` and is experimental and unreleased, like the library. The site is built from the Markdown files of this repository ([how to build it](CONTRIBUTING.md#build-the-documentation)).
+The pages below are published at <https://docs.humem.ai/tiervec/>. The default version is `latest`, the newest release (`0.1.0`). The version `dev` follows `main` and has changes that are not released yet. The site is built from the Markdown files of this repository ([how to build it](CONTRIBUTING.md#build-the-documentation)).
 
 - [docs/API.md](docs/API.md): the supported public classes, the internal ones, and what may change in a 0.x release.
 - [docs/DESIGN.md](docs/DESIGN.md): the architecture and the knobs of the tier configuration.

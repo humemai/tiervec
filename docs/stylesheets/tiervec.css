@@ -1,5 +1,5 @@
 /*
- * The "experimental, unreleased" banner at the top of every page. It adds no colour and no font:
+ * The "experimental" banner at the top of every page. It adds no colour and no font:
  * it only reads the variables that brand/css/mkdocs.css sets (oxblood on light, rose on dark).
  */
 .md-typeset .hm-banner {

@@ -4,7 +4,9 @@ All notable changes to tiervec are in this file. The layout follows [Keep a Chan
 
 ## Unreleased
 
-There is no release yet. This section holds what the first release (`0.1.0`) will contain, as the repository has it today. Details are in [docs/STATUS.md](docs/STATUS.md).
+## 0.1.0 - 2026-11-12
+
+The first release. It is the sources of the first experiment, imported and brought to the supported surface in [docs/API.md](docs/API.md). Nothing was released under the old package name. Details are in [docs/STATUS.md](docs/STATUS.md).
 
 ### Added
 
@@ -16,6 +18,7 @@ There is no release yet. This section holds what the first release (`0.1.0`) wil
 - Scalar twins of every kernel, used when the Vector API module is missing, and Vector API kernels for aarch64 and for GraalVM native images.
 - A GraalVM native image smoke test on Linux (x86-64 and arm64), macOS arm64 and Windows x64.
 - CI on JDK 21 and 25, with the fast tests also on arm64 and on Windows x64.
+- Community files (CONTRIBUTING, SECURITY, SUPPORT, and the issue and pull request templates) and the platform support table in the README.
 - The supported public surface and the stability policy ([docs/API.md](docs/API.md)).
 - A benchmark harness for the tier (`src/bench`, [docs/BENCHMARKS.md](docs/BENCHMARKS.md)) with a CI smoke at 10,000 vectors. No result file is published yet.
 - Maven Central publishing for `ai.humem:tiervec`: the metadata Central requires in `pom.xml`, a `release` profile (sources jar, javadoc jar, GnuPG signatures, upload to the Central Portal), and the workflow `release-central.yml` with a dry run ([docs/RELEASING.md](docs/RELEASING.md#maven-central)).

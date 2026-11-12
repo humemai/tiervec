@@ -1,6 +1,6 @@
 site_name: tiervec
 site_url: https://docs.humem.ai/tiervec/
-site_description: Documentation for tiervec, a tiered vector index for agent-memory databases on the JVM (experimental, unreleased)
+site_description: Documentation for tiervec, a tiered vector index for agent-memory databases on the JVM (experimental)
 site_author: HumemAI
 repo_url: https://github.com/humemai/tiervec
 repo_name: humemai/tiervec

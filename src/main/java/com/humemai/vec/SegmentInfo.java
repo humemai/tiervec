@@ -7,6 +7,7 @@ import java.util.List;
  * CRC32C of the header fields (the manifest records it). {@code verMin} and {@code verMax} are the smallest and largest per-row version
  * (both 0 when the file has no VERS section).
  */
+@Internal
 public record SegmentInfo(int major, int minor, int dim, Metric metric, int n, long fileLength, int headerCrc, long verMin, long verMax,
                           GraphIndex.Params params, int entryRow, int maxLevel, List<Section> sections) {
 

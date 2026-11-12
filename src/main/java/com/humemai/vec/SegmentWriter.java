@@ -19,6 +19,7 @@ import java.util.zip.CRC32C;
  * followed by the locator) and flushed to disk before the method returns. A file that was cut short never validates,
  * because the locator is the last thing written.
  */
+@Internal
 public final class SegmentWriter {
     private SegmentWriter() {}
 

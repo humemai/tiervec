@@ -172,6 +172,23 @@ jobs:
           gpg --batch --verify "$probe.asc" "$probe"
           rm -f "$probe" "$probe.asc"
 
+      # The Central plugin writes a bundle only for a release version; for a SNAPSHOT it stages the files and stops. A dry run on main (a
+      # SNAPSHOT) therefore builds the release form of the version, 0.1.0-SNAPSHOT as 0.1.0, in this checkout of the job only.
+      - name: Use the release form of the version (dry run)
+        if: env.DRY_RUN == 'true'
+        run: |
+          set -euo pipefail
+          if [[ "$POM_VERSION" == *-SNAPSHOT ]]; then
+            release_version="${POM_VERSION%-SNAPSHOT}"
+            awk -v v="$release_version" '!done && /^    <version>.*<\/version>$/ { print "    <version>" v "</version>"; done = 1; next } { print }' pom.xml > "$RUNNER_TEMP/pom.dry.xml"
+            cp "$RUNNER_TEMP/pom.dry.xml" pom.xml
+            echo "POM_VERSION=$release_version" >> "$GITHUB_ENV"
+            echo "dry run builds version $release_version (the pom says $POM_VERSION)"
+          else
+            echo "dry run builds version $POM_VERSION"
+          fi
+          grep -n -m1 '^    <version>' pom.xml
+
       # The dry run has no Central credentials and no settings.xml: the upload is skipped (skipUpload) and could not authenticate anyway.
       - name: Build, sign and write the bundle (dry run)
         if: env.DRY_RUN == 'true'
@@ -183,7 +200,10 @@ jobs:
           set -euo pipefail
           v="$POM_VERSION"
           bundle="$(find target -name 'central-bundle.zip' -print -quit)"
-          test -n "$bundle" && test -s "$bundle"
+          if [ -z "$bundle" ] || [ ! -s "$bundle" ]; then
+            echo "::error::no central-bundle.zip under target"; find target -name '*.zip'; exit 1
+          fi
+          echo "bundle: $bundle"
           unzip -Z1 "$bundle" | sort > "$RUNNER_TEMP/bundle-list.txt"
           cat "$RUNNER_TEMP/bundle-list.txt"
           base="ai/humem/tiervec/$v/tiervec-$v"

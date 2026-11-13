@@ -61,6 +61,12 @@
         <maven-surefire-plugin.version>3.6.1</maven-surefire-plugin.version>
         <maven-jar-plugin.version>3.5.1</maven-jar-plugin.version>
 
+        <!-- Profile "bench" (-Pbench) only: the JVector comparison arm of the benchmark harness (docs/BENCHMARKS.md). JVector is not a
+             dependency of the library. 4.0.2 is the newest release on Maven Central (published 2026-10-19, checked 2026-11-13); it is one
+             multi-release jar that runs on JDK 21 and 25. -->
+        <jvector.version>4.0.2</jvector.version>
+        <maven-dependency-plugin.version>3.11.0</maven-dependency-plugin.version>
+
         <!-- Release profile (-Prelease): the newest stable versions on Maven Central when they were pinned (2026-11-12).
              maven-source-plugin 4.0.0-beta-1 is newer but a beta; 3.4.0 is the newest release. -->
         <maven-source-plugin.version>3.4.0</maven-source-plugin.version>
@@ -107,6 +113,17 @@
     </dependencies>
 
     <build>
+        <pluginManagement>
+            <plugins>
+                <!-- Pinned so that "mvn dependency:copy-dependencies" and "mvn dependency:list" of docs/BENCHMARKS.md and the bench smoke job
+                     do not resolve a floating plugin version. It does not run in the default build. -->
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-dependency-plugin</artifactId>
+                    <version>${maven-dependency-plugin.version}</version>
+                </plugin>
+            </plugins>
+        </pluginManagement>
         <plugins>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
@@ -168,6 +185,23 @@
     </build>
 
     <profiles>
+        <!-- mvn -B -ntp -Pbench dependency:copy-dependencies -DoutputDirectory=target/bench/lib -DincludeScope=runtime : fetches JVector and
+             its four dependencies (commons-math3, agrona, slf4j-api, snakeyaml) for the benchmark harness, and builds nothing. The scope is
+             runtime on purpose: the sources of src/main cannot see the jar, the library jar does not contain it (nothing is shaded), and the
+             profile is off by default, so "ai.humem:tiervec" keeps no run-time dependency. src/bench/jvector is compiled by hand against
+             target/bench/lib, as the rest of src/bench is compiled by hand (docs/BENCHMARKS.md). -->
+        <profile>
+            <id>bench</id>
+            <dependencies>
+                <dependency>
+                    <groupId>io.github.jbellis</groupId>
+                    <artifactId>jvector</artifactId>
+                    <version>${jvector.version}</version>
+                    <scope>runtime</scope>
+                </dependency>
+            </dependencies>
+        </profile>
+
         <!-- mvn -B -ntp verify -Pslow : the long concurrency and stress tests only (tag "slow"). -->
         <profile>
             <id>slow</id>

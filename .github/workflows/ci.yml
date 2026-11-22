@@ -1,5 +1,6 @@
-# Build and test on JDK 21 (the ArcadeDB baseline) and JDK 25. The fast tests run on every push and pull request; the slow tests
-# (tag "slow": the long concurrency and stress programs) run in a separate job. Actions are pinned to full commit SHAs (see lint-workflows.yml).
+# Build and test on JDK 21 (the ArcadeDB baseline) and JDK 25. The fast tests run on every push to main and every pull request; the slow tests
+# (tag "slow": the long concurrency and stress programs) are in slow-tests.yml and do not run on an ordinary pull request (issue #112).
+# Actions are pinned to full commit SHAs (see lint-workflows.yml).
 name: CI
 
 on:
@@ -266,40 +267,6 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: surefire-reports-fast-windows-jdk21
-          path: target/surefire-reports
-          retention-days: 7
-          if-no-files-found: ignore
-
-  slow:
-    name: slow tests (JDK ${{ matrix.java }})
-    runs-on: ubuntu-latest
-    # The slow job takes about 42 to 45 minutes since the record-id reuse and batch stress tests joined it; 45 was the first limit and a JDK 21
-    # run was cancelled at it (run 42412345737). 90 leaves room; splitting the slow tests into two jobs per JDK is the way to make it short again.
-    timeout-minutes: 90
-    strategy:
-      fail-fast: false
-      matrix:
-        java: ["21", "25"]
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
-        with:
-          distribution: temurin
-          java-version: ${{ matrix.java }}
-          cache: maven
-      - name: Toolchain
-        run: |
-          java -version
-          mvn -B -ntp -version
-      - name: Build and run the slow tests
-        run: mvn -B -ntp verify -Pslow
-      - name: Upload test reports
-        if: failure()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: surefire-reports-slow-jdk${{ matrix.java }}
           path: target/surefire-reports
           retention-days: 7
           if-no-files-found: ignore

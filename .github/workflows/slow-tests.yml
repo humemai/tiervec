@@ -1,0 +1,126 @@
+# The slow tests (tag "slow": the long concurrency and stress programs) on JDK 21 and 25, x86-64 Linux. One job takes about 40 minutes, so the
+# suite has its own workflow and does not run on an ordinary pull request (issue #112: a pull request waited 43 minutes for these two jobs, and
+# without them it ends in about 12). The fast tests stay in ci.yml. Actions are pinned to full commit SHAs (see lint-workflows.yml).
+#
+# When the two jobs run:
+#   - On every push to main. Each commit on main gets its own result: a later push does not cancel the run of an earlier one.
+#   - Every day at 19:17 UTC, on the head of main. The slow tests are stress tests, so one more run a day can catch a rare race that a single
+#     run missed. The hour is a quiet one for this repository (of the 225 workflow runs read for issue #112, 2 started between 14:00 and 21:59 UTC), and
+#     minute 17 stays away from the top of the hour, when GitHub starts scheduled workflows late.
+#   - By hand, on any branch or tag: gh workflow run slow-tests.yml --ref <branch or tag>
+#   - On a pull request that carries the label `ci:slow`: when the label is added, and on every later push to that pull request.
+#
+# On a pull request without the label the jobs are skipped, and GitHub shows one skipped check for the two of them, under the job name as it
+# is written below (the matrix value is not filled in for a job that never starts). A skipped check is not a failure. A slow job that started
+# and then failed, timed out or was cancelled is red like any other job. The slow jobs are not required checks.
+#
+# A red run on main opens an issue (job `report`), because a pull request no longer shows such a failure before the merge.
+name: Slow tests
+
+on:
+  push:
+    branches:
+      - main
+  schedule:
+    - cron: "17 19 * * *"
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A pull request has one group per pull request, so a new push cancels the run of the old one. Adding a label other than `ci:slow` starts a run
+# of this workflow that skips its jobs; it gets a group of its own, so it cannot cancel a slow run that is in progress. Every other event has
+# one group per event and commit, and nothing there is cancelled.
+concurrency:
+  group: >-
+    slow-tests-${{
+    github.event_name != 'pull_request' && format('{0}-{1}', github.event_name, github.sha)
+    || (github.event.action == 'labeled' && github.event.label.name != 'ci:slow') && format('other-label-{0}', github.run_id)
+    || github.ref
+    }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  slow:
+    name: slow tests (JDK ${{ matrix.java }})
+    # Not on a pull request, unless it carries the label `ci:slow`. A `labeled` event starts the jobs only when the label just added is
+    # `ci:slow`, so another label on a pull request that already has it does not start the suite a second time.
+    if: >-
+      github.event_name != 'pull_request' ||
+      (contains(github.event.pull_request.labels.*.name, 'ci:slow') &&
+      (github.event.action != 'labeled' || github.event.label.name == 'ci:slow'))
+    runs-on: ubuntu-latest
+    # The slow job takes about 42 to 45 minutes since the record-id reuse and batch stress tests joined it; 45 was the first limit and a JDK 21
+    # run was cancelled at it (run 42412345737). 90 leaves room; splitting the slow tests into two jobs per JDK is the way to make it short
+    # again (issue #36).
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        java: ["21", "25"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.java }}
+          cache: maven
+      - name: Toolchain
+        run: |
+          java -version
+          mvn -B -ntp -version
+      - name: Build and run the slow tests
+        run: mvn -B -ntp verify -Pslow
+      - name: Upload test reports
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: surefire-reports-slow-jdk${{ matrix.java }}
+          path: target/surefire-reports
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # A slow run on main that failed, timed out or was cancelled opens the issue "Slow tests are red on main", or comments on it when it is
+  # already open, with a link to the run. A person closes the issue when main is green again. Only push and schedule runs report (both are on
+  # main): a pull request shows its own checks, and a run by hand has someone watching it. The job has its own permissions so that
+  # `issues: write` is not granted to the jobs that build and run the code.
+  report:
+    name: report a red slow run on main
+    needs: slow
+    if: >-
+      always() && (github.event_name == 'push' || github.event_name == 'schedule') &&
+      (needs.slow.result == 'failure' || needs.slow.result == 'cancelled')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - name: Open the issue, or comment on the open one
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RESULT: ${{ needs.slow.result }}
+          EVENT: ${{ github.event_name }}
+          SHA: ${{ github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          title="Slow tests are red on main"
+          body="$RUNNER_TEMP/slow-red.md"
+          {
+            echo "The slow tests ended as \`$RESULT\` on \`main\` at \`${SHA:0:7}\` (a \`$EVENT\` run): [$RUN_URL]($RUN_URL)."
+            echo
+            echo "A pull request runs the slow tests only with the label \`ci:slow\`, so this run can be the first one that shows the failure. Close this issue when a later slow run on \`main\` is green."
+          } > "$body"
+          number="$(gh api --method GET "repos/$REPO/issues" -f state=open -f labels=area:ci -F per_page=100 \
+            --jq "map(select(.pull_request == null and .title == \"$title\")) | .[0].number // empty")"
+          if [ -n "$number" ]; then
+            gh api --method POST "repos/$REPO/issues/$number/comments" -F body=@"$body" --jq .html_url
+          else
+            gh api --method POST "repos/$REPO/issues" -f title="$title" -F body=@"$body" \
+              -f "labels[]=bug" -f "labels[]=area:ci" -f "labels[]=now" -f "assignees[]=tae898" --jq .html_url
+          fi

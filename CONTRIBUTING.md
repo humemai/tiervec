@@ -24,7 +24,7 @@ mvn -B -ntp verify            # fast tests: Vector API kernels, then the scalar 
 mvn -B -ntp verify -Pslow     # the long concurrency and stress tests (tag "slow")
 ```
 
-The fast tests run on every pull request, on JDK 21 and 25. The slow tests also run on every pull request, on x86-64 Linux, and take about 45 minutes. You do not have to run them on your own machine.
+The fast tests run on every pull request, on JDK 21 and 25. The slow tests take about 40 minutes per JDK, so they do not run on an ordinary pull request: see [What CI runs, and when](#what-ci-runs-and-when). You do not have to run them on your own machine.
 
 ### Build the documentation
 
@@ -51,13 +51,29 @@ Pull requests are squash-merged into `main`, so the history is linear.
 
 ### Checks that must pass
 
-Three checks are required before a merge:
+Four checks are required before a merge:
 
 - `fast tests (JDK 21)`
 - `fast tests (JDK 25)`
 - `Ensure SHA pinned actions`
+- `docs build (strict)`
 
-The other jobs (arm64, Windows, native image, slow tests, the documentation build) also run on a pull request. A failure there is read like any other failure, even where the check is not required.
+The other jobs of a pull request (arm64, Windows, the benchmark smoke, native image) are not required. A failure there is read like any other failure.
+
+### What CI runs, and when
+
+| When | What runs |
+| --- | --- |
+| Every pull request | The fast tests (x86-64 Linux on JDK 21 and 25, arm64 Linux, arm64 macOS, Windows x64), the benchmark smoke, the documentation build and the workflow check. The native image jobs and the Maven Central dry run start only when the files they cover change. It ends in about 12 minutes. |
+| A pull request with the label `ci:slow` | The same, and the slow tests on JDK 21 and 25 (about 40 minutes each). |
+| Every push to `main` | Everything above, the slow tests included. |
+| Every day at 19:17 UTC | The slow tests, on the head of `main`. |
+
+To ask for the slow tests on a pull request, add the label `ci:slow`. If you cannot set labels, ask for it in the pull request and the maintainer adds it. The slow tests start when the label is added and run again on every later push to that pull request. Ask for them when a change touches what they cover: concurrent readers and writers, seals and merges, record-id reuse, or the batch paths. On a pull request without the label, the slow tests show as one skipped check, which is not a failure.
+
+The slow tests also run by hand on any branch: `gh workflow run slow-tests.yml --ref <branch>`.
+
+When a slow run on `main` is red, the workflow opens the issue "Slow tests are red on main", or comments on it when it is already open. The slow tests are in `.github/workflows/slow-tests.yml`; the other tests are in `ci.yml`.
 
 ### Workflow files
 

@@ -176,7 +176,7 @@ class TierCorruptionTest {
 
     // ---- a damaged segment file ----
 
-    enum Expect { CORRUPT, UNSUPPORTED, NAMED }
+    enum Expect { CORRUPT, UNSUPPORTED }
 
     /** a way to damage the bytes of one segment file; {@code section} is the section the failure must name, when one is known */
     record Damage(String name, BiFunction<byte[], SegmentInfo, byte[]> apply, Expect expect, String section) {
@@ -218,14 +218,14 @@ class TierCorruptionTest {
         for (int pos : new int[] {10, 11, 12, 16, 24, 32, 40, 44, 48, 51}) {
             l.add(new Damage("bit flipped in header byte " + pos, (b, i) -> flip(b, pos), Expect.CORRUPT, null));
         }
-        l.add(new Damage("bit flipped in the magic", (b, i) -> flip(b, 3), Expect.NAMED, null));
+        l.add(new Damage("bit flipped in the magic", (b, i) -> flip(b, 3), Expect.CORRUPT, "HEADER"));
         l.add(new Damage("bit flipped in the major version", (b, i) -> flip(b, 8), Expect.UNSUPPORTED, null));
         l.add(new Damage("magic zeroed", (b, i) -> {
             byte[] c = b.clone();
             Arrays.fill(c, 0, 8, (byte) 0);
             return c;
-        }, Expect.NAMED, null));
-        l.add(new Damage("all bytes zeroed", (b, i) -> new byte[b.length], Expect.NAMED, null));
+        }, Expect.CORRUPT, "HEADER"));
+        l.add(new Damage("all bytes zeroed", (b, i) -> new byte[b.length], Expect.CORRUPT, "HEADER"));
         for (int rel : new int[] {0, 5, 40, 64 + 12, 64 + 40 * 11 + 39}) {
             l.add(new Damage("bit flipped in footer byte " + rel, (b, i) -> flip(b, footerOff(b) + rel), Expect.CORRUPT, null));
         }
@@ -252,7 +252,6 @@ class TierCorruptionTest {
             switch (damage.expect()) {
                 case CORRUPT: assertInstanceOf(CorruptException.class, e, what); break;
                 case UNSUPPORTED: assertInstanceOf(UnsupportedException.class, e, what); break;
-                default: break;
             }
             // a flip inside a section is found when the section is read: the exception names it
             if (damage.section() != null) assertEquals(damage.section(), ((CorruptException) e).section(), what);
@@ -499,6 +498,50 @@ class TierCorruptionTest {
         TieredIndex r = TieredIndex.open(dir, DIM, Metric.L2, cfg(), () -> records1);
         try {
             assertInstanceOf(UnsupportedException.class, r.openFallbackCause());
+        } finally {
+            r.close();
+        }
+    }
+
+    @Test
+    void aDamagedMagicInTheNewestSegmentMakesTheOlderGenerationTheNewestThatValidates() throws IOException {
+        // #83: a damaged magic is damage, like a damaged header CRC, so the newest generation whose segments pass is the live one. It used to be
+        // reported as UnsupportedException, which open refuses and does not skip, so one flipped bit in the first eight bytes of the newest
+        // segment made the whole open fail. A larger major version (the test above) is the case that stays refused.
+        for (int variant = 0; variant < 9; variant++) {
+            copy(twoGen, dir);
+            byte[] b = Files.readAllBytes(seg(3));
+            if (variant < 8) b[variant] ^= (byte) (1 << variant);
+            else Arrays.fill(b, 0, 8, (byte) 0);
+            Files.write(seg(3), b);
+            String what = variant < 8 ? "bit " + variant + " of magic byte " + variant : "zeroed magic";
+            try (TieredIndex u = TieredIndex.open(dir, cfg())) {
+                assertNull(u.openFallbackCause(), what);
+                assertEquals(2 * ROWS, u.size(), what);
+                assertServes(u, want1);
+            }
+            assertEquals(1, Manifest.readLatest(dir).generation(), what);
+            assertTrue(!Files.exists(seg(3)) && !Files.exists(dir.resolve(Manifest.manifestName(2))), what + ": the files of the unfinished generation were removed");
+            clear();
+        }
+    }
+
+    @Test
+    void aDamagedMagicInASegmentThatEveryGenerationNamesIsRefusedAsCorruptAndNothingIsDeleted() throws IOException {
+        copy(twoGen, dir);
+        byte[] b = Files.readAllBytes(seg(1)); // segment 1 is in generation 1 and in generation 2: no generation is left to fall back to
+        b[0] ^= 1;
+        Files.write(seg(1), b);
+        Map<String, byte[]> before = snapshot(dir);
+        CorruptException e = assertInstanceOf(CorruptException.class, openRefused(dir, "magic of segment 1"));
+        assertTrue(e.getMessage().contains("2 candidates"), e.getMessage());
+        // the message says which file and which field
+        assertTrue(e.getMessage().contains(Manifest.segName(1)) && e.getMessage().contains("magic"), e.getMessage());
+        assertUnchanged(before, dir, "magic of segment 1");
+        TieredIndex r = TieredIndex.open(dir, DIM, Metric.L2, cfg(), () -> records1);
+        try {
+            assertInstanceOf(CorruptException.class, r.openFallbackCause());
+            assertRebuiltFromTheRecords(r, "magic of segment 1");
         } finally {
             r.close();
         }

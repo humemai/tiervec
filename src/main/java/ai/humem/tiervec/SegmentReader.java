@@ -6,6 +6,7 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.channels.FileChannel;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
@@ -33,7 +34,7 @@ public final class SegmentReader {
     /** header, footer and locator only; never reads a section */
     public static SegmentInfo inspect(Path file) throws IOException {
         try (FileChannel ch = FileChannel.open(file, StandardOpenOption.READ)) {
-            return inspect(ch);
+            return inspect(ch, file);
         }
     }
 
@@ -48,7 +49,7 @@ public final class SegmentReader {
     /** like {@link #read} but also returns the per-row versions and the file's metadata */
     public static Loaded readFull(Path file, boolean verifyAll) throws IOException {
         try (FileChannel ch = FileChannel.open(file, StandardOpenOption.READ)) {
-            SegmentInfo info = inspect(ch);
+            SegmentInfo info = inspect(ch, file);
             return load(ch, info, verifyAll);
         }
     }
@@ -65,12 +66,25 @@ public final class SegmentReader {
         return b;
     }
 
-    static SegmentInfo inspect(FileChannel ch) throws IOException {
+    /**
+     * A wrong magic is damage, not a newer format: the magic is the same in every version of the format (the version is the major and minor
+     * fields after it), so a file that does not start with it is a {@link CorruptException} in section HEADER. {@code Manifest.readLatest}
+     * skips a candidate with such a segment in favor of the previous generation, as it does for a bad header CRC; it refuses an
+     * {@link UnsupportedException} at once (#83).
+     */
+    private static CorruptException badMagic(Path file, ByteBuffer h) {
+        StringBuilder got = new StringBuilder();
+        for (int i = 0; i < MAGIC.length; i++) got.append(String.format("%02x", h.get(i) & 0xFF));
+        return new CorruptException("bad magic in " + file.getFileName() + ": header bytes 0 to 7 are 0x" + got + ", expected "
+                + new String(MAGIC, StandardCharsets.US_ASCII), "HEADER");
+    }
+
+    static SegmentInfo inspect(FileChannel ch, Path file) throws IOException {
         final long size = ch.size();
         if (size < MAGIC.length) throw new CorruptException("file too short for a segment (" + size + " bytes)", "HEADER");
         ByteBuffer h = readAt(ch, 0, (int) Math.min(size, HEADER_BLOCK));
         for (int i = 0; i < MAGIC.length; i++) {
-            if (h.get(i) != MAGIC[i]) throw new UnsupportedException("not a tiervec segment file (bad magic)");
+            if (h.get(i) != MAGIC[i]) throw badMagic(file, h);
         }
         if (size < HEADER_BLOCK + LOCATOR_LEN) throw new CorruptException("file too short for a segment (" + size + " bytes)", "HEADER");
 

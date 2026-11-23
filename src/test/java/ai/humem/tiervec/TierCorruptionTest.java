@@ -508,13 +508,24 @@ class TierCorruptionTest {
         // #83: a damaged magic is damage, like a damaged header CRC, so the newest generation whose segments pass is the live one. It used to be
         // reported as UnsupportedException, which open refuses and does not skip, so one flipped bit in the first eight bytes of the newest
         // segment made the whole open fail. A larger major version (the test above) is the case that stays refused.
-        for (int variant = 0; variant < 9; variant++) {
+        for (int variant = 0; variant < 11; variant++) {
             copy(twoGen, dir);
             byte[] b = Files.readAllBytes(seg(3));
-            if (variant < 8) b[variant] ^= (byte) (1 << variant);
-            else Arrays.fill(b, 0, 8, (byte) 0);
+            String what;
+            if (variant < 8) {
+                b[variant] ^= (byte) (1 << variant);
+                what = "bit " + variant + " of magic byte " + variant;
+            } else if (variant == 8) {
+                Arrays.fill(b, 0, 8, (byte) 0);
+                what = "zeroed magic";
+            } else if (variant == 9) {
+                Arrays.fill(b, (byte) 0); // the length reached the disk and the data did not
+                what = "a file of zeros";
+            } else {
+                b = new byte[0];
+                what = "an empty file";
+            }
             Files.write(seg(3), b);
-            String what = variant < 8 ? "bit " + variant + " of magic byte " + variant : "zeroed magic";
             try (TieredIndex u = TieredIndex.open(dir, cfg())) {
                 assertNull(u.openFallbackCause(), what);
                 assertEquals(2 * ROWS, u.size(), what);

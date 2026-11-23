@@ -218,14 +218,15 @@ class TierCorruptionTest {
         for (int pos : new int[] {10, 11, 12, 16, 24, 32, 40, 44, 48, 51}) {
             l.add(new Damage("bit flipped in header byte " + pos, (b, i) -> flip(b, pos), Expect.CORRUPT, null));
         }
-        l.add(new Damage("bit flipped in the magic", (b, i) -> flip(b, 3), Expect.CORRUPT, "HEADER"));
+        // open reports the damage of the manifest's newest candidate through readLatest, whose exception has no section of its own: the cause has it
+        l.add(new Damage("bit flipped in the magic", (b, i) -> flip(b, 3), Expect.CORRUPT, null));
         l.add(new Damage("bit flipped in the major version", (b, i) -> flip(b, 8), Expect.UNSUPPORTED, null));
         l.add(new Damage("magic zeroed", (b, i) -> {
             byte[] c = b.clone();
             Arrays.fill(c, 0, 8, (byte) 0);
             return c;
-        }, Expect.CORRUPT, "HEADER"));
-        l.add(new Damage("all bytes zeroed", (b, i) -> new byte[b.length], Expect.CORRUPT, "HEADER"));
+        }, Expect.CORRUPT, null));
+        l.add(new Damage("all bytes zeroed", (b, i) -> new byte[b.length], Expect.CORRUPT, null));
         for (int rel : new int[] {0, 5, 40, 64 + 12, 64 + 40 * 11 + 39}) {
             l.add(new Damage("bit flipped in footer byte " + rel, (b, i) -> flip(b, footerOff(b) + rel), Expect.CORRUPT, null));
         }
@@ -546,8 +547,9 @@ class TierCorruptionTest {
         Map<String, byte[]> before = snapshot(dir);
         CorruptException e = assertInstanceOf(CorruptException.class, openRefused(dir, "magic of segment 1"));
         assertTrue(e.getMessage().contains("2 candidates"), e.getMessage());
-        // the message says which file and which field
+        // the message says which file and which field, and the cause is the reader's exception for the header
         assertTrue(e.getMessage().contains(Manifest.segName(1)) && e.getMessage().contains("magic"), e.getMessage());
+        assertEquals("HEADER", assertInstanceOf(CorruptException.class, e.getCause()).section());
         assertUnchanged(before, dir, "magic of segment 1");
         TieredIndex r = TieredIndex.open(dir, DIM, Metric.L2, cfg(), () -> records1);
         try {

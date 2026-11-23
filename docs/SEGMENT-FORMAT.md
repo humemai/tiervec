@@ -110,13 +110,14 @@ The file holds the arrays of the in-memory graph, with `VERS` and `BYID` in plac
 - The section table is checked: offsets aligned, ascending, inside the file, element width times count equal to the length, the width and count of every known section as expected, all required sections present.
 - `SegmentReader.read(file, true)` also checks the CRC32C of every section and names the section that failed (`CorruptException.section()`). `SealedGraph.load` and `TieredIndex.open` always do. `read(file, false)` skips the section CRCs and is meant for inspection.
 - The stored id order is checked while it is used (rows in range, ids strictly increasing), and the layer 0 offsets are checked against the edge count.
+- A magic that is not `TVSEG001` is damage. The magic is the same in every version (the version is the major and minor fields after it), so a file that does not start with it is refused with `CorruptException` (section `HEADER`), and the message names the file and the field. `TieredIndex.open` treats such a segment like any other damaged one: see "Open".
 - A CRC32C detects accidental damage. It is not protection against tampering.
 
 ## Versioning and compatibility
 
 A segment file has a format version `major.minor`.
 
-- A reader refuses a file with a larger major version (`UnsupportedException`).
+- A reader refuses a file with a larger major version (`UnsupportedException`). The major version is read before the header CRC, so a flipped bit in the major version field is reported the same way.
 - A reader opens a file with a larger minor version. It ignores a section whose id it does not know, unless the section is marked required, in which case it refuses.
 - A newer minor may append header fields (the header length says where the header ends and where its CRC is) and footer metadata (the offset of the first section entry says where the table starts).
 - A different byte order, an id width other than 8, a layer 0 layout other than CSR, and a row stride other than `dim` are refused in this version.
@@ -165,7 +166,7 @@ The table is for a process kill (the page cache survives). A crash after a step 
 
 `TieredIndex.open(dir, config)`:
 
-1. `Manifest.readLatest`: list the manifests, newest first. For each, check magic, version, CRC, that every named file exists with the recorded length and a valid header, footer and locator, and that the tombstone file matches. The first that passes is current. A candidate that fails is skipped. If none passes it throws `CorruptException`; an empty directory throws `NoSuchFileException`; a manifest in a newer format throws `UnsupportedException` at once.
+1. `Manifest.readLatest`: list the manifests, newest first. For each, check magic, version, CRC, that every named file exists with the recorded length and a valid header, footer and locator, and that the tombstone file matches. The first that passes is current. A candidate that fails is skipped; a segment whose first eight bytes are not the magic fails like one with a bad header CRC. If none passes it throws `CorruptException`; an empty directory throws `NoSuchFileException`; a manifest in a newer format throws `UnsupportedException` at once.
 2. Compare the fingerprint with the configuration (dimension, metric, `M`, `efConstruction`, SQ8). A difference throws `MismatchException`.
 3. Read every segment with every section checksummed, and compare it with its manifest entry.
 4. Delete the files that the manifest does not name (orphans of a crashed publish, older generations).

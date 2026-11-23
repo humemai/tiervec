@@ -48,7 +48,7 @@ public final class SegmentFormat {
     static final int MAX_FOOTER = 1 << 20;
     static final int MAX_ARRAY = Integer.MAX_VALUE - 8;
 
-    /** An integrity failure: a CRC, length or structure check failed. {@link #section()} names the section when one is known. */
+    /** An integrity failure: a CRC, length, magic or structure check failed. {@link #section()} names the section when one is known. */
     public static class CorruptException extends IOException {
         private static final long serialVersionUID = 1L;
         private final String section;
@@ -73,7 +73,10 @@ public final class SegmentFormat {
         }
     }
 
-    /** The file is intact as far as is known but this reader does not understand it: a larger major version, an unknown required section, another byte order. */
+    /**
+     * The file is intact as far as is known but this reader does not understand it: a larger major version, an unknown required section, another
+     * byte order. A wrong magic is not one of these: it is damage, a {@link CorruptException}.
+     */
     public static class UnsupportedException extends IOException {
         private static final long serialVersionUID = 1L;
 

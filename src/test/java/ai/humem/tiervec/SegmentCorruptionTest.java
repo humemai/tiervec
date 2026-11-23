@@ -30,8 +30,8 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * Damage to a segment file, byte by byte. A file that is cut short, or has any bit of its header, footer, locator or sections flipped, is
- * refused with a {@link CorruptException} (an {@link UnsupportedException} where the damaged bytes are the major version; for the magic either
- * of the two named exceptions), never loaded, and never fails in any other way. The sweeps are exhaustive over a small file: every cut length, and every byte that a
+ * refused with a {@link CorruptException} (an {@link UnsupportedException} where the damaged bytes are the major version), never loaded, and
+ * never fails in any other way. The sweeps are exhaustive over a small file: every cut length, and every byte that a
  * CRC or a length check covers. The only bytes whose damage is not detected are the zero fill that no CRC covers (the rest of the header
  * block and the gaps between sections), and a test below shows that damage there changes nothing a reader serves.
  *
@@ -134,8 +134,9 @@ class SegmentCorruptionTest {
 
     @Test
     void everyBitOfTheHeaderIsGuarded() throws IOException {
-        // bytes 0 to 9 are the magic and the major version: a flipped bit there names a file this reader does not understand. Bytes 10 to 51
-        // (minor version, header length, probe, flags, dimensions, enum codes, alignment, the CRC itself) are covered by the header CRC.
+        // bytes 0 to 7 are the magic: a flipped bit there is damage, not a newer format (#83). Bytes 8 and 9 are the major version, which is read
+        // before the CRC: a flipped bit there names a file this reader does not understand. Bytes 10 to 51 (minor version, header length, probe,
+        // flags, dimensions, enum codes, alignment, the CRC itself) are covered by the header CRC.
         try (FileChannel ch = FileChannel.open(scratch, StandardOpenOption.WRITE)) {
             for (int pos = 0; pos < SegmentFormat.HEADER_LEN; pos++) {
                 for (int bit = 0; bit < 8; bit++) {
@@ -144,7 +145,7 @@ class SegmentCorruptionTest {
                     for (boolean verify : new boolean[] {true, false}) {
                         IOException e = refused(scratch, verify, what);
                         if (pos >= 8 && pos < 10) assertInstanceOf(UnsupportedException.class, e, what);
-                        else if (pos >= 10) assertEquals("HEADER", assertInstanceOf(CorruptException.class, e, what).section(), what);
+                        else assertEquals("HEADER", assertInstanceOf(CorruptException.class, e, what).section(), what);
                     }
                     restore(ch, pos);
                 }
@@ -272,19 +273,35 @@ class SegmentCorruptionTest {
                 byte[] b = good.clone();
                 b[pos] ^= (byte) x;
                 Path p = tmp.resolve("magic-" + pos + "-" + x + ".tvs");
-                // the magic is checked before any CRC; which of the two named exceptions says "not a segment file" is not part of the claim
-                refused(p, b, "magic byte " + pos + " ^ " + x);
+                // the magic is checked before any CRC, and a wrong one is damage: the magic is the same in every version (#83)
+                assertBadMagic(refused(p, b, "magic byte " + pos + " ^ " + x), p, "magic byte " + pos + " ^ " + x);
             }
         }
         byte[] zeroed = good.clone();
         java.util.Arrays.fill(zeroed, 0, 8, (byte) 0);
-        refused(tmp.resolve("zeroed-magic.tvs"), zeroed, "zeroed magic");
+        Path zp = tmp.resolve("zeroed-magic.tvs");
+        assertBadMagic(refused(zp, zeroed, "zeroed magic"), zp, "zeroed magic");
         // the magic of a manifest, a tombstone file and the locator are not the magic of a segment
         for (String other : new String[] {"TVMAN001", "TVTOMB01", "TVSEGEND", "tvseg001", "TVSEG002"}) {
             byte[] b = good.clone();
             System.arraycopy(other.getBytes(java.nio.charset.StandardCharsets.US_ASCII), 0, b, 0, 8);
-            refused(tmp.resolve("other-" + other + ".tvs"), b, other);
+            Path op = tmp.resolve("other-" + other + ".tvs");
+            assertBadMagic(refused(op, b, other), op, other);
         }
+    }
+
+    @Test
+    void aDamagedMagicIsCorruptionAndALargerMajorVersionIsUnsupported() throws IOException {
+        // #83: both are refused, and the two kinds must stay apart because a caller treats them differently: TieredIndex.open falls back to the
+        // previous generation for damage and never for a newer format
+        byte[] damaged = good.clone();
+        damaged[0] ^= 1;
+        Path dp = tmp.resolve("damaged-magic.tvs");
+        assertBadMagic(refused(dp, damaged, "damaged magic"), dp, "damaged magic");
+        Path newer = tmp.resolve("major2.tvs");
+        SegmentWriter.write(orig, versOf(N), newer, 2, 0, List.of()); // intact, valid checksums, a major version this reader does not know
+        assertInstanceOf(UnsupportedException.class, refused(newer, "major 2"));
+        assertInstanceOf(UnsupportedException.class, refused(newer, false, "major 2"));
     }
 
     @Test
@@ -292,15 +309,18 @@ class SegmentCorruptionTest {
         Random r = new Random(5);
         byte[] noise = new byte[100_000];
         r.nextBytes(noise);
-        refused(tmp.resolve("noise.tvs"), noise, "random bytes");
+        Path np = tmp.resolve("noise.tvs");
+        assertBadMagic(refused(np, noise, "random bytes"), np, "random bytes");
         byte[] text = "this is a text file, not a segment, but it is longer than the header".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
-        refused(tmp.resolve("text.tvs"), text, "text");
+        Path tp = tmp.resolve("text.tvs");
+        assertBadMagic(refused(tp, text, "text"), tp, "text");
         // shorter than the magic: too short to be anything
         for (int len : new int[] {0, 1, 7}) {
             assertInstanceOf(CorruptException.class, refused(tmp.resolve("short" + len + ".tvs"), new byte[len], len + " bytes"), len + " bytes");
         }
         // zeros: no magic
-        refused(tmp.resolve("zeros.tvs"), new byte[HEADER_AND_LOCATOR + 10], "zeros");
+        Path zeros = tmp.resolve("zeros.tvs");
+        assertBadMagic(refused(zeros, new byte[HEADER_AND_LOCATOR + 10], "zeros"), zeros, "zeros");
         // the right magic followed by nothing, and by random bytes
         byte[] magicOnly = java.util.Arrays.copyOf(SegmentFormat.MAGIC, 8);
         assertInstanceOf(CorruptException.class, refused(tmp.resolve("magic-only.tvs"), magicOnly, "magic only"));
@@ -310,6 +330,14 @@ class SegmentCorruptionTest {
     }
 
     private static final int HEADER_AND_LOCATOR = SegmentFormat.HEADER_BLOCK + SegmentFormat.LOCATOR_LEN;
+
+    /** a file whose first eight bytes are not the magic is damage: a CorruptException in section HEADER, and the message names the file and the field */
+    private static void assertBadMagic(IOException e, Path file, String what) {
+        CorruptException c = assertInstanceOf(CorruptException.class, e, what);
+        assertEquals("HEADER", c.section(), what);
+        assertTrue(c.getMessage().contains(file.getFileName().toString()), what + ": the message names the file: " + c.getMessage());
+        assertTrue(c.getMessage().contains("magic"), what + ": the message names the field: " + c.getMessage());
+    }
 
     private interface IoCall {
         void run() throws IOException;

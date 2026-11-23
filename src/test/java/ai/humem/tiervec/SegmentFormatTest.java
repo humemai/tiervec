@@ -248,11 +248,14 @@ class SegmentFormatTest {
         Path ok = file("ok.tvs");
         SegmentWriter.write(g, vers, ok);
 
-        // wrong magic
+        // a wrong magic is damage, not a newer format (#83): a CorruptException that names the file and the field
         byte[] b = Files.readAllBytes(ok);
         b[0] = 'X';
         Path bad = write(b);
-        assertThrows(UnsupportedException.class, () -> SegmentReader.inspect(bad));
+        CorruptException badMagic = assertThrows(CorruptException.class, () -> SegmentReader.inspect(bad));
+        assertEquals("HEADER", badMagic.section());
+        assertTrue(badMagic.getMessage().contains(bad.getFileName().toString()), badMagic.getMessage());
+        assertTrue(badMagic.getMessage().contains("magic"), badMagic.getMessage());
 
         // a larger major is refused
         Path major = file("major2.tvs");

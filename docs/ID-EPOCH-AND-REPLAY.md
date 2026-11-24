@@ -36,7 +36,7 @@ Three models are possible. They differ in what the key is, and so in what the ho
 
 The recommended model is the first. Reasons, all from the table: no reuse hazard inside an epoch, no width problem, no reconstruction of a floor from events the host may not store, a host mapping that usually exists already (the host finds a record from an id with a table it keeps), and no change to the in-memory tier.
 
-`exists today`: the in-memory tier works with all three models, because the version floor hides old copies of a reused id (`TieredIndex.add`, `TieredIndex.delete`, [DESIGN.md](DESIGN.md)). Tests for reuse across seal and merge are `planned` ([#5]). The epoch and the high-water id are stored in the manifest and used at open (see the sections below).
+`exists today`: the in-memory tier works with all three models, because the version floor hides old copies of a reused id (`TieredIndex.add`, `TieredIndex.delete`, [DESIGN.md](DESIGN.md)). Tests for reuse across seal and merge exist: `RidReuseTest` and the longer `RidReuse*` tests ([#5], [STATUS.md](STATUS.md#record-id-reuse-and-tombstones)). The epoch and the high-water id are stored in the manifest and used at open (see the sections below).
 
 With persistence on, one more rule follows from the high-water id. A host does not add a held id again with a different vector. In memory, the tier would replace it. After a reopen, the replay rule would miss a replaced vector whose id is at or below the high-water id, and the old copy could come back. A new vector version gets a new id. Adding a held id with the same vector is the replay case, and it is allowed.
 

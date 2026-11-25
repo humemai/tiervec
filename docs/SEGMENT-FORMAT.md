@@ -179,7 +179,7 @@ The claim stays a process kill. The simulated file system is a model: it shows t
 4. Delete the files that the manifest does not name (orphans of a crashed publish, older generations).
 5. Restore the version counter and the epoch, and start the tier with the segments, an empty tail and an empty floor map.
 
-Any failure throws. The overload `open(dir, dim, metric, config, rebuildSource)` catches it and builds the tier from the records with `rebuildFrom`; `openFallbackCause()` tells why. The directory is left as it was in that case, and the next `checkpoint` replaces its contents.
+Any failure throws. The overload `open(dir, dim, metric, config, rebuildSource)` catches it and builds the tier from the records with `rebuildFrom`; `openFallbackCause()` tells why. The directory is left as it was in that case. The next `checkpoint` replaces its contents, with one exception: when `open` failed with `UnsupportedException`, `checkpoint` into that directory throws the same exception and changes nothing, so that an older reader does not destroy files of a newer format. A host that wants to give those files up deletes the directory.
 
 `open(dir, dim, metric, config, recordSource)` adds, after step 5, the epoch comparison (another epoch gives a cold index), the drop of ids above the host's recovered maximum (rebuilt segments and a new generation before it returns), the liveness check, and the replay of the host's live records above the high-water id: see [ID-EPOCH-AND-REPLAY.md](ID-EPOCH-AND-REPLAY.md).
 

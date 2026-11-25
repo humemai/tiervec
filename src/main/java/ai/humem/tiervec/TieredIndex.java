@@ -1305,7 +1305,8 @@ public final class TieredIndex implements VecIndex {
      * names are deleted afterwards.
      *
      * <p>This first cut persists segments only, so it refuses a tier that holds anything else, with an {@link IllegalStateException}: a
-     * non-empty tail (call {@link #sealNow} first), an entry in the floor map, or a segment with hidden copies. Writers and the seal and
+     * non-empty tail (call {@link #sealNow} first), an entry in the floor map, or a segment with hidden copies. It also refuses a directory
+     * that holds files of a newer format, with a {@link SegmentFormat.UnsupportedException}, and changes nothing there. Writers and the seal and
      * merge worker wait while it runs. One process owns a directory at a time; nothing here locks it. The manifest records the epoch of the tier and, inside an epoch, the largest id that the segments hold.
      */
     public void checkpoint(Path dir) throws IOException {
@@ -1394,7 +1395,8 @@ public final class TieredIndex implements VecIndex {
      * Like {@link #open(Path, Config)} for a caller that knows the index definition and holds the records: on any failure to read the
      * directory (damage, a newer format, another fingerprint, no manifest) it builds the tier from {@code rebuildSource} with
      * {@link #rebuildFrom}, which is always correct and costs a build. The directory is not touched in that case; the next
-     * {@link #checkpoint} replaces what is in it. {@link #openFallbackCause()} tells which failure it was.
+     * {@link #checkpoint} replaces what is in it, except when the cause is a {@link SegmentFormat.UnsupportedException}: a checkpoint refuses
+     * to overwrite files of a newer format. {@link #openFallbackCause()} tells which failure it was.
      */
     public static TieredIndex open(Path dir, int dim, Metric metric, Config cfg, Supplier<? extends Iterable<IdVector>> rebuildSource) {
         Config c = cfg != null ? cfg : Config.defaults();
@@ -1421,7 +1423,8 @@ public final class TieredIndex implements VecIndex {
      * Opens the persisted tier and reconciles it with the host's records (docs/ID-EPOCH-AND-REPLAY.md, the replay protocol). The newest valid manifest is
      * read. When there is none, when it is damaged or in another format, when its fingerprint is not this index's, or when its epoch is not the epoch
      * of {@code host}, the persisted state is discarded as a whole and the tier is built from {@code host.allLive()} with {@code host}'s epoch (a cold
-     * index); the directory is left as it was, and the next {@link #checkpoint} replaces its contents; {@link #openFallbackCause()} tells which case it was.
+     * index); the directory is left as it was, and the next {@link #checkpoint} replaces its contents (except after a
+     * {@link SegmentFormat.UnsupportedException}, which it throws again); {@link #openFallbackCause()} tells which case it was.
      * Otherwise the segments are read and then: (1) every held id above {@code host.recoveredMax()} is dropped (the host forgot the commit that wrote it, and
      * may mint the id again), and when any row was dropped the segments are rebuilt without it and a new generation with the lowered high-water id is
      * published before this method returns, so that a dropped row never comes back in a later generation (if that fails, the tier goes cold);

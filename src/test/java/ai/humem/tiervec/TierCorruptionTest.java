@@ -497,6 +497,9 @@ class TierCorruptionTest {
         TieredIndex r = TieredIndex.open(dir, DIM, Metric.L2, cfg(), () -> records1);
         try {
             assertInstanceOf(UnsupportedException.class, r.openFallbackCause());
+            // #130: the rebuilt tier is settled, but it may not replace files of a newer format
+            assertThrows(UnsupportedException.class, () -> r.checkpoint(dir));
+            assertUnchanged(before, dir, "a checkpoint over major 2");
         } finally {
             r.close();
         }

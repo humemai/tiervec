@@ -580,6 +580,11 @@ public final class FlatIndex implements VecIndex {
 
     @Override
     public Hit[] search(float[] q, int k, LongPredicate allow) {
+        return search(q, k, allow, (Poll) null);
+    }
+
+    /** {@link #search(float[], int, LongPredicate)} for a caller that polls a {@link SearchContext}; {@code poll} null: no context */
+    Hit[] search(float[] q, int k, LongPredicate allow, Poll poll) {
         if (q.length != dim) throw new IllegalArgumentException("dim " + q.length + " != " + dim);
         if (k <= 0) return EMPTY;
         Store st = store;
@@ -594,12 +599,12 @@ public final class FlatIndex implements VecIndex {
             long cand = (long) rerank * want;
             if (coded && cand < liveN) {
                 TopK cs = new TopK((int) cand);
-                scan(st, cnt, qq, allow, cs, quant == Quant.SQ8 ? sq8Mode : 2);
+                scan(st, cnt, qq, allow, cs, quant == Quant.SQ8 ? sq8Mode : 2, poll);
                 h = new TopK(want);
-                rerankInto(st, qq, cs, h);
+                rerankInto(st, qq, cs, h, poll);
             } else {
                 h = new TopK(want);
-                scan(st, cnt, qq, allow, h, 0);
+                scan(st, cnt, qq, allow, h, 0, poll);
             }
             Hit[] res = h.drainSorted();
             Hit[] d = dedupe(res);
@@ -628,9 +633,10 @@ public final class FlatIndex implements VecIndex {
         return Arrays.copyOf(out, n);
     }
 
-    private void rerankInto(Store st, float[] qq, TopK cand, TopK out) {
+    private void rerankInto(Store st, float[] qq, TopK cand, TopK out, Poll poll) {
         Chunk[] cs = st.chunks;
         for (int i = 0; i < cand.n; i++) {
+            if (poll != null) poll.before(1);
             int slot = cand.slot[i];
             Chunk c = cs[chunkOf(slot)];
             int off = slot - c.start;
@@ -641,7 +647,7 @@ public final class FlatIndex implements VecIndex {
     }
 
     /** mode 0: exact fp32, 1: SQ8 codes, 2: binary codes. Scores are higher-is-better in every mode. */
-    private void scan(Store st, int cnt, float[] qq, LongPredicate allow, TopK h, int mode) {
+    private void scan(Store st, int cnt, float[] qq, LongPredicate allow, TopK h, int mode, Poll poll) {
         byte[] qc = null;
         float qs = 0f, qn2 = 0f;
         long[] qb = null;
@@ -675,6 +681,7 @@ public final class FlatIndex implements VecIndex {
                     long bits = (long) LIVE.getAcquire(c.liveBits, w);
                     int rem = lim - (w << 6);
                     if (rem < 64) bits &= (1L << rem) - 1;
+                    if (poll != null) poll.before(Long.bitCount(bits));
                     for (int nib = 0; nib < 4 && bits != 0; nib++) {
                         int nb = (int) ((bits >>> (nib << 4)) & 0xFFFF);
                         if (nb == 0) continue;
@@ -697,6 +704,7 @@ public final class FlatIndex implements VecIndex {
                 long bits = (long) LIVE.getAcquire(c.liveBits, w);
                 int rem = lim - (w << 6);
                 if (rem < 64) bits &= (1L << rem) - 1;
+                if (poll != null) poll.before(Long.bitCount(bits)); // the live slots of this word, at most 64
                 while (bits != 0) {
                     int off = (w << 6) + Long.numberOfTrailingZeros(bits);
                     bits &= bits - 1;

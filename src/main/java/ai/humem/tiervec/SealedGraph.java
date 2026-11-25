@@ -116,6 +116,11 @@ public final class SealedGraph implements VecIndex {
 
     /** As {@link #search(float[], int, LongPredicate, int)} with the scan-first threshold of this call. */
     public Hit[] search(float[] q, int k, LongPredicate allow, int ef, double scanBelow) {
+        return search(q, k, allow, ef, scanBelow, null);
+    }
+
+    /** {@link #search(float[], int, LongPredicate, int, double)} for a caller that polls a {@link SearchContext}; {@code poll} null: no context */
+    Hit[] search(float[] q, int k, LongPredicate allow, int ef, double scanBelow, Poll poll) {
         FilterPlan.check(scanBelow);
         if (k <= 0 || n == 0) return new Hit[0];
         if (q.length != dim) throw new IllegalArgumentException("dim");
@@ -124,29 +129,35 @@ public final class SealedGraph implements VecIndex {
         if (mode == GraphIndex.COS) { double nn = 0; for (float x : qq) nn += (double) x * x; if (nn > 0) { float inv = (float) (1 / Math.sqrt(nn)); for (int i = 0; i < dim; i++) qq[i] *= inv; } }
         s.q = qq; s.sumq = Kern.sum(qq, dim); s.qq = Kern.dot(qq, 0, qq, 0, dim);
         boolean q8 = codes != null && params.sq8();
+        if (poll != null) poll.before(1);
         int cur = entryRow; float curD = dist(s, cur, q8);
         for (int l = maxLevel; l >= 1; l--) {
             for (boolean moved = true; moved; ) {
                 moved = false;
                 int b = upIdx[cur]; if (b < 0) break;
                 for (int i = upOff[b + l - 1]; i < upOff[b + l]; i++) {
+                    if (poll != null) poll.before(1);
                     int x = upEdges[i]; float d = dist(s, x, q8);
                     if (d < curD) { curD = d; cur = x; moved = true; }
                 }
             }
         }
         s.prep(n);
-        if (allow != null && scanBelow > 0 && FilterPlan.scanFirst(scanBelow, n, r -> !isDead(r), r -> ids[r], allow)) return scanExact(s, k, allow);
+        if (allow != null && scanBelow > 0) {
+            if (poll != null) poll.before(Math.min(FilterPlan.SAMPLE, Poll.INTERVAL)); // the predicate calls of the sample
+            if (FilterPlan.scanFirst(scanBelow, n, r -> !isDead(r), r -> ids[r], allow)) return scanExact(s, k, allow, poll);
+        }
         int budget = allow == null ? 0 : Math.max(50 * ef, n / 20);
-        beam(s, cur, curD, ef, allow, q8, budget);
-        if (allow != null && s.exhausted && s.outCount < ef) return scanExact(s, k, allow);
-        return collect(s, k, q8);
+        beam(s, cur, curD, ef, allow, q8, budget, poll);
+        if (allow != null && s.exhausted && s.outCount < ef) return scanExact(s, k, allow, poll);
+        return collect(s, k, q8, poll);
     }
 
-    private void beam(Sc s, int entryNode, float entryDist, int ef, LongPredicate allow, boolean q8, int budget) {
+    private void beam(Sc s, int entryNode, float entryDist, int ef, LongPredicate allow, boolean q8, int budget, Poll poll) {
         Heap cand = s.cand, res = s.res; cand.clear(); res.clear(); s.exhausted = false; int visited = 0;
         s.stamp[entryNode] = s.gen;
         cand.push(entryDist, entryNode);
+        if (poll != null) poll.before(1);
         if (!isDead(entryNode) && (allow == null || allow.test(ids[entryNode]))) res.push(-entryDist, entryNode);
         while (cand.n > 0) {
             float cd = cand.topKey(); int c = cand.topVal(); cand.pop();
@@ -155,6 +166,7 @@ public final class SealedGraph implements VecIndex {
             for (int i = off0[c], e = off0[c + 1]; i < e; i++) {
                 int x = edges0[i];
                 if (s.stamp[x] == s.gen) continue;
+                if (poll != null) poll.before(1);
                 s.stamp[x] = s.gen; visited++;
                 float d = dist(s, x, q8);
                 if (res.n < ef || d < -res.topKey()) {
@@ -167,9 +179,10 @@ public final class SealedGraph implements VecIndex {
         for (int i = m - 1; i >= 0; i--) { s.outD[i] = -res.topKey(); s.outN[i] = res.topVal(); res.pop(); }
     }
 
-    private Hit[] collect(Sc s, int k, boolean q8) {
+    private Hit[] collect(Sc s, int k, boolean q8, Poll poll) {
         int m = s.outCount;
         if (q8) for (int i = 0; i < m; i++) {
+            if (poll != null) poll.before(1);
             int r = s.outN[i]; float d = distFp(s.q, r); int j = i;
             while (j > 0 && s.outD[j - 1] > d) { s.outD[j] = s.outD[j - 1]; s.outN[j] = s.outN[j - 1]; j--; }
             s.outD[j] = d; s.outN[j] = r;
@@ -182,16 +195,20 @@ public final class SealedGraph implements VecIndex {
         return c == out.length ? out : Arrays.copyOf(out, c);
     }
 
-    private Hit[] scanExact(Sc s, int k, LongPredicate allow) {
+    private Hit[] scanExact(Sc s, int k, LongPredicate allow, Poll poll) {
         Heap h = s.res; h.clear();
-        for (int r = 0; r < n; r++) {
-            if (isDead(r) || !allow.test(ids[r])) continue;
-            float d = distFp(s.q, r);
-            if (h.n < k) h.push(-d, r); else if (d < -h.topKey()) { h.pop(); h.push(-d, r); }
+        for (int from = 0; from < n; from += 64) { // counted by the block: a count per row costs more than a cheap predicate
+            int to = Math.min(n, from + 64);
+            if (poll != null) poll.before(to - from);
+            for (int r = from; r < to; r++) {
+                if (isDead(r) || !allow.test(ids[r])) continue;
+                float d = distFp(s.q, r);
+                if (h.n < k) h.push(-d, r); else if (d < -h.topKey()) { h.pop(); h.push(-d, r); }
+            }
         }
         int m = h.n; if (s.outN.length < m) { s.outN = new int[m * 2]; s.outD = new float[m * 2]; } s.outCount = m;
         for (int i = m - 1; i >= 0; i--) { s.outD[i] = -h.topKey(); s.outN[i] = h.topVal(); h.pop(); }
-        return collect(s, k, false);
+        return collect(s, k, false, poll);
     }
 
     @Override public long bytesHeld() {

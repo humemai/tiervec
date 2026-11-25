@@ -43,6 +43,9 @@ import java.util.function.Supplier;
  * was never added. Below {@code smallLimit} live vectors no graph is ever built and every search is an exact scan, which removes the
  * rebuild on the query path of the engine today.
  *
+ * <p>Deadline and cancellation. The search overloads that take a {@link SearchContext} poll it at the start, before each tail and each segment, at a bounded
+ * interval inside them and while they wait for a batch, and throw {@link SearchCancelledException} when it says stop.
+ *
  * <p>Seal. When the active tail reaches {@code tailLimit} vectors (or its first vector is older than {@code tailAgeMs}) and the
  * index holds at least {@code smallLimit} vectors, the worker thread (1) freezes the tail under the write lock (a new empty tail
  * takes over writes, the view now names a frozen tail and an active tail), (2) builds a GraphIndex from the frozen contents and
@@ -608,29 +611,79 @@ public final class TieredIndex implements VecIndex {
         return search(q, k, allow, Freshness.FRESH).hits();
     }
 
+    /**
+     * {@link #search(float[], int, LongPredicate)} that stops when {@code context} says so.
+     *
+     * @param q the query vector
+     * @param k the most hits to return
+     * @param allow the ids that may be returned, or null for no filter
+     * @param context polled during the search (see {@link SearchContext}), or null for none
+     * @return the hits, best first
+     * @throws SearchCancelledException when the context expired before the search was done
+     */
+    public Hit[] search(float[] q, int k, LongPredicate allow, SearchContext context) {
+        return search(q, k, allow, Freshness.FRESH, context).hits();
+    }
+
     public SearchResult search(float[] q, int k, LongPredicate allow, Freshness freshness) {
-        return searchImpl(q, k, allow, freshness, cfg.graph().efSearch());
+        return searchImpl(q, k, allow, freshness, cfg.graph().efSearch(), null);
+    }
+
+    /**
+     * {@link #search(float[], int, LongPredicate, Freshness)} that stops when {@code context} says so.
+     *
+     * @param q the query vector
+     * @param k the most hits to return
+     * @param allow the ids that may be returned, or null for no filter
+     * @param freshness whether the tails are searched
+     * @param context polled during the search (see {@link SearchContext}), or null for none
+     * @return the hits with their meta data
+     * @throws SearchCancelledException when the context expired before the search was done
+     */
+    public SearchResult search(float[] q, int k, LongPredicate allow, Freshness freshness, SearchContext context) {
+        return searchImpl(q, k, allow, freshness, cfg.graph().efSearch(), context);
     }
 
     /** FRESH search with an explicit beam width for the segments (the harness sweeps ef through this overload) */
     public Hit[] search(float[] q, int k, LongPredicate allow, int ef) {
-        return searchImpl(q, k, allow, Freshness.FRESH, ef).hits();
+        return searchImpl(q, k, allow, Freshness.FRESH, ef, null).hits();
     }
 
-    private SearchResult searchImpl(float[] q, int k, LongPredicate allow, Freshness freshness, int efSearch) {
+    /**
+     * {@link #search(float[], int, LongPredicate, int)} that stops when {@code context} says so.
+     *
+     * @param q the query vector
+     * @param k the most hits to return
+     * @param allow the ids that may be returned, or null for no filter
+     * @param ef the beam width of a segment search
+     * @param context polled during the search (see {@link SearchContext}), or null for none
+     * @return the hits, best first
+     * @throws SearchCancelledException when the context expired before the search was done
+     */
+    public Hit[] search(float[] q, int k, LongPredicate allow, int ef, SearchContext context) {
+        return searchImpl(q, k, allow, Freshness.FRESH, ef, context).hits();
+    }
+
+    private SearchResult searchImpl(float[] q, int k, LongPredicate allow, Freshness freshness, int efSearch, SearchContext context) {
         if (q.length != dim) throw new IllegalArgumentException("dim " + q.length + " != " + dim);
         if (k <= 0) return new SearchResult(NONE, true, 0, 0);
+        Poll poll = context == null ? null : new Poll(context);
+        if (poll != null) poll.now();
         for (int spins = 0;;) {
             long seq = batchSeq;
             if ((seq & 1L) != 0L) { // a batch is in progress (see apply): a scan across it would be thrown away, so wait for it
-                if (++spins < 64) Thread.onSpinWait();
-                else LockSupport.parkNanos(20_000L);
+                if (++spins < 64) {
+                    Thread.onSpinWait();
+                } else {
+                    LockSupport.parkNanos(20_000L);
+                    if (poll != null) poll.now();
+                }
                 continue;
             }
             View vw = enter();
             SearchResult r;
             try {
-                r = searchView(vw, q, k, allow, freshness, efSearch);
+                r = searchView(vw, q, k, allow, freshness, efSearch, poll);
             } finally {
                 vw.readers.decrementAndGet();
             }
@@ -653,7 +706,7 @@ public final class TieredIndex implements VecIndex {
         }
     }
 
-    private SearchResult searchView(View vw, float[] q, int k, LongPredicate allow, Freshness freshness, int efSearch) {
+    private SearchResult searchView(View vw, float[] q, int k, LongPredicate allow, Freshness freshness, int efSearch, Poll poll) {
         Segment[] segs = vw.segs;
         Hit[][] lists = new Hit[2 + segs.length][];
         int li = 0;
@@ -662,15 +715,17 @@ public final class TieredIndex implements VecIndex {
             // an empty tail costs nothing: no scan, no list, no merge work (an add that returned has already put its raw copy)
             int na = vw.active.raw.size();
             if (na > 0) {
+                if (poll != null) poll.now();
                 tailScanned += na;
-                Hit[] h = vw.active.flat.search(q, k, allow);
+                Hit[] h = vw.active.flat.search(q, k, allow, poll);
                 if (h.length > 0) lists[li++] = h;
             }
             if (vw.frozen != null) {
                 int nf = vw.frozen.raw.size();
                 if (nf > 0) {
+                    if (poll != null) poll.now();
                     tailScanned += nf;
-                    Hit[] h = vw.frozen.flat.search(q, k, allow);
+                    Hit[] h = vw.frozen.flat.search(q, k, allow, poll);
                     if (h.length > 0) lists[li++] = h;
                 }
             }
@@ -687,7 +742,8 @@ public final class TieredIndex implements VecIndex {
             if (s.n == 0 || s.dead >= s.n) continue;
             LongPredicate p = s.dead > 0 ? segFilter(s, allow) : allow;
             int efS = sizeSum > 0 ? Math.max(k, (int) ((ef * (long) s.n + sizeSum - 1) / sizeSum)) : ef; // ceil(ef * rows(s) / sizeSum), at least k
-            Hit[] h = s.g.search(q, k, p, efS, scanBelow);
+            if (poll != null) poll.now();
+            Hit[] h = s.g.search(q, k, p, efS, scanBelow, poll);
             if (h.length > 0) lists[li++] = h;
             searched++;
         }

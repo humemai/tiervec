@@ -33,7 +33,8 @@ import org.junit.jupiter.params.provider.MethodSource;
  * <p>The directory must hold exactly the generation before the cut one, or the cut one when the halt came at or after the rename (and when the
  * first checkpoint is cut before its rename there is no generation, and open says so with a {@link NoSuchFileException}). Whichever it is, open
  * must serve the answers of that generation, leave exactly its files, and not throw. Every step of the publish is cut once, in the first, second
- * or third checkpoint, each with its own seed; the run takes a few seconds because every case is one JVM.
+ * or third checkpoint, each with its own seed; the run takes a few seconds because every case is one JVM. {@link TierHaltLongTest} (slow) runs
+ * every step in every checkpoint with many seeds.
  *
  * <p>This is a process kill: the operating system keeps what the process wrote, flushed or not. It says nothing about power loss.
  */
@@ -75,7 +76,7 @@ class TierHaltTest {
     }
 
     /** the same hits in the same order, with scores that agree to a few units in the last place (the two sides ran in two JVMs) */
-    private static void assertSameAnswers(List<String> want, List<String> got, String what) {
+    static void assertSameAnswers(List<String> want, List<String> got, String what) {
         assertEquals(want.size(), got.size(), what + ": the number of queries");
         for (int i = 0; i < want.size(); i++) {
             String[] a = want.get(i).split(" ");
@@ -108,7 +109,7 @@ class TierHaltTest {
     }
 
     /** starts the child and waits for it to halt; fails with the child's output when it ended any other way */
-    private void runChild(FaultHook.Step step, int gen, long seed) throws Exception {
+    private static void runChild(Path dir, Path expect, FaultHook.Step step, int gen, long seed) throws Exception {
         Path log = expect.resolve("child.log");
         List<String> cmd = new ArrayList<>();
         cmd.add(Path.of(System.getProperty("java.home"), "bin", "java").toString());
@@ -134,7 +135,12 @@ class TierHaltTest {
     @ParameterizedTest(name = "halt after {0} in checkpoint {1}, seed {2}")
     @MethodSource("points")
     void aHaltAtAnyStepOfACheckpointLeavesTheGenerationBeforeOrTheOneBeingPublished(FaultHook.Step step, int gen, long seed) throws Exception {
-        runChild(step, gen, seed);
+        haltAndCheck(dir, expect, step, gen, seed);
+    }
+
+    /** one case: a child that publishes into {@code dir} and halts at {@code step} of checkpoint {@code gen}, then the open and the comparison */
+    static void haltAndCheck(Path dir, Path expect, FaultHook.Step step, int gen, long seed) throws Exception {
+        runChild(dir, expect, step, gen, seed);
         final boolean renamed = step.ordinal() >= FaultHook.Step.MANIFEST_RENAMED.ordinal();
         final int live = renamed ? gen : gen - 1;
         final String what = "halt after " + step + " in checkpoint " + gen;

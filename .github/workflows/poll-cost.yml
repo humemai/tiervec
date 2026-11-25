@@ -1,0 +1,58 @@
+# The cost of polling a search context (issue #11; docs/BENCHMARKS.md, "The cost of polling"): 10 fresh JVMs per JDK, each comparing a search with a
+# context to the same search without one. It starts by hand, and on a pull request that changes the harness or this file. It has no speed bar and it is
+# not a required check. A timing from a shared runner is a ratio inside one run, never an absolute speed.
+name: Poll cost
+
+on:
+  pull_request:
+    paths:
+      - src/bench/java/ai/humem/tiervec/PollCost.java
+      - .github/workflows/poll-cost.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  poll-cost:
+    name: poll cost (JDK ${{ matrix.java }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        java: ["21", "25"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.java }}
+      - name: Machine and toolchain
+        run: |
+          java -version
+          lscpu | grep -E '^(Model name|CPU\(s\)|Thread|Core)'
+      - name: Compile the library and the harness
+        run: |
+          mkdir -p target/bench/classes
+          find src/main/java src/bench/java -name '*.java' > target/bench/sources.txt
+          javac -d target/bench/classes --add-modules jdk.incubator.vector @target/bench/sources.txt
+      - name: Run 10 fresh JVMs
+        env:
+          JDK: ${{ matrix.java }}
+        run: |
+          out="target/bench/poll-cost-jdk$JDK.txt"
+          for i in $(seq 1 10); do
+            timeout 300 java -Xmx2g --add-modules jdk.incubator.vector -cp target/bench/classes ai.humem.tiervec.PollCost > target/bench/one.txt || { cat target/bench/one.txt; exit 1; }
+            cat target/bench/one.txt
+            cat target/bench/one.txt >> "$out"
+          done
+          java --add-modules jdk.incubator.vector -cp target/bench/classes ai.humem.tiervec.PollCost summary "$out"
+      - name: Upload the result file
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: poll-cost-jdk${{ matrix.java }}
+          path: target/bench/poll-cost-jdk${{ matrix.java }}.txt
+          retention-days: 90

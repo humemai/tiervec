@@ -180,6 +180,12 @@ The run fails (exit code 1) when:
 5. Do not compare files from different machines or different JDK builds as if only the library changed.
 6. Compare the tier and JVector only from two runs on the same machine and the same JDK build, one after the other, on the same cores and with the same `--build-threads`, and say which JVector SIMD provider ran. The table in [The JVector arm](#the-jvector-arm) says what the two arms do not have in common.
 
+## The cost of polling
+
+`PollCost`, in `src/bench`, compares a search that has a `SearchContext` with the same search without one ([issue #11](https://github.com/humemai/tiervec/issues/11)). The context never expires and does what a host does at each poll: it reads a cancel flag and `System.nanoTime()` against a deadline. One JVM builds a tier of 20,000 vectors of dimension 128 and times 200 queries in three cells: `tail` (the exact scan of a tail), `walk` (the graph walk of one segment) and `scan` (the exact scan of a segment under a filter that passes one id in ten). Each of 40 rounds times both arms, and the arm that goes first alternates. A cell reports the median over the rounds of the time with the context divided by the time without it. The run fails when the two arms answer differently.
+
+The workflow `poll-cost.yml` runs it in 10 fresh JVMs on JDK 21 and on JDK 25 and prints the median, the smallest and the largest ratio of the JVMs. It starts by hand, and on a pull request that changes the harness or the workflow. It has no speed bar: a study writes its bound down before the run, as [ROADMAP.md](ROADMAP.md#how-to-read-measurements) asks. The cells compare the two paths of the same build. They do not compare it with a build that has no polling code.
+
 ## The CI smoke
 
 The job `bench smoke (JDK 21)` and `(JDK 25)` compiles the harness with the library and runs it at n = 10,000 and dimension 768, with 100 queries, one extra beam width (32), shares 0.1 and 0.01, and 15 seconds of the concurrent phase. It is not a required check, and it runs beside the fast tests. It proves that the harness runs, that its answers agree with its own exact scan, and that the checks above hold on a small tier. It prints timings and has no speed bar: the runner is shared, so a timing is only a ratio inside one run.

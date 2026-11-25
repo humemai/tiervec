@@ -161,6 +161,11 @@ public record Manifest(long generation, long epoch, long hwm, long versionCounte
         throw new CorruptException("no valid manifest among " + gens.size() + " candidates in " + dir + "; the newest failed with: " + first.getMessage(), first);
     }
 
+    /** true when {@code dir} is a directory that holds a manifest file, valid or not */
+    static boolean hasManifest(Path dir) throws IOException {
+        return Files.isDirectory(dir) && !generations(dir).isEmpty();
+    }
+
     private static List<Long> generations(Path dir) throws IOException {
         List<Long> out = new ArrayList<>();
         try (DirectoryStream<Path> ds = Files.newDirectoryStream(dir)) {

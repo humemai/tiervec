@@ -2,8 +2,12 @@ package ai.humem.tiervec;
 
 import java.io.IOException;
 import java.nio.channels.FileChannel;
+import java.nio.file.AccessDeniedException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.util.ArrayDeque;
+import java.util.Deque;
 import java.util.zip.CRC32C;
 
 /**
@@ -168,6 +172,34 @@ public final class SegmentFormat {
 
     /** true on Windows, decided once; the JDK cannot open a directory there, so a directory cannot be flushed from Java */
     static final boolean WINDOWS = System.getProperty("os.name", "").startsWith("Windows");
+
+    /**
+     * Makes {@code dir} and the parents that it lacks, one level at a time, and flushes the name of each into its parent before the next one is
+     * made. The deepest directory that is there already has its name flushed first, because a call that was killed may have made it and not
+     * flushed it; when that parent may not be read, the directory is not one this library made, and its name is left to whoever did. On
+     * Windows no directory is flushed ({@link #fsyncDir}). A path that exists and is no directory is refused as by
+     * {@code Files.createDirectories}.
+     */
+    static void createDirectoriesDurably(Path dir) throws IOException {
+        Deque<Path> missing = new ArrayDeque<>(); // the highest level first
+        Path there = dir.toAbsolutePath();
+        while (there != null && !Files.exists(there)) {
+            missing.push(there);
+            there = there.getParent();
+        }
+        if (there != null && there.getParent() != null) {
+            try {
+                fsyncDir(there.getParent());
+            } catch (AccessDeniedException notOurs) {
+                // see above
+            }
+        }
+        for (Path level : missing) {
+            Files.createDirectories(level);
+            fsyncDir(level.getParent());
+        }
+        Files.createDirectories(dir);
+    }
 
     /**
      * flush a directory's entries to disk (new names, renames). Linux and macOS open a directory for reading and force it. On Windows

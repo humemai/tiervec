@@ -1329,7 +1329,7 @@ public final class TieredIndex implements VecIndex {
             for (Segment s : v.segs) {
                 if (s.dead != 0) throw new IllegalStateException("checkpoint needs segments without hidden copies (this version persists no tombstones)");
             }
-            Files.createDirectories(dir);
+            if (!Manifest.hasManifest(dir)) SegmentFormat.createDirectoriesDurably(dir); // a first generation is not lost with its directory
             Manifest cur = dir.equals(persistedDir) ? persistedManifest : null;
             if (cur == null) {
                 try {

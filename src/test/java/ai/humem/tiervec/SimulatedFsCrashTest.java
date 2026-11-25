@@ -6,11 +6,9 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
-import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
-import java.nio.file.StandardOpenOption;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
@@ -59,8 +57,8 @@ class SimulatedFsCrashTest {
     /** what one generation serves */
     record Generation(int size, Hit[][] hits) {}
 
-    /** the recorded changes of a run and what each generation in it serves */
-    record Recording(List<CrashFs.Op> log, Map<Long, Generation> generations) {}
+    /** the recorded changes of a run, the index directory below the recorded one, and what each generation in it serves */
+    record Recording(String index, List<CrashFs.Op> log, Map<Long, Generation> generations) {}
 
     @TempDir
     static Path scratch;
@@ -74,11 +72,8 @@ class SimulatedFsCrashTest {
         qs = vectors(25, DIM, 172);
         CrashFs fs = new CrashFs(Files.createTempDirectory(scratch, "record"));
         Path index = fs.root().resolve(INDEX);
-        // the host makes the directory and flushes its name; the library publishes into it
+        // the host makes the directory and does not flush its name: checkpoint does that before the first generation (#126)
         Files.createDirectory(index);
-        try (FileChannel ch = FileChannel.open(fs.root(), StandardOpenOption.READ)) {
-            ch.force(true);
-        }
         published = publishThreeGenerations(fs, index);
     }
 
@@ -101,7 +96,7 @@ class SimulatedFsCrashTest {
         Manifest last = Manifest.readLatest(index);
         assertEquals(3, last.generation());
         assertEquals(1, last.entries().size(), "the merge left one segment, so the third publish deleted the two older ones");
-        return new Recording(List.copyOf(fs.log), generations);
+        return new Recording(fs.root().relativize(index).toString(), List.copyOf(fs.log), generations);
     }
 
     private static Generation generation(TieredIndex t) {
@@ -195,7 +190,7 @@ class SimulatedFsCrashTest {
         Path dir = Files.createTempDirectory(scratch, "crash");
         try {
             image.writeTo(dir, (path, node) -> { });
-            Path index = indexIn(dir);
+            Path index = dir.resolve(rec.index());
             try (TieredIndex u = TieredIndex.open(index, TierReopenTest.cfg())) {
                 tally.opened++;
                 Manifest m = Manifest.readLatest(index);
@@ -222,11 +217,6 @@ class SimulatedFsCrashTest {
                 for (Path p : walk.sorted(Comparator.reverseOrder()).collect(Collectors.toList())) Files.delete(p);
             }
         }
-    }
-
-    /** the index directory below the wrapped one */
-    private static Path indexIn(Path root) {
-        return root.resolve(INDEX);
     }
 
     private static Set<String> expected(Manifest m) {
@@ -281,6 +271,45 @@ class SimulatedFsCrashTest {
     }
 
     @Test
+    void aCrashDuringPublishesIntoADirectoryThatCheckpointCreatesKeepsTheGeneration() throws IOException {
+        // #126: the host does not make the directory, checkpoint does, here with a parent that is missing too
+        CrashFs fs = new CrashFs(Files.createTempDirectory(scratch, "created"));
+        Recording rec = publishThreeGenerations(fs, fs.root().resolve("indexes").resolve(INDEX));
+        Tally tally = new Tally();
+        crashEverywhere(rec, rec.log(), rec.log(), 0, rec.log().size(), tally);
+        assertTrue(tally.broken.isEmpty(), report(tally));
+        assertEquals(Set.of(0L, 1L, 2L, 3L), tally.served);
+    }
+
+    @Test
+    void aRetryAfterAKillWhileTheDirectoryWasMadeKeepsTheGeneration() throws IOException {
+        // #126: the first process is killed between making a directory and flushing its name. The next one finds the directory there, and what
+        // it publishes must not depend on a name that nobody flushed
+        CrashFs first = new CrashFs(Files.createTempDirectory(scratch, "killed"));
+        Recording killed = publishThreeGenerations(first, first.root().resolve("indexes").resolve(INDEX));
+        int firstFile = 0;
+        while (killed.log().get(firstFile).kind() != CrashFs.Kind.CREATE) firstFile++;
+        Tally tally = new Tally();
+        for (int k = 0; k <= firstFile; k++) {
+            CrashFs fs = CrashFs.resume(killed.log().subList(0, k), Files.createTempDirectory(scratch, "retry"));
+            Path index = fs.root().resolve("indexes").resolve(INDEX);
+            Generation one;
+            try (TieredIndex t = new TieredIndex(DIM, Metric.L2, TierReopenTest.cfg())) {
+                for (int i = 0; i < ROWS; i++) t.add(idOf(i), data[i]);
+                t.sealNow();
+                assertTrue(t.awaitIdle(60_000));
+                one = generation(t);
+                t.checkpoint(index);
+            }
+            Recording rec = new Recording("indexes/" + INDEX, List.copyOf(fs.log), Map.of(1L, one));
+            tally.seen.clear(); // the expected answers are those of this retry's own tier
+            crashEverywhere(rec, rec.log(), rec.log(), k, rec.log().size(), tally);
+        }
+        assertTrue(firstFile >= 2, "changes before the first file: " + firstFile);
+        assertTrue(tally.broken.isEmpty(), report(tally));
+    }
+
+    @Test
     void takingAFlushOutOfThePublishOrderLeavesABrokenDirectory() throws IOException {
         List<CrashFs.Op> log = published.log();
         List<String> needed = new ArrayList<>(), notNeeded = new ArrayList<>();
@@ -291,11 +320,16 @@ class SimulatedFsCrashTest {
             if (op.kind() == CrashFs.Kind.SYNC_DIR && CrashFs.replay(log, i).pendingOps().stream().noneMatch(p -> p.dir() == op.node())) continue;
             List<CrashFs.Op> without = new ArrayList<>(log);
             without.set(i, CrashFs.NOTHING);
+            // the next flush of the same directory makes up for a directory flush, so there is nothing new to see after it
+            int last = log.size();
+            for (int j = i + 1; op.kind() == CrashFs.Kind.SYNC_DIR && j < last; j++) {
+                if (log.get(j).kind() == CrashFs.Kind.SYNC_DIR && log.get(j).node() == op.node()) last = j;
+            }
             Tally tally = new Tally();
-            for (int k = i + 1; k <= log.size() && tally.broken.isEmpty(); k++) crashEverywhere(published, log, without, k, k, tally);
+            for (int k = i + 1; k <= last && tally.broken.isEmpty(); k++) crashEverywhere(published, log, without, k, k, tally);
             (tally.broken.isEmpty() ? notNeeded : needed).add(flushName(log, i));
         }
-        // Every flush of a file, of the new directory's name (the host's), and of the directory after each rename (step 7) is needed, and so is
+        // Every flush of a file, of the new directory's name (checkpoint's), and of the directory after each rename (step 7) is needed, and so is
         // the directory flush before the first rename (step 3): without it a first manifest can name files that are not there. In a later publish
         // step 3 alone can go: an N+1 that lost a name is skipped, and generation N is whole until the flush of step 7 has returned.
         assertEquals(List.of("directory flush before the rename of generation 2", "directory flush before the rename of generation 3"), notNeeded);

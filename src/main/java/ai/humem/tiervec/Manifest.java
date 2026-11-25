@@ -216,6 +216,9 @@ public record Manifest(long generation, long epoch, long hwm, long versionCounte
     /**
      * Deletes every file of this format in the directory that {@code live} does not name: older and newer manifests, retired segment files,
      * old tombstone files and temporary files. Files of other names are left alone. Returns how many files were deleted.
+     *
+     * <p>Before the first delete the directory is flushed, so that the rename of {@code live} is durable before anything that it replaced is
+     * gone. {@link #publish} has done that already; an open after a process was killed between the rename and its flush has not (#125).
      */
     public static int gc(Path dir, Manifest live) throws IOException {
         Set<String> keep = new HashSet<>();
@@ -228,6 +231,7 @@ public record Manifest(long generation, long epoch, long hwm, long versionCounte
                 String name = p.getFileName().toString();
                 if (keep.contains(name) || !(GEN_FILE.matcher(name).matches() || SEG_FILE.matcher(name).matches())) continue;
                 if (!Files.isRegularFile(p, LinkOption.NOFOLLOW_LINKS)) continue;
+                if (deleted == 0) SegmentFormat.fsyncDir(dir);
                 if (Files.deleteIfExists(p)) deleted++;
             }
         }

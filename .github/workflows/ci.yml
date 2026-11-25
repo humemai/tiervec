@@ -152,6 +152,40 @@ jobs:
           # the same vectors and queries went into both
           n=$(grep -h -o 'checksumFirst1000AndQuery0=[0-9a-f]*' target/bench/data-tiervec.txt target/bench/data-jvector.txt | sort -u | wc -l)
           test "$n" -eq 1
+      - name: Quantized arms, matched recall, the index on disk and the checks of the writes
+        run: |
+          common=(--data target/bench/smoke-data --queries 100 --reps 2 --ef-sweep 32 --targets 0.9,0.99 --shares 0.5 --host-label github-runner)
+          run() { timeout 300 java -Xmx2g --add-modules jdk.incubator.vector --enable-native-access=ALL-UNNAMED -cp 'target/bench/classes:target/bench/lib/*' ai.humem.tiervec.Bench "$@"; }
+          tier=(--engine tiervec --load rebuild --scan-below 0 --props 1500)
+          run "${common[@]}" "${tier[@]}" --disk target/bench/disk-tier --out target/bench/m-tier-fp32.txt
+          run "${common[@]}" "${tier[@]}" --quant sq8 --disk target/bench/disk-sq8 --out target/bench/m-tier-sq8.txt
+          run "${common[@]}" --engine jvector --disk target/bench/disk-jv --out target/bench/m-jv-fp32.txt
+          run "${common[@]}" --engine jvector --quant int8 --disk target/bench/disk-jv-int8 --out target/bench/m-jv-int8.txt
+          for f in target/bench/m-*.txt; do
+            echo "== $f"
+            grep -h -E '^(BENCH-SUMMARY|JVECTOR|MEMORY-INDEX|MATCHED|DISK|PROPS|SEARCH kind=filtered)' "$f"
+            grep -q '^BENCH-SUMMARY status=OK failures=0' "$f"
+            grep -q '^MEMORY-INDEX ' "$f"
+            grep -q -E '^MATCHED mode=[a-z0-9-]+ target=0.9 status=(ok|floor) ' "$f"
+            grep -q '^DISK .* bytes=[1-9]' "$f"
+          done
+          grep -q '^CONFIG .*sq8=true' target/bench/m-tier-sq8.txt
+          grep -q '^MATCHED mode=sq8 ' target/bench/m-tier-sq8.txt
+          grep -q '^PROPS newIds=1500 newMissedByNextSearch=0 ' target/bench/m-tier-fp32.txt
+          grep -q '^PROPS newIds=1500 newMissedByNextSearch=0 ' target/bench/m-tier-sq8.txt
+          grep -q '^JVECTOR jar=jvector-4.1.0-rc.1.jar .* quant=int8 ' target/bench/m-jv-int8.txt
+          grep -q '^MATCHED mode=int8 ' target/bench/m-jv-int8.txt
+          grep -q '^MATCHED mode=int8-rerank ' target/bench/m-jv-int8.txt
+          grep -q '^SEARCH kind=filtered .* mode=int8-rerank$' target/bench/m-jv-int8.txt
+          code=0
+          run --data target/bench/smoke-data --engine jvector --quant sq8 > target/bench/wrong-quant.log 2>&1 || code=$?
+          echo "sq8 with the JVector engine, exit code: $code"
+          test "$code" -eq 2
+          # on Java 22 and later the runs above use JVector's native provider when it loads; this one forces the Vector API provider
+          timeout 300 java -Xmx2g --add-modules jdk.incubator.vector --enable-native-access=ALL-UNNAMED -Djvector.vectorization_provider=panama \
+            -cp 'target/bench/classes:target/bench/lib/*' ai.humem.tiervec.Bench --data target/bench/smoke-data --queries 100 --reps 1 --ef-sweep "" \
+            --engine jvector --quant int8 --host-label github-runner --out target/bench/panama-jv-int8.txt
+          grep -q '^JVECTOR .* provider=PanamaVectorizationProvider ' target/bench/panama-jv-int8.txt
       - name: Control, a floor that cannot be met fails on both new paths, and wrong options are refused
         run: |
           cp=('target/bench/classes:target/bench/lib/*')
@@ -187,6 +221,7 @@ jobs:
           for f in target/bench/data-tiervec.txt target/bench/data-jvector.txt; do
             grep -h -E '^(BENCH-SUMMARY|TRUTH-CHECK|BUILD |JVECTOR|SEARCH)' "$f" || true
           done
+          grep -H -E '^(BENCH-SUMMARY|JVECTOR|MEMORY-INDEX|MATCHED|DISK|PROPS)' target/bench/m-*.txt || true
           for f in target/bench/data-tiervec.txt target/bench/data-jvector.txt; do
             { echo '```'; cat "$f"; echo '```'; } >> "$GITHUB_STEP_SUMMARY" || true
           done

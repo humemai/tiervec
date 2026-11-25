@@ -40,6 +40,18 @@ With no options this is the 1,000,000-vector run: dimension 768, cosine, `k` = 1
 | `--data` | none | A directory that `scripts/prep_real_dataset.py` wrote (or the path of a file in it): the vectors, the queries and the exact answers come from the files. See [Real data](#real-data) |
 | `--engine` | `tiervec` | `tiervec`, or `jvector`, the comparison arm. See [The JVector arm](#the-jvector-arm) |
 | `--jvector-alpha`, `--jvector-overflow` | 1.2, 1.2 | JVector only: the pruning `alpha` and the neighbor overflow while building. They are the values of the JVector tutorial, and they have no tier counterpart in the same form (the tier uses `alpha` 1.0) |
+| `--quant` | `none` | `none` is float32. With the tier, `sq8` builds the segment graphs with SQ8 codes (the walk uses the codes, and the `ef` candidates are scored again in float32). With JVector, `int8` builds and walks the graph on int8 vectors, see [The JVector arm](#the-jvector-arm) |
+| `--targets`, `--ef-grid` | none, 33 widths from 10 to 1000 | Recall targets such as `0.95,0.99`, and the beam widths to try. See [Latency at matched recall](#latency-at-matched-recall) |
+| `--disk` | none | An empty or new directory. The index is written there after the searches (the tier: `sealNow` and `checkpoint`; JVector: one graph file) and the `DISK` line gives the file sizes |
+| `--props` | 0 | The tier only, with `--conc-seconds 0`: this many new ids and this many reused ids in the [checks of the writes](#checks-of-the-writes) |
+
+## Latency at matched recall
+
+This compares two indexes at the same recall and not at the same beam width. With `--targets`, after the `SEARCH` cells and for each search mode, the harness tries the beam widths of `--ef-grid` from the smallest until the highest target is reached (`MATCH-SWEEP`, one pass over the queries each). For each target it times the first width that reaches it and the width before it (`MATCH-TIMED`: one warm-up pass, then `--reps` timed passes), and interpolates p50, p99 and the mean linearly in recall between the two (`MATCHED`). `status=floor` says that the smallest width of the grid reached the target already, so the latency is the one of that width. `status=unreached` says that no width of the grid reached it. The queries per second of a `MATCHED` line are those of one search thread.
+
+## Checks of the writes
+
+`--props N` checks what the tier promises to a host and a static comparison does not show. It adds N new vectors and searches for each one at once; then it deletes N ids of the build, searches, adds each id again with another vector and searches for both the new and the old vector; then it seals the tail, waits until the tier is idle and repeats the searches. The run fails when a written vector is not in the answer of the next search, when a deleted id is returned, when an id answers with the score of its old vector, or when the live count is wrong. The `PROPS` line has these counts, and also how often the written vector was the first hit, which after sealing depends on the graph walk and is not a check.
 
 The exit code is 0 when every check passed, 1 when a check failed (see "Checks" below), and 2 for a wrong option or a wrong combination of options.
 
@@ -94,9 +106,11 @@ Memory, as an estimate that no run has confirmed yet: the harness holds the vect
 
 ## The JVector arm
 
-`--engine jvector` builds one JVector graph over the same vectors, with the `--m` and `--efc` of the run, and answers the same unfiltered queries at the same beam widths (`--ef` and `--ef-sweep`; JVector's `rerankK` is the beam width). It prints the BUILD, MEMORY and SEARCH lines with the keys of the tier's lines, and a `JVECTOR` line with the jar, the SIMD provider it selected, and the parameters it ran with. It works with generated data and with `--data`.
+`--engine jvector` builds one JVector graph over the same vectors, with the `--m` and `--efc` of the run, and answers the same queries at the same beam widths (`--ef` and `--ef-sweep`; JVector's `rerankK` is the beam width). With `--shares` given, it also runs one filtered cell per share, with the allowed ids passed to the JVector search as its `Bits`. It prints the BUILD, MEMORY and SEARCH lines with the keys of the tier's lines, and a `JVECTOR` line with the jar, the SIMD provider it selected, and the parameters it ran with. It works with generated data and with `--data`, and with `--targets` and `--disk`.
 
-JVector is a dependency of the harness only. It is `io.github.jbellis:jvector` in the profile `bench` of `pom.xml`, version 4.0.2 (the newest release on Maven Central when this was written, one multi-release jar for JDK 21 and later, Apache 2.0, see [THIRD_PARTY.md](../THIRD_PARTY.md)), with the scope `runtime`. It is not in the library jar and not in the dependency set of a normal build, and the CI job checks that. The arm itself is `src/bench/jvector/java/ai/humem/tiervec/JVectorArm.java`, apart from `src/bench/java` so that the compile command above keeps working without JVector. The harness reaches it by reflection, and `--engine tiervec` does not need the jars.
+With `--quant int8` every value of the vectors and of a query is multiplied by one factor, `127 / max|x|` over the indexed vectors, rounded and clamped to [-127, 127], and the graph is built and walked with byte by byte dot products. The arm has two search modes, and a `SEARCH` or `MATCHED` line says which in `mode=`: `int8` ranks the hits by the byte scores, and `int8-rerank` walks on the byte scores and scores the `ef` candidates again in float32, as the SQ8 graph of the tier does. The score of an `int8` hit is the byte dot product divided by the square of the factor, so `maxScoreError` there is the error of the conversion. The graph file of `--disk` holds the int8 vectors inline and not the float32 vectors.
+
+JVector is a dependency of the harness only. It is `io.github.jbellis:jvector` in the profile `bench` of `pom.xml`, version 4.1.0-rc.1 (one multi-release jar for JDK 21 and later, Apache 2.0, see [THIRD_PARTY.md](../THIRD_PARTY.md)), with the scope `runtime`. A release candidate is an exception to the rule of the newest release (4.0.2): the int8 vectors need the byte-vector support of 4.1.0, and the pin moves to 4.1.0 when it is released. It is not in the library jar and not in the dependency set of a normal build, and the CI job checks that. The arm itself is `src/bench/jvector/java/ai/humem/tiervec/JVectorArm.java`, apart from `src/bench/java` so that the compile command above keeps working without JVector. The harness reaches it by reflection, and `--engine tiervec` does not need the jars.
 
 ```
 mvn -B -ntp -Pbench dependency:copy-dependencies -DoutputDirectory=target/bench/lib -DincludeScope=runtime
@@ -106,14 +120,14 @@ java -Xmx24g --add-modules jdk.incubator.vector --enable-native-access=ALL-UNNAM
   ai.humem.tiervec.Bench --data DATA_DIR --engine jvector --out results/$(date +%F)-jvector.txt
 ```
 
-The first command downloads JVector and its four dependencies. The second needs the classes of the harness, so run the compile step of "Run it" before it. On Java 22 and later JVector selects its native SIMD code when the library loads, and the Vector API otherwise. For the comparison with the tier, which uses the Vector API, add `-Djvector.vectorization_provider=panama`. The `JVM` line records the arguments, and the `JVECTOR` line the provider that ran. With `--engine jvector`, `--shares` and `--conc-seconds` above 0 are refused, and `--load` too: the arm runs the unfiltered cells only.
+The first command downloads JVector and its dependencies. The second needs the classes of the harness, so run the compile step of "Run it" before it. On Java 22 and later JVector selects its native SIMD code when the library loads, and the Vector API otherwise. For the comparison with the tier, which uses the Vector API, add `-Djvector.vectorization_provider=panama`. The `JVM` line records the arguments, and the `JVECTOR` line the provider that ran. With `--engine jvector`, `--conc-seconds` above 0, `--load`, `--scan-below` and `--props` are refused.
 
 What the two arms share, and what they do not:
 
 | | Same in both | Different |
 |---|---|---|
-| Data | The vectors (float32, no quantization), the dimension, the queries, `k`, the exact answers, recall by the overlap with them | |
-| Graph | `M`, `efConstruction`, the beam width of the search | JVector prunes with `alpha` 1.2 and neighbor overflow 1.2 (the tier: `alpha` 1.0) and adds HNSW-style upper layers, so it is one graph. The tier is segments and an exact tail, and a search visits every segment |
+| Data | The vectors, the dimension, the queries, `k`, the exact answers, recall by the overlap with them | With `--quant`, the quantization: the tier's SQ8 has a minimum and a step per vector, the int8 arm has one factor for the whole set |
+| Graph | `efConstruction`, the beam width of the search | `M` of JVector is the maximum degree of a node, and the tier allows `2 M` links on its base layer, so equal base degrees need a JVector `--m` of twice the tier's. JVector prunes with `alpha` 1.2 and neighbor overflow 1.2 (the tier: `alpha` 1.0) and adds HNSW-style upper layers, so it is one graph. The tier is segments and an exact tail, and a search visits every segment |
 | Build | The vectors | JVector builds in one parallel pass. The tier adds one by one (`--load add`, with seals and merges) or builds one segment (`--load rebuild`). Compare build seconds only between `--load rebuild` and JVector, with the same `--build-threads` (JVector's own default is the number of physical cores of the machine, whatever cores the process may use) |
 | Search | One search thread, the same warm-up pass and timed passes, the query given as a `float[]` and converted inside the timed call | The tier runs the Vector API kernels. JVector runs the provider named in the `JVECTOR` line |
 | Score | Unit vectors, so the dot product is the cosine | JVector's score is (1 + dot) / 2, and the arm converts it back, so `maxScoreError` checks the arithmetic and the ids only |
@@ -135,8 +149,11 @@ One run writes one file, `results/<date>-<host-label>.txt`, in lines of `key=val
 | `DATASET`, `TRUTH-CHECK` | With `--data` only: the path and every key of `meta.properties`, and the overlap of the exact answers of the file with the harness's own scan (when it scanned) |
 | `JVECTOR` | With `--engine jvector` only: the jar, the SIMD provider JVector selected, its parameters, the seconds to convert the vectors and to build the graph, and its estimate of the graph's memory |
 | `BUILD`, `BUILD-STATS`, `BUILD-T` | Seconds to add and until the tier was settled, inserts per second, the tier statistics (seals, merges, segment sizes, write amplification, back pressure), and a progress line each minute |
-| `MEMORY` | Heap in use and resident memory after a garbage collection, and the peak resident memory |
-| `SEARCH` | One cell: kind, share, `filterScanBelow`, recall, latency percentiles, operations per second, malformed answers, garbage collections during the cell |
+| `MEMORY` | Heap in use and resident memory after a garbage collection, and the peak resident memory (also before the build, in a run that uses one of the options of issues #108 and #118) |
+| `MEMORY-INDEX` | In the same runs: the bytes the index needs to search. The tier: `bytesHeld`. JVector: its estimate of the graph and the size of the vectors of the arm |
+| `SEARCH` | One cell: kind, share, `filterScanBelow`, recall, latency percentiles, operations per second, malformed answers, garbage collections during the cell (`mode=` for the int8 arm) |
+| `MATCH-SWEEP`, `MATCH-TIMED`, `MATCHED` | With `--targets`: recall per beam width, the timed widths, and the latency at each target, per search mode |
+| `DISK`, `PROPS` | With `--disk`: the files and their bytes. With `--props`: the counts of the checks of the writes |
 | `CONC`, `CONC-T`, `CONC-WINDOW` | The concurrent phase: adds, deletes and searches per second, search latency overall and per window, every error, a progress line per window |
 | `CONC-SETTLE`, `CONC-CHECK`, `CONC-RECALL` | The end state: the live count against the expected count, `lastError`, and recall against an exact scan of the live set |
 | `BENCH-SUMMARY`, `BENCH-FAILURE`, `BENCH-END` | `OK` or `FAIL`, the list of failed checks, and the end marker |
@@ -150,7 +167,9 @@ The run fails (exit code 1) when:
 - an answer has more than `k` hits, scores out of order, an id twice, an id outside the data, or an id that the filter does not allow;
 - a search that began after a delete had returned still finds that id (the deleter deletes the ids 0, 1, 2, ... in order, so the searchers know which deletes were done);
 - a recall floor was set (`--min-recall`, `--min-scan-recall`) and a cell is below it;
-- with `--data`, the exact answers of the file and the harness's own scan share fewer than 98 percent of their ids.
+- with `--data`, the exact answers of the file and the harness's own scan share fewer than 98 percent of their ids;
+- with `--props`, one of the [checks of the writes](#checks-of-the-writes) fails;
+- with `--disk`, nothing was written.
 
 ## Rules for a run that is meant to be read
 
@@ -168,3 +187,5 @@ The job `bench smoke (JDK 21)` and `(JDK 25)` compiles the harness with the libr
 The recall floors of the smoke are 0.90 for the unfiltered and the walk cells and 0.99 for the cells that scan first. In the first runs (CI run 43133522549, JDK 21 and 25) recall was 1.0000 unfiltered, 0.997 to 1.0000 for the filtered walk and 1.0000 for every scan-first cell, and a run took 21 to 23 seconds (the job about 30 seconds). The floors leave room for a different structure of the segments from one run to the next, and they are far above what a broken index gives: a tier that returned only its tail would find at most the 20 percent of the data that the tail holds, and the scan-first path is exact apart from a swapped tie at the boundary of the top `k`. A control step of the job runs the harness with a floor that cannot be met (recall of at least 1.5) and requires exit code 1 and a `BENCH-FAILURE` line, so the failure path is not a path that never runs.
 
 The same job also runs the two paths of issue #108 on a small data set that it generates (not committed). It writes 5,100 rows of dimension 64 as parquet files in the layout of the DBpedia shards (`.github/scripts/make-smoke-parquet.py`), converts them with `scripts/prep_real_dataset.py` (5,000 vectors, 100 held-out queries, vector lengths that the script has to scale), fetches JVector with the profile `bench`, compiles the arm, and runs the tier and then JVector on the files with `--data`, with a recall floor of 0.85. It checks that both runs end with `status=OK`, that they ran the same unfiltered cells and the same vectors (the checksum of the `DATA` line), that the tier's run compared the exact answers of the file with its own scan, and that the `JVECTOR` line names the jar. Controls run both paths with a floor that cannot be met and require exit code 1, and they require exit code 2 for `--n` that does not match the file, for `--engine jvector` with a concurrent phase, and for `--engine jvector` without the JVector jars. A last check lists the default runtime dependencies of the library (`mvn dependency:list`) and fails when JVector is among them.
+
+The options of issue #118 run on the same files: the tier rebuilt in float32 and in SQ8 (with `--targets`, `--disk` and `--props`), and JVector in float32 and in int8. The job requires `status=OK`, a `MATCHED` line for the lower target, a non-empty index on disk, no written vector missed by the next search, both search modes of the int8 arm, and exit code 2 for `--quant sq8` with JVector. One more int8 run forces the Vector API provider and checks the provider name.

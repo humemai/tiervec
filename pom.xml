@@ -62,9 +62,10 @@
         <maven-jar-plugin.version>3.5.1</maven-jar-plugin.version>
 
         <!-- Profile "bench" (-Pbench) only: the JVector comparison arm of the benchmark harness (docs/BENCHMARKS.md). JVector is not a
-             dependency of the library. 4.0.2 is the newest release on Maven Central (published 2026-10-19, checked 2026-11-13); it is one
-             multi-release jar that runs on JDK 21 and 25. -->
-        <jvector.version>4.0.2</jvector.version>
+             dependency of the library. It is one multi-release jar that runs on JDK 21 and 25. Exception to the newest-release rule: 4.1.0-rc.1
+             is a release candidate (checked 2026-11-25: the newest release on Maven Central is 4.0.2). The int8 arm (issue #118) needs the
+             byte-vector support that 4.1.0 adds. Move to 4.1.0 and delete this note when it is released. -->
+        <jvector.version>4.1.0-rc.1</jvector.version>
         <maven-dependency-plugin.version>3.11.0</maven-dependency-plugin.version>
 
         <!-- Release profile (-Prelease): the newest stable versions on Maven Central when they were pinned (2026-11-12).

@@ -322,10 +322,8 @@ class TierCorruptionTest {
                     byte old = flipInPlace(ch, pos, bit);
                     String what = "bit " + bit + " of manifest byte " + pos;
                     IOException e = latestRefused(dir, what);
-                    // bytes 8 and 9 are the major version: a newer format is refused, not skipped. Everything from the minor version on is
-                    // under the CRC of the body, and the length fields are checked against the file.
-                    if (pos == 8 || pos == 9) assertInstanceOf(UnsupportedException.class, e, what);
-                    else if (pos >= 10) assertInstanceOf(CorruptException.class, e, what);
+                    // every byte, the major version included, is under the magic check, the length check or the CRC of the body (#123)
+                    assertInstanceOf(CorruptException.class, e, what);
                     ch.write(ByteBuffer.wrap(new byte[] {old}), pos);
                 }
             }
@@ -593,6 +591,81 @@ class TierCorruptionTest {
                 clear();
             }
         }
+    }
+
+    /** the manifest bytes with the CRC at the end recomputed */
+    private static byte[] withManifestCrc(byte[] m) {
+        SegmentForge.le(m).putInt(m.length - 4, SegmentFormat.crc32c(m, 0, m.length - 4));
+        return m;
+    }
+
+    @Test
+    void everyBitOfTheMajorVersionOfTheNewestManifestIsDamageUnlessItsCrcMatches() throws IOException {
+        // #123: the two cases on every bit of both major version bytes of a manifest
+        for (int pos = 8; pos < 10; pos++) {
+            for (int bit = 0; bit < 8; bit++) {
+                String what = "bit " + bit + " of byte " + pos + " of the newest manifest";
+
+                // damage: the older generation is served, the unfinished one is removed, and the work goes on
+                copy(twoGen, dir);
+                Path m2 = dir.resolve(Manifest.manifestName(2));
+                byte[] b = Files.readAllBytes(m2);
+                b[pos] ^= (byte) (1 << bit);
+                Files.write(m2, b);
+                try (TieredIndex u = TieredIndex.open(dir, cfg())) {
+                    assertNull(u.openFallbackCause(), what);
+                    assertServes(u, want1);
+                    assertTrue(!Files.exists(m2) && !Files.exists(seg(3)), what);
+                    u.checkpoint(dir);
+                }
+                assertEquals(2, Manifest.readLatest(dir).generation(), what);
+                clear();
+
+                // a newer format: the same change with a matching CRC is refused, never skipped
+                copy(twoGen, dir);
+                Files.write(m2, withManifestCrc(b));
+                Map<String, byte[]> before = snapshot(dir);
+                assertInstanceOf(UnsupportedException.class, latestRefused(dir, what + ", matching CRC"));
+                assertInstanceOf(UnsupportedException.class, openRefused(dir, what + ", matching CRC"));
+                assertUnchanged(before, dir, what + ", matching CRC");
+                clear();
+            }
+        }
+    }
+
+    @Test
+    void aDamagedMajorVersionOfTheOnlyManifestDoesNotBlockTheNextCheckpoint() throws IOException {
+        // #123: there is no older generation here, so open refuses the directory; the rebuilt tier must still be able to replace it
+        copy(single, dir);
+        Path m1 = dir.resolve(Manifest.manifestName(1));
+        byte[] b = Files.readAllBytes(m1);
+        b[8] ^= 1;
+        Files.write(m1, b);
+        assertInstanceOf(CorruptException.class, openRefused(dir, "the only manifest"));
+        try (TieredIndex r = TieredIndex.open(dir, DIM, Metric.L2, cfg(), () -> records1)) {
+            assertInstanceOf(CorruptException.class, r.openFallbackCause());
+            r.sealNow();
+            assertTrue(r.awaitIdle(60_000));
+            r.checkpoint(dir);
+        }
+        try (TieredIndex u = TieredIndex.open(dir, cfg())) {
+            assertEquals(2 * ROWS, u.size());
+        }
+    }
+
+    @Test
+    void aNewerMajorWithAShorterManifestBodyIsRefusedAsUnsupported() throws IOException {
+        // only the frame is promised for a newer major: here a body of 16 bytes, shorter than this version's fixed fields
+        copy(twoGen, dir);
+        byte[] m = new byte[20];
+        System.arraycopy(Files.readAllBytes(dir.resolve(Manifest.manifestName(2))), 0, m, 0, 8);
+        SegmentForge.le(m).putShort(8, (short) 2).putShort(10, (short) 0).putInt(12, 16);
+        Files.write(dir.resolve(Manifest.manifestName(2)), withManifestCrc(m));
+        assertInstanceOf(UnsupportedException.class, latestRefused(dir, "short major 2"));
+        // the same bytes as major 1 are damage: this version's fields do not fit
+        SegmentForge.le(m).putShort(8, (short) 1);
+        Files.write(dir.resolve(Manifest.manifestName(2)), withManifestCrc(m));
+        assertEquals(1, Manifest.readLatest(dir).generation());
     }
 
     // ---- damage to the newest of two generations ----

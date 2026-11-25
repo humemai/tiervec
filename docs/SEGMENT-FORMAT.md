@@ -125,7 +125,7 @@ A segment file has a format version `major.minor`.
 - A newer minor may append header fields (the header length says where the header ends and where its CRC is) and footer metadata (the offset of the first section entry says where the table starts).
 - A different byte order, an id width other than 8, a layer 0 layout other than CSR, and a row stride other than `dim` are refused in this version.
 
-The manifest and the tombstone file carry their own `major.minor` under the same rule. A manifest or a segment that an older reader does not understand is refused, not skipped: falling back to an older generation would silently serve stale data.
+The manifest and the tombstone file carry their own `major.minor` under the same rule. The frame of a manifest is the same in every version: the magic, the major and minor version, the body length at offset 12, and the CRC32C of the body in the last 4 bytes of the file. A reader checks the length and that CRC before it believes the version, so a damaged version field is `CorruptException` and only an intact manifest can be refused as newer. The tombstone file is compared with the length and CRC that the manifest holds before it is read. A manifest or a segment that an older reader does not understand is refused, not skipped: falling back to an older generation would silently serve stale data.
 
 ## Manifest and tombstone file
 

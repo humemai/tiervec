@@ -30,7 +30,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * Damage to a segment file, byte by byte. A file that is cut short, or has any bit of its header, footer, locator or sections flipped, is
- * refused with a {@link CorruptException} (an {@link UnsupportedException} where the damaged bytes are the major version), never loaded, and
+ * refused with a {@link CorruptException}, never loaded, and
  * never fails in any other way. The sweeps are exhaustive over a small file: every cut length, and every byte that a
  * CRC or a length check covers. The only bytes whose damage is not detected are the zero fill that no CRC covers (the rest of the header
  * block and the gaps between sections), and a test below shows that damage there changes nothing a reader serves.
@@ -134,9 +134,9 @@ class SegmentCorruptionTest {
 
     @Test
     void everyBitOfTheHeaderIsGuarded() throws IOException {
-        // bytes 0 to 7 are the magic: a flipped bit there is damage, not a newer format (#83). Bytes 8 and 9 are the major version, which is read
-        // before the CRC: a flipped bit there names a file this reader does not understand. Bytes 10 to 51 (minor version, header length, probe,
-        // flags, dimensions, enum codes, alignment, the CRC itself) are covered by the header CRC.
+        // bytes 0 to 7 are the magic: a flipped bit there is damage, not a newer format (#83). Bytes 8 to 51 (major and minor version, header
+        // length, probe, flags, dimensions, enum codes, alignment, the CRC itself) are covered by the header CRC, which is checked before the
+        // version is believed (#116).
         try (FileChannel ch = FileChannel.open(scratch, StandardOpenOption.WRITE)) {
             for (int pos = 0; pos < SegmentFormat.HEADER_LEN; pos++) {
                 for (int bit = 0; bit < 8; bit++) {
@@ -144,8 +144,7 @@ class SegmentCorruptionTest {
                     String what = "bit " + bit + " of header byte " + pos;
                     for (boolean verify : new boolean[] {true, false}) {
                         IOException e = refused(scratch, verify, what);
-                        if (pos >= 8 && pos < 10) assertInstanceOf(UnsupportedException.class, e, what);
-                        else assertEquals("HEADER", assertInstanceOf(CorruptException.class, e, what).section(), what);
+                        assertEquals("HEADER", assertInstanceOf(CorruptException.class, e, what).section(), what);
                     }
                     restore(ch, pos);
                 }

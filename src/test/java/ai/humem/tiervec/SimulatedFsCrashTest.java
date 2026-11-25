@@ -259,6 +259,28 @@ class SimulatedFsCrashTest {
     }
 
     @Test
+    void aKillDuringAPublishThenAPowerCutDuringTheNextOpenLeavesOneOfTheTwoGenerations() throws IOException {
+        // #125: the process dies after any change of the run, so nothing that it wrote is lost yet, and the next process opens the directory. The
+        // open may find a generation whose rename no flush has made durable, and it deletes the files of the one before. A power cut during
+        // or after that open must still find one of the two
+        Tally tally = new Tally();
+        int opensThatChangedSomething = 0;
+        for (int k = 0; k <= published.log().size(); k++) {
+            CrashFs fs = CrashFs.resume(published.log().subList(0, k), Files.createTempDirectory(scratch, "resume"));
+            try (TieredIndex u = TieredIndex.open(fs.root().resolve(INDEX), TierReopenTest.cfg())) {
+                assertTrue(allowed(published.log(), k).contains(Manifest.readLatest(fs.root().resolve(INDEX)).generation()), "after the kill at change " + k);
+            } catch (NoSuchFileException e) {
+                assertTrue(allowed(published.log(), k).contains(0L), "after the kill at change " + k + ": " + e);
+            }
+            if (fs.log.size() == k) continue; // the open changed nothing: the crashes are those of the publish itself
+            opensThatChangedSomething++;
+            crashEverywhere(published, fs.log, fs.log, k, fs.log.size(), tally);
+        }
+        assertTrue(tally.broken.isEmpty(), report(tally));
+        assertTrue(opensThatChangedSomething > 10, "opens that had something to clean up: " + opensThatChangedSomething);
+    }
+
+    @Test
     void takingAFlushOutOfThePublishOrderLeavesABrokenDirectory() throws IOException {
         List<CrashFs.Op> log = published.log();
         List<String> needed = new ArrayList<>(), notNeeded = new ArrayList<>();

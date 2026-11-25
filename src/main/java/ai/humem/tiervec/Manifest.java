@@ -51,6 +51,8 @@ public record Manifest(long generation, long epoch, long hwm, long versionCounte
     private static final Pattern GEN_FILE = Pattern.compile("(manifest|tomb)-(\\d{20})\\.(tvm|tvd)(\\.tmp)?");
     private static final Pattern SEG_FILE = Pattern.compile("seg-(\\d{6,19})\\.tvs(\\.tmp)?");
     private static final int FIXED_BODY = 100;
+    /** magic, major, minor and body length: the part of a manifest that is the same in every version */
+    private static final int FRAME = 16;
     private static final int ENTRY_BYTES = 48;
     private static final long MAX_MANIFEST = 64L << 20;
 
@@ -272,17 +274,21 @@ public record Manifest(long generation, long epoch, long hwm, long versionCounte
     }
 
     static Manifest decode(byte[] raw) throws IOException {
-        if (raw.length < FIXED_BODY + 4) throw new CorruptException("manifest too short (" + raw.length + " bytes)", "MANIFEST");
+        if (raw.length < FRAME + 4) throw new CorruptException("manifest too short (" + raw.length + " bytes)", "MANIFEST");
         ByteBuffer b = ByteBuffer.wrap(raw).order(ByteOrder.LITTLE_ENDIAN);
         for (int i = 0; i < MAGIC.length; i++) {
             if (b.get(i) != MAGIC[i]) throw new CorruptException("bad manifest magic", "MANIFEST");
         }
-        final int major = b.getShort(8) & 0xFFFF;
-        if (major < 1 || major > FORMAT_MAJOR) throw new UnsupportedException("manifest format major version " + major + " is not supported (this reader supports " + FORMAT_MAJOR + ")");
+        // the frame (magic, version, body length at offset 12, the CRC32C of the body at the end of the file) is the same in every version, so the
+        // length and the CRC are checked before the version is believed: a damaged version field is damage, and only an intact file can say that
+        // it is in a newer format (#123)
         final long bodyLen = Integer.toUnsignedLong(b.getInt(12));
-        if (bodyLen < FIXED_BODY || bodyLen + 4 != raw.length) throw new CorruptException("bad manifest length", "MANIFEST");
+        if (bodyLen < FRAME || bodyLen + 4 != raw.length) throw new CorruptException("bad manifest length", "MANIFEST");
         final int bl = (int) bodyLen;
         if (SegmentFormat.crc32c(raw, 0, bl) != b.getInt(bl)) throw new CorruptException("CRC32C mismatch", "MANIFEST");
+        final int major = b.getShort(8) & 0xFFFF;
+        if (major < 1 || major > FORMAT_MAJOR) throw new UnsupportedException("manifest format major version " + major + " is not supported (this reader supports " + FORMAT_MAJOR + ")");
+        if (bodyLen < FIXED_BODY) throw new CorruptException("bad manifest length", "MANIFEST");
         b.limit(bl);
         b.position(16);
         try {

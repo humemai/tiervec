@@ -106,7 +106,7 @@ The file holds the arrays of the in-memory graph, with `VERS` and `BYID` in plac
 
 ## Integrity rules
 
-- A reader reads the header block, the locator and the footer first, and checks the magic, the version, the byte-order probe, the header CRC, the locator against the real file length, and the footer CRC. This costs the same for a file of any size and happens before any section is read.
+- A reader reads the header block, the locator and the footer first, and checks the magic, the header CRC, the version, the byte-order probe, the locator against the real file length, and the footer CRC. This costs the same for a file of any size and happens before any section is read.
 - The section table is checked: offsets aligned, ascending, inside the file, element width times count equal to the length, the width and count of every known section as expected, all required sections present.
 - `SegmentReader.read(file, true)` also checks the CRC32C of every section and names the section that failed (`CorruptException.section()`). `SealedGraph.load` and `TieredIndex.open` always do. `read(file, false)` skips the section CRCs and is meant for inspection.
 - The stored id order is checked while it is used (rows in range, ids strictly increasing), and the layer 0 offsets are checked against the edge count.
@@ -117,7 +117,10 @@ The file holds the arrays of the in-memory graph, with `VERS` and `BYID` in plac
 
 A segment file has a format version `major.minor`.
 
-- A reader refuses a file with a larger major version (`UnsupportedException`). The major version is read before the header CRC, so a flipped bit in the major version field is reported the same way.
+- The header frame is the same in every version, newer major versions included: the magic in bytes 0 to 7, the major and minor version in bytes 8 to 11, the header length at offset 12, and a CRC32C of all header bytes before it in the last 4 bytes of the header, inside the 4096-byte header block. A reader checks that CRC before it believes the version.
+- A header whose CRC does not match is damage, whatever its version field says (`CorruptException`, section `HEADER`). A flipped bit in the version field is this case, and `TieredIndex.open` treats the segment like any other damaged one.
+- A reader refuses a file with an intact header and a larger major version (`UnsupportedException`). A major version of 0 with an intact header is refused the same way.
+- A header whose byte-order probe reads back swapped (`0x04030201`) is a big-endian header and is refused with `UnsupportedException` before the CRC, which does not read back in that case. No single flipped bit turns the probe into its swapped form.
 - A reader opens a file with a larger minor version. It ignores a section whose id it does not know, unless the section is marked required, in which case it refuses.
 - A newer minor may append header fields (the header length says where the header ends and where its CRC is) and footer metadata (the offset of the first section entry says where the table starts).
 - A different byte order, an id width other than 8, a layer 0 layout other than CSR, and a row stride other than `dim` are refused in this version.

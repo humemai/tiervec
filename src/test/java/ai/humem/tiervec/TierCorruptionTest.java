@@ -176,7 +176,8 @@ class TierCorruptionTest {
 
     // ---- a damaged segment file ----
 
-    enum Expect { CORRUPT, UNSUPPORTED }
+    /** every damage here is corruption; a newer format is forged with matching checksums, further down */
+    enum Expect { CORRUPT }
 
     /** a way to damage the bytes of one segment file; {@code section} is the section the failure must name, when one is known */
     record Damage(String name, BiFunction<byte[], SegmentInfo, byte[]> apply, Expect expect, String section) {
@@ -220,7 +221,8 @@ class TierCorruptionTest {
         }
         // open reports the damage of the manifest's newest candidate through readLatest, whose exception has no section of its own: the cause has it
         l.add(new Damage("bit flipped in the magic", (b, i) -> flip(b, 3), Expect.CORRUPT, null));
-        l.add(new Damage("bit flipped in the major version", (b, i) -> flip(b, 8), Expect.UNSUPPORTED, null));
+        l.add(new Damage("bit flipped in the major version", (b, i) -> flip(b, 8), Expect.CORRUPT, null));
+        l.add(new Damage("bit flipped in the second byte of the major version", (b, i) -> flip(b, 9), Expect.CORRUPT, null));
         l.add(new Damage("magic zeroed", (b, i) -> {
             byte[] c = b.clone();
             Arrays.fill(c, 0, 8, (byte) 0);
@@ -250,10 +252,8 @@ class TierCorruptionTest {
             Map<String, byte[]> before = snapshot(dir);
             String what = damage.name() + " in segment " + segId;
             IOException e = openRefused(dir, what);
-            switch (damage.expect()) {
-                case CORRUPT: assertInstanceOf(CorruptException.class, e, what); break;
-                case UNSUPPORTED: assertInstanceOf(UnsupportedException.class, e, what); break;
-            }
+            assertEquals(Expect.CORRUPT, damage.expect());
+            assertInstanceOf(CorruptException.class, e, what);
             // a flip inside a section is found when the section is read: the exception names it
             if (damage.section() != null) assertEquals(damage.section(), ((CorruptException) e).section(), what);
             assertUnchanged(before, dir, what);
@@ -557,6 +557,41 @@ class TierCorruptionTest {
             assertRebuiltFromTheRecords(r, "magic of segment 1");
         } finally {
             r.close();
+        }
+    }
+
+    @Test
+    void everyBitOfTheMajorVersionOfTheNewestSegmentIsDamageUnlessTheHeaderCrcMatches() throws IOException {
+        // #116: the two cases on every bit of both major version bytes, in a directory with an older generation to fall back to
+        for (int pos = SegmentFormat.H_MAJOR; pos < SegmentFormat.H_MINOR; pos++) {
+            for (int bit = 0; bit < 8; bit++) {
+                final int at = pos;
+                final byte mask = (byte) (1 << bit);
+                String what = "bit " + bit + " of header byte " + pos + " of the newest segment";
+
+                // damage: the header CRC no longer matches, so the older generation is served and the unfinished one is removed
+                copy(twoGen, dir);
+                byte[] b = Files.readAllBytes(seg(3));
+                b[at] ^= mask;
+                Files.write(seg(3), b);
+                try (TieredIndex u = TieredIndex.open(dir, cfg())) {
+                    assertNull(u.openFallbackCause(), what);
+                    assertEquals(2 * ROWS, u.size(), what);
+                    assertServes(u, want1);
+                }
+                assertEquals(1, Manifest.readLatest(dir).generation(), what);
+                assertTrue(!Files.exists(seg(3)) && !Files.exists(dir.resolve(Manifest.manifestName(2))), what);
+                clear();
+
+                // a newer format: the same change with a matching header CRC is refused, never skipped
+                copy(twoGen, dir);
+                rewriteSegment(3, f -> f.head[at] ^= mask);
+                Map<String, byte[]> before = snapshot(dir);
+                assertInstanceOf(UnsupportedException.class, latestRefused(dir, what + ", matching CRC"));
+                assertInstanceOf(UnsupportedException.class, openRefused(dir, what + ", matching CRC"));
+                assertUnchanged(before, dir, what + ", matching CRC");
+                clear();
+            }
         }
     }
 

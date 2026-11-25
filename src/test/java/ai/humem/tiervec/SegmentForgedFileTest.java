@@ -72,6 +72,26 @@ class SegmentForgedFileTest {
 
     // ---- the version rule ----
 
+    @Test
+    void everyBitOfTheVersionFieldWithAMatchingHeaderCrcIsAVersionAndNotDamage() throws IOException {
+        // #116: the other half of SegmentCorruptionTest.everyBitOfTheHeaderIsGuarded. The same one-bit changes of bytes 8 to 11 with the CRC
+        // recomputed are intact files of another version: another major is refused as unsupported, a larger minor opens
+        for (int pos = SegmentFormat.H_MAJOR; pos < SegmentFormat.H_MINOR + 2; pos++) {
+            for (int bit = 0; bit < 8; bit++) {
+                String what = "bit " + bit + " of header byte " + pos + " with a matching CRC";
+                SegmentForge forge = forge();
+                forge.head[pos] ^= (byte) (1 << bit);
+                Files.write(f, forge.build());
+                if (pos < SegmentFormat.H_MINOR) {
+                    assertInstanceOf(UnsupportedException.class, refused(f, true, what), what);
+                    assertInstanceOf(UnsupportedException.class, refused(f, false, what), what);
+                } else {
+                    assertServedLikeTheOriginal(f);
+                }
+            }
+        }
+    }
+
     @ParameterizedTest(name = "major {0}")
     @ValueSource(ints = {0, 2, 3, 255, 256, 4097, 65535})
     void aMajorVersionThatIsNotOneIsRefusedAsUnsupportedWithValidChecksums(int major) throws IOException {
@@ -203,7 +223,7 @@ class SegmentForgedFileTest {
         forge.fixHeaderCrc = false;
         Files.write(f, forge.build());
         assertEquals(0x0100, ByteBuffer.wrap(forge.head).order(ByteOrder.LITTLE_ENDIAN).getShort(8), "the major version reads as 256 in little-endian");
-        // the first thing the reader trusts is the major version, and a big-endian writer's 1 reads as 256
+        // the header length and the CRC of a big-endian writer do not read back; the swapped probe is what names the file, before the CRC
         UnsupportedException e = assertInstanceOf(UnsupportedException.class, refused(f, "big-endian header"));
         assertTrue(e.getMessage().contains("major version 256"), e.getMessage());
     }

@@ -11,6 +11,7 @@ All notable changes to tiervec are in this file. The layout follows [Keep a Chan
 ### Fixed
 
 - The fp32 graph kernels of a JVM (`VKern`) sum the lanes in a fixed order, like the flat kernels. Before, the sum was `reduceLanes(ADD)`, whose order depends on the JIT tier, so the same search could return a score one ulp apart before and after compilation. This showed as a rare failure of `SegmentForgedFileTest` on arm64 ([#104](https://github.com/humemai/tiervec/issues/104)). A score can differ from the one of 0.1.0 in the last bit.
+- A flipped bit in the major version of a segment header is damage (`CorruptException`, section `HEADER`), so `TieredIndex.open` falls back to the previous generation. Before, the version was read before the header CRC, and one flipped bit there in the newest segment made the whole open fail with `UnsupportedException`. A larger major version with an intact header is still refused ([#116](https://github.com/humemai/tiervec/issues/116)).
 - A segment file whose first eight bytes are damaged is refused with `CorruptException` (section `HEADER`) and not `UnsupportedException`, and the message names the file and the field. Before, one flipped bit in the magic of the newest segment made `TieredIndex.open` fail, where a flipped bit in the header, footer or locator made it fall back to the previous generation. A larger major version is still an `UnsupportedException` that is refused, not skipped ([#83](https://github.com/humemai/tiervec/issues/83)).
 
 ## 0.1.1 - 2026-11-13

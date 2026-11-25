@@ -88,17 +88,23 @@ public final class SegmentReader {
         }
         if (size < HEADER_BLOCK + LOCATOR_LEN) throw new CorruptException("file too short for a segment (" + size + " bytes)", "HEADER");
 
-        // header block
+        // header block. Its frame is the same in every version (magic, version, header length at offset 12, a CRC32C in the last 4 bytes of the
+        // header), so the CRC is checked before the version is believed: a damaged version field is damage (the previous generation may serve),
+        // and only an intact header can say that the file is in a newer format (refused, never skipped) (#116)
         final int major = h.getShort(H_MAJOR) & 0xFFFF;
         final int minor = h.getShort(H_MINOR) & 0xFFFF;
-        if (major < 1 || major > MAJOR) {
-            throw new UnsupportedException("segment format major version " + major + " is not supported (this reader supports " + MAJOR + ")");
+        // a big-endian writer's header length and CRC do not read back, so its swapped probe is looked at first; no single flipped bit makes it
+        if (h.getInt(H_PROBE) == Integer.reverseBytes(ENDIAN_PROBE)) {
+            throw new UnsupportedException("segment format major version " + major + " is not supported: the byte-order probe reads back swapped, so the header is big-endian");
         }
         final long headerLen = Integer.toUnsignedLong(h.getInt(H_LEN));
         if (headerLen < HEADER_LEN || headerLen > HEADER_BLOCK) throw new CorruptException("bad header length " + headerLen, "HEADER");
         final int hl = (int) headerLen;
         final int headerCrc = h.getInt(hl - 4);
         if (crc32c(h.array(), 0, hl - 4) != headerCrc) throw new CorruptException("CRC32C mismatch", "HEADER");
+        if (major < 1 || major > MAJOR) {
+            throw new UnsupportedException("segment format major version " + major + " is not supported (this reader supports " + MAJOR + ")");
+        }
         if (h.getInt(H_PROBE) != ENDIAN_PROBE) throw new UnsupportedException("the byte-order probe does not read back as little-endian");
         final long dimL = Integer.toUnsignedLong(h.getInt(H_DIM));
         final long strideL = Integer.toUnsignedLong(h.getInt(H_STRIDE));

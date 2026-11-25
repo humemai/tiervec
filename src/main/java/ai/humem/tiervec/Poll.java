@@ -7,7 +7,7 @@ package ai.humem.tiervec;
  */
 final class Poll {
     /** the most candidates between two polls. The Javadoc of {@link SearchContext} and docs/PROVIDER-CONTRACT.md state this number. */
-    static final int INTERVAL = 256;
+    static final int INTERVAL = 1024;
 
     private final SearchContext context;
     private int left;

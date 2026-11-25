@@ -67,7 +67,7 @@ The tests are `ApplyBatchTest` (fast) and `ApplyStressTest` (slow). `ApplyBatchT
 
 ## Deadline and cancellation
 
-The `TieredIndex.search` overloads that take a `SearchContext` stop when it says so and throw `SearchCancelledException`, with no partial result ([#11](https://github.com/humemai/tiervec/issues/11)). The context is polled at the start, before each tail and each segment, at least once every 256 candidates inside them, and while a search waits for a batch. While it never expires, a search answers like one without a context. The standalone indexes (`FlatIndex`, `GraphIndex`, `IvfIndex`) take no context. The tests are in `SearchContextTest` (fast). The harness for the cost of polling is described in [BENCHMARKS.md](BENCHMARKS.md#the-cost-of-polling).
+The `TieredIndex.search` overloads that take a `SearchContext` stop when it says so and throw `SearchCancelledException`, with no partial result ([#11](https://github.com/humemai/tiervec/issues/11)). The context is polled at the start, before each tail and each segment, at least once every 1024 candidates inside them, and while a search waits for a batch. While it never expires, a search answers like one without a context. The standalone indexes (`FlatIndex`, `GraphIndex`, `IvfIndex`) take no context. The tests are in `SearchContextTest` (fast). The harness for the cost of polling is described in [BENCHMARKS.md](BENCHMARKS.md#the-cost-of-polling).
 
 ## Graph self-search recall
 

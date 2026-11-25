@@ -197,11 +197,14 @@ public final class SealedGraph implements VecIndex {
 
     private Hit[] scanExact(Sc s, int k, LongPredicate allow, Poll poll) {
         Heap h = s.res; h.clear();
-        for (int r = 0; r < n; r++) {
-            if (poll != null) poll.before(1);
-            if (isDead(r) || !allow.test(ids[r])) continue;
-            float d = distFp(s.q, r);
-            if (h.n < k) h.push(-d, r); else if (d < -h.topKey()) { h.pop(); h.push(-d, r); }
+        for (int from = 0; from < n; from += 64) { // counted by the block: a count per row costs more than a cheap predicate
+            int to = Math.min(n, from + 64);
+            if (poll != null) poll.before(to - from);
+            for (int r = from; r < to; r++) {
+                if (isDead(r) || !allow.test(ids[r])) continue;
+                float d = distFp(s.q, r);
+                if (h.n < k) h.push(-d, r); else if (d < -h.topKey()) { h.pop(); h.push(-d, r); }
+            }
         }
         int m = h.n; if (s.outN.length < m) { s.outN = new int[m * 2]; s.outD = new float[m * 2]; } s.outCount = m;
         for (int i = m - 1; i >= 0; i--) { s.outD[i] = -h.topKey(); s.outN[i] = h.topVal(); h.pop(); }

@@ -92,14 +92,16 @@ class SearchContextTest {
         search.run(full);
         assertTrue(full.calls >= candidatesAtLeast, "the full search looked at " + full.calls + " candidates");
         assertTrue(full.gap() <= INTERVAL, full.maxGap + " candidates between two polls");
+        assertTrue(candidatesAtLeast > 2 * INTERVAL, "the search is too small to show a poll inside a scan");
         assertTrue(full.polls >= candidatesAtLeast / INTERVAL, "the full search polled " + full.polls + " times");
-        for (int expireAt : new int[] {1, 2, 3, 5, 8}) {
+        for (int expireAt : new int[] {1, 2, 3, (full.polls + 3) / 2, full.polls}) {
             Counting c = new Counting(expireAt, filter);
             assertThrows(SearchCancelledException.class, () -> search.run(c), "expiry at poll " + expireAt);
             assertEquals(expireAt, c.polls, "no poll after the one that expired");
             assertTrue(c.calls <= (long) (expireAt - 1) * INTERVAL, "expiry at poll " + expireAt + ": " + c.calls + " candidates");
             assertTrue(c.gap() <= INTERVAL, c.maxGap + " candidates between two polls");
-            assertTrue(c.calls < full.calls, "the cancelled search did less work than the full one");
+            assertTrue(c.calls <= full.calls, "the cancelled search did no more work than the full one");
+            if (expireAt <= 3) assertTrue(c.calls < full.calls, "the search stopped before its end");
         }
     }
 
@@ -118,23 +120,23 @@ class SearchContextTest {
     @Test
     void theGraphWalkStopsWithinTheInterval() {
         try (TieredIndex ix = new TieredIndex(DIM, Metric.COSINE, manual(Quant.NONE))) {
-            addRange(ix, 0, 3000);
+            addRange(ix, 0, 5000);
             ix.sealNow();
             // a beam as wide as the segment: every node that the walk reaches passes through the predicate
-            assertStopsWithinTheInterval(id -> true, 2500, c -> ix.search(query(0), 10, c, 3000, c));
+            assertStopsWithinTheInterval(id -> true, 4000, c -> ix.search(query(0), 10, c, 5000, c));
         }
     }
 
     @Test
     void theExactScanOfASegmentStopsWithinTheInterval() {
         try (TieredIndex ix = new TieredIndex(DIM, Metric.COSINE, manual(Quant.NONE))) {
-            addRange(ix, 0, 3000);
+            addRange(ix, 0, 5000);
             ix.sealNow();
             // few ids pass: the walk spends its visit budget and falls back to the scan
-            assertStopsWithinTheInterval(id -> id % 1000 == 0, 3000, c -> ix.search(query(0), 10, c, 10, c));
+            assertStopsWithinTheInterval(id -> id % 1000 == 0, 5000, c -> ix.search(query(0), 10, c, 10, c));
             // the scan-first plan: a sample of the predicate, then the scan
             ix.filterScanBelow(1.0);
-            assertStopsWithinTheInterval(id -> true, 3000, c -> ix.search(query(1), 10, c, c));
+            assertStopsWithinTheInterval(id -> true, 5000, c -> ix.search(query(1), 10, c, c));
         }
     }
 
@@ -313,7 +315,7 @@ class SearchContextTest {
             addRange(ix, 1200, 2400);
             ix.sealNow();
             addRange(ix, 2400, 3000);
-            for (int expireAt = 1; expireAt <= 10; expireAt++) {
+            for (int expireAt = 1; expireAt <= 4; expireAt++) {
                 Counting c = new Counting(expireAt);
                 assertThrows(SearchCancelledException.class, () -> ix.search(query(0), 10, c, 1200, c));
             }

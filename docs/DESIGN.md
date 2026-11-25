@@ -92,7 +92,7 @@ Versions come from one counter under the write lock. The floor map says "a segme
 
 A search scans the tails exactly, searches every segment, drops hidden ids, applies the filter in both, and merges by score. Duplicate ids (a replace in flight) are resolved newest source first: active tail, frozen tail, then segments. `Freshness.SEALED_ONLY` skips the tails. It may lag (a vector added or replaced since the last seal is not in it) but never returns a deleted id, a stale vector, or an id that was never added.
 
-A search can take a `SearchContext`, one method `expired()` for a deadline, a cancel flag, or both. The search asks it when it starts, before each tail and each segment, before more than 256 candidates have been looked at since the last poll (tail scan, rerank, greedy descent, beam, exact scan of a segment), and after each pause while it waits for a batch. When the answer is true the search throws `SearchCancelledException` and leaves its view like any other search, so a stopped search holds nothing back. A search without a context pays a test for null in those loops.
+A search can take a `SearchContext`, one method `expired()` for a deadline, a cancel flag, or both. The search asks it when it starts, before each tail and each segment, before more than 1024 candidates have been looked at since the last poll (tail scan, rerank, greedy descent, beam, exact scan of a segment), and after each pause while it waits for a batch. When the answer is true the search throws `SearchCancelledException` and leaves its view like any other search, so a stopped search holds nothing back. A search without a context pays a test for null in those loops.
 
 ### Merge
 

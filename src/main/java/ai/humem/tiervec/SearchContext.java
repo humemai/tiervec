@@ -6,7 +6,7 @@ package ai.humem.tiervec;
  * a statement timeout, after a client disconnect, or for any other reason that the host knows and the library does not.
  *
  * <p>The cooperation is by polling. The library calls {@link #expired()} on the thread that runs the search: once when the search starts, before it reads each
- * tail and each segment, at least once every 256 candidates inside a tail scan or a segment search, and after each pause while it waits for a batch that is
+ * tail and each segment, at least once every 1024 candidates inside a tail scan or a segment search, and after each pause while it waits for a batch that is
  * being applied. A candidate is a vector that a scan or a graph walk looks at, whether or not the allow predicate accepts it. When the method returns
  * {@code true}, the search throws {@link SearchCancelledException} and returns no result.
  *

@@ -1,69 +1,79 @@
 package ai.humem.tiervec;
 
-import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.concurrent.locks.LockSupport;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
 /**
- * A caller of {@code sealNow} gets its turn while the worker always has a next task (issue #144). The worker takes the lock of the seals and
- * merges again right after it releases it, so a lock that lets a newcomer pass a waiting thread can keep the caller out for as long as
- * writes keep coming.
+ * A caller of {@code sealNow} that waits while the worker builds gets the next turn, also when the worker has more to do (issue #144). The
+ * worker takes the lock of the builds again right after it releases it, so a lock that lets a newcomer pass a waiting thread can keep the
+ * caller out for as long as writes keep coming. The test holds the worker inside a seal until the caller waits, and then looks at who seals
+ * next.
  */
 @Timeout(value = 3, unit = TimeUnit.MINUTES, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
 class TierControlTurnTest {
     private static final int DIM = 8;
     private static final int TAIL = 64;
-    private static final int CALLS = 5;
-    /** a bound on the memory of the test; at 16 rows per millisecond the writer needs more than half a minute to reach it */
-    private static final long MAX_ROWS = 600_000;
+    private static final int ROUNDS = 20;
+    private static final String WORKER = "tiered-worker";
+    private static final String CALLER = "turn-caller";
+
+    private long nextId;
+
+    private void fillATail(TieredIndex t) {
+        for (int i = 0; i < TAIL; i++, nextId++) t.add(nextId, TierT.vec(144, nextId, DIM));
+    }
 
     @Test
-    void sealNowGetsItsTurnWhileWritesKeepTheWorkerBusy() throws Exception {
-        TieredIndex.Config c = new TieredIndex.Config(TAIL, 0L, 10, 8, 4, 0.3, 0, 4, Quant.NONE, GraphIndex.Params.defaults().withEfConstruction(32), 1);
+    void aWaitingCallerSealsNextWhileTheWorkerHasMoreToDo() throws Exception {
+        TieredIndex.Config c = new TieredIndex.Config(TAIL, 0L, 10, 64, 4, 0.3, 0, 4, Quant.NONE, GraphIndex.Params.defaults().withEfConstruction(32), 1);
         TieredIndex t = new TieredIndex(DIM, Metric.L2, c);
-        AtomicBoolean stop = new AtomicBoolean();
+        LinkedBlockingQueue<String> sealers = new LinkedBlockingQueue<>(); // the thread of every seal, in order
+        Semaphore workerInside = new Semaphore(0);
+        Semaphore workerMayLeave = new Semaphore(0);
         AtomicReference<Throwable> failed = new AtomicReference<>();
-        // every seal takes at least 20 ms, in which the writer fills the next tail: the worker never runs out of work
-        t.setSealHooks(() -> LockSupport.parkNanos(20_000_000L), null);
-        Thread writer = new Thread(() -> {
-            try {
-                for (long id = 0; id < MAX_ROWS && !stop.get(); id++) {
-                    t.add(id, TierT.vec(144, id, DIM));
-                    if ((id & 15) == 0) Thread.sleep(1);
-                }
-            } catch (Throwable e) {
-                failed.set(e);
+        t.setSealHooks(() -> { // runs inside the lock of the builds
+            String who = Thread.currentThread().getName();
+            sealers.add(who);
+            if (who.equals(WORKER)) {
+                workerInside.release();
+                workerMayLeave.acquireUninterruptibly();
             }
-        }, "turn-writer");
-        Thread caller = new Thread(() -> {
-            try {
-                for (int i = 0; i < CALLS; i++) t.sealNow();
-            } catch (Throwable e) {
-                failed.set(e);
-            }
-        }, "turn-caller");
+        }, null);
+        Thread caller = null;
         try {
-            writer.start();
-            long ready = System.nanoTime() + 30_000_000_000L;
-            while (t.stats().seals() < 3 && System.nanoTime() < ready) Thread.sleep(5);
-            assertTrue(t.stats().seals() >= 3, "the worker did not start to seal");
-            caller.start();
-            caller.join(20_000);
-            boolean stuck = caller.isAlive();
-            stop.set(true);
-            writer.join(30_000);
-            caller.join(60_000); // with no more writes the worker runs out of work and the caller gets in
-            assertFalse(stuck, CALLS + " calls of sealNow did not return in 20 s while writes went on");
+            for (int round = 1; round <= ROUNDS; round++) {
+                fillATail(t);
+                assertTrue(workerInside.tryAcquire(30, TimeUnit.SECONDS), "round " + round + ": the worker did not seal");
+                fillATail(t); // the next seal is due when this one is done
+                caller = new Thread(() -> {
+                    try {
+                        t.sealNow();
+                    } catch (Throwable e) {
+                        failed.set(e);
+                    }
+                }, CALLER);
+                caller.start();
+                long end = System.nanoTime() + 30_000_000_000L;
+                while (caller.getState() != Thread.State.WAITING && System.nanoTime() < end) Thread.sleep(1);
+                assertEquals(Thread.State.WAITING, caller.getState(), "round " + round + ": the caller does not wait for the lock");
+                sealers.clear();
+                workerMayLeave.release();
+                assertEquals(CALLER, sealers.poll(30, TimeUnit.SECONDS), "round " + round + ": who seals after the worker");
+                caller.join(30_000);
+                assertEquals(Thread.State.TERMINATED, caller.getState(), "round " + round + ": sealNow did not return");
+            }
             assertNull(failed.get());
         } finally {
-            stop.set(true);
+            workerMayLeave.release(1_000_000);
+            if (caller != null) caller.join(30_000);
             t.close();
         }
     }

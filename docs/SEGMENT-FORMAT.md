@@ -22,7 +22,7 @@ Nothing that a manifest names is ever modified. A new state is a new manifest an
 
 `checkpoint` and every `open` take an exclusive lock on `LOCK` before they read or write anything else in the directory, and the tier keeps it until `close`, or until a `checkpoint` into another directory has succeeded. A second process gets `DirectoryLockedException`, which names the directory, and nothing there changes. This includes the `open` overloads with a rebuild source: they do not rebuild, because two owners of one directory would delete each other's files. The tiers of one process share the lock, and it is released when the last of them lets go.
 
-The lock is the operating system's, so it ends with the process, however the process ends, and there is no stale lock to remove. Do not delete the file while a process uses the directory. No lock is taken on a file system other than the default one, or in a directory that the process cannot write to. Whether the lock holds between machines on a network file system depends on that file system, and nothing here tests it. A version before this one neither takes nor checks the lock.
+The lock is the operating system's, so it ends with the process, however the process ends, and there is no stale lock to remove. On Windows it can end a moment after the process has: an `open` right after a process was killed can throw `DirectoryLockedException`, and a host that restarts at once tries again (seen in `TierKillLongTest` on the Windows runner; the documentation of `LockFileEx` gives no bound for the release). Do not delete the file while a process uses the directory. No lock is taken on a file system other than the default one, or in a directory that the process cannot write to. Whether the lock holds between machines on a network file system depends on that file system, and nothing here tests it. A version before this one neither takes nor checks the lock.
 
 ## Segment file
 
@@ -170,7 +170,7 @@ These are the platforms that CI runs. "N or N+1" means that the directory opens 
 |---|---|---|---|---|
 | File contents flushed before the rename (`FileChannel.force`) | yes | yes | yes | yes |
 | The rename itself flushed (directory flush) | yes | yes | yes | no |
-| A process kill during a publish leaves N or N+1 | yes | yes | yes | yes |
+| A process kill during a publish leaves N or N+1 | yes | yes | yes | yes, and the lock of the killed process can be released a moment later |
 | A power loss | no claim | no claim | no claim | no claim, and a rename that has returned can be lost |
 | Tested by a child process halted at each publish step, and from the directories a power cut can leave (fast: `TierHaltTest`, `TierPowerCutTest`, `ManifestCrashTest`, `TierReopenTest`) | every change | every change | every change | every change |
 | Tested by many seeds and random process kills (slow: `TierHaltLongTest`, `TierKillLongTest`) | slow runs | no | no | slow runs |

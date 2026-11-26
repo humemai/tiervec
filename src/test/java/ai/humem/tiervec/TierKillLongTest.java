@@ -38,6 +38,10 @@ class TierKillLongTest {
     static final int MAX_DELAY_MS = 600;
     /** the longest wait between the announcement of a checkpoint and a kill aimed at it */
     static final int MAX_AIMED_DELAY_NANOS = 8_000_000;
+    /** the longest wait on Windows for the lock of a killed child */
+    static final long MAX_LOCK_WAIT_NANOS = 30_000_000_000L;
+
+    private long longestLockWaitNanos; // of one seed: JUnit makes an instance per test
 
     @TempDir
     Path dir;
@@ -61,7 +65,7 @@ class TierKillLongTest {
             }
             if (publishing > published) duringCheckpoint++;
             String what = "seed " + seed + ", kill " + kill + ", published " + published + ", publishing " + publishing;
-            try (TieredIndex u = TieredIndex.open(dir, TierReopenTest.cfg())) {
+            try (TieredIndex u = openAfterKill()) {
                 Manifest m = Manifest.readLatest(dir);
                 // a line may be lost to the kill after the work it reports was done, never the other way round
                 assertTrue(m.generation() == published || (publishing > published && m.generation() == publishing),
@@ -79,7 +83,28 @@ class TierKillLongTest {
         }
         assertTrue(live >= KILLS / 6, "the children made progress: generation " + live);
         assertTrue(duringCheckpoint > 0, "no kill fell inside a checkpoint");
-        System.out.println("KILL seed=" + seed + " kills=" + KILLS + " duringCheckpoint=" + duringCheckpoint + " lastGeneration=" + live);
+        System.out.println("KILL seed=" + seed + " kills=" + KILLS + " duringCheckpoint=" + duringCheckpoint + " lastGeneration=" + live
+                + " longestLockWaitMs=" + longestLockWaitNanos / 1_000_000L);
+    }
+
+    /**
+     * Opens the directory after a kill. Windows releases the file locks of a terminated process at some point after the process has ended (the
+     * documentation of {@code LockFileEx} gives no bound), so there the open is tried again while the lock is still held. On the other
+     * systems the first try has to work.
+     */
+    private TieredIndex openAfterKill() throws Exception {
+        boolean windows = System.getProperty("os.name").startsWith("Windows");
+        long t0 = System.nanoTime();
+        while (true) {
+            try {
+                TieredIndex u = TieredIndex.open(dir, TierReopenTest.cfg());
+                longestLockWaitNanos = Math.max(longestLockWaitNanos, System.nanoTime() - t0);
+                return u;
+            } catch (DirectoryLockedException e) {
+                if (!windows || System.nanoTime() - t0 > MAX_LOCK_WAIT_NANOS) throw e;
+                Thread.sleep(5);
+            }
+        }
     }
 
     /**

@@ -1121,6 +1121,13 @@ public final class TieredIndex implements VecIndex {
             SearchResult r;
             try {
                 r = searchView(vw, q, k, allow, freshness, efSearch, poll);
+            } catch (SearchCancelledException stopped) {
+                // a context that throws an exception of its own gets it back unchanged: only the one of the poll can carry hits
+                if (poll != null && stopped == poll.thrown && context.partialWanted()) {
+                    VarHandle.acquireFence();
+                    if (batchSeq == seq) stopped.keep(mergeTopK(poll.lists, poll.done, k)); // a batch overlapped the scan: no hits
+                }
+                throw stopped;
             } finally {
                 vw.readers.decrementAndGet();
             }
@@ -1148,6 +1155,10 @@ public final class TieredIndex implements VecIndex {
         Hit[][] lists = new Hit[2 + segs.length][];
         int li = 0;
         int tailScanned = 0;
+        if (poll != null) { // what a stop leaves behind for a partial result: a list is counted only when its source was read to the end
+            poll.lists = lists;
+            poll.done = 0;
+        }
         if (freshness == Freshness.FRESH) {
             // an empty tail costs nothing: no scan, no list, no merge work (an add that returned has already put its raw copy)
             int na = vw.active.raw.size();
@@ -1156,6 +1167,7 @@ public final class TieredIndex implements VecIndex {
                 tailScanned += na;
                 Hit[] h = vw.active.flat.search(q, k, allow, poll);
                 if (h.length > 0) lists[li++] = h;
+                if (poll != null) poll.done = li;
             }
             if (vw.frozen != null) {
                 int nf = vw.frozen.raw.size();
@@ -1164,6 +1176,7 @@ public final class TieredIndex implements VecIndex {
                     tailScanned += nf;
                     Hit[] h = vw.frozen.flat.search(q, k, allow, poll);
                     if (h.length > 0) lists[li++] = h;
+                    if (poll != null) poll.done = li;
                 }
             }
         }
@@ -1183,6 +1196,7 @@ public final class TieredIndex implements VecIndex {
             if (poll != null) poll.now();
             Hit[] h = small ? s.g.scan(q, k, p, poll) : s.g.search(q, k, p, efS, scanBelow, poll);
             if (h.length > 0) lists[li++] = h;
+            if (poll != null) poll.done = li;
             searched++;
         }
         boolean exact = (searched == 0 || small) && (cfg.tailQuant() == Quant.NONE || (long) FLAT_RERANK * k >= tailScanned);

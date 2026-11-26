@@ -4,6 +4,7 @@ import static ai.humem.tiervec.SegmentTestSupport.idOf;
 import static ai.humem.tiervec.SegmentTestSupport.vectors;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -313,7 +314,8 @@ class TierTombstoneTest {
                 gen.tombGeneration(), raw.length, SegmentFormat.crc32c(raw, 0, raw.length));
         Files.write(dir.resolve(Manifest.manifestName(gen.generation())), forged.encode(Manifest.FORMAT_MAJOR, Manifest.FORMAT_MINOR));
 
-        CorruptException e = assertThrows(CorruptException.class, () -> TieredIndex.open(dir, keep()));
+        CorruptStateException refused = assertThrows(CorruptStateException.class, () -> TieredIndex.open(dir, keep()));
+        CorruptException e = assertInstanceOf(CorruptException.class, refused.getCause());
         assertEquals("TOMBSTONES", e.section());
     }
 }

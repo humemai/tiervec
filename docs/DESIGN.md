@@ -139,3 +139,36 @@ A scalar result and a vector result of the same float kernel can differ by round
 With `mergeTriggerRatio` X above 0, the segment with the most live rows is the big one. When the live rows of all the other segments together exceed X times the live rows of the big one, all segments are merged into one. Otherwise, if `maxSegments` is at least 2 and the count exceeds it, the count rule picks among the small segments only, so the big one is rewritten only by the ratio rule. With `maxSegments` 1 the count rule includes the big one and a merge happens at every seal. A merge into the big segment rewrites about (1 + X) / X vectors per inserted vector, on top of the small-segment merges.
 
 Other controls on the tier: `filterScanBelow(fraction)` (default 0, off) is the scan-first threshold of filtered searches, applied per segment (the tails are always scanned exactly), `sealNow()`, `mergeNow()` and `awaitIdle(timeoutMs)` run or wait for the worker, `search(q, k, allow, ef)` sets the beam per call, and `stats()` reports seals, merges, segment sizes, floor entries, write amplification, and a log of finished tasks.
+
+### Configuration as a map
+
+`Config.toMap()` writes every setting as text, and `Config.fromMap` reads it back to an equal configuration. The keys are the component names of the table above, with the graph parameters one by one: `graph.M`, `graph.efConstruction`, `graph.efSearch`, `graph.alpha`, `graph.sq8`, and `graph.seed`, plus `mergeMode`. A key that a map does not have takes the default of the library that reads it, so a host stores the whole result of `toMap()`. The dimension and the metric belong to the index definition and are not keys.
+
+| Moment | Method | Unknown key | Value that cannot be used |
+|---|---|---|---|
+| An index is created | `Config.fromMap(map)` | refused, the message names it | refused, the message names the key |
+| A stored definition is loaded | `Config.fromStoredMap(map, warning)` | reported to `warning` and ignored, so a downgrade opens | refused |
+| An open index changes | `reconfigure(changes)` | refused | refused |
+
+`reconfigure` changes `graph.efSearch` and `splitBeam`, the search-time knobs. It refuses every other key whose value would change, and makes all changes of a call or none.
+
+`Config.fingerprint(dim, metric)` returns a canonical text and its SHA-256 over what decides the data of the graphs and their files: the dimension, the metric, the id width, `graph.M`, `graph.efConstruction`, `graph.alpha`, `graph.sq8`, and the layer 0 layout. The search-time knobs, the tail settings (the tail is not persisted), the seal and merge policy, and `graph.seed` are not in it. The manifest records the same settings except `alpha`, and `open` compares those, so a host that wants a change of `alpha` to discard the persisted state compares fingerprints itself.
+
+## Statistics
+
+`metrics()` returns a `Map<String, Long>`. `bindMetrics(sink)` pushes the same numbers to a `MetricSink`: the sink gets each increment of a counter from then on, and each gauge once, to read when it wants. The library depends on no metrics library, and a sink that throws is ignored.
+
+| Name | Kind | What it counts or reads |
+|---|---|---|
+| `tiervec.seals`, `tiervec.merges` | counter | finished seals and merges |
+| `tiervec.failures` | counter | background tasks that failed |
+| `tiervec.backpressureWaits` | counter | waits of writers for room in the tail |
+| `tiervec.sealedVectors`, `tiervec.mergedVectors` | counter | rows that seals and merges put into graphs |
+| `tiervec.bigMerges`, `tiervec.bigMergedVectors` | counter | the part of the merges that rewrote the largest segment |
+| `tiervec.adds` | gauge | calls of `add`, batches included |
+| `tiervec.live`, `tiervec.tailSize`, `tiervec.segments`, `tiervec.bytesHeld`, `tiervec.floorEntries` | gauge | live vectors, vectors in the tails, segments, resident bytes, floor entries |
+| `tiervec.sealMillis`, `tiervec.mergeMillis`, `tiervec.maxSealMillis`, `tiervec.maxMergeMillis` | gauge | time in seals and merges, and the longest one |
+| `tiervec.mergeWriteAmpThousandths`, `tiervec.totalWriteAmpThousandths` | gauge | rows built per add, in thousandths: by merges, and by seals and merges |
+| `tiervec.health` | gauge | 0 OK, 1 DEGRADED, 2 FAILED |
+
+`health()` is DEGRADED after a seal or a merge has failed three times in a row, until one of that kind works, and FAILED when the worker has ended while the tier is open.

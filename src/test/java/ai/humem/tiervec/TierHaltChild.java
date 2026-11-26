@@ -27,6 +27,11 @@ public final class TierHaltChild {
         TieredIndex t = new TieredIndex(TierHaltTest.DIM, Metric.L2, TierReopenTest.cfg());
         for (int g = 1; g <= TierHaltTest.GENS; g++) {
             for (int i = (g - 1) * rows; i < g * rows; i++) t.add(SegmentTestSupport.idOf(i), data[i]);
+            // from the second batch on, some ids of the batch before are deleted and some are replaced, so a generation holds tombstones
+            if (g > 1) {
+                for (int i = (g - 2) * rows; i < (g - 1) * rows; i += TierHaltTest.DELETE_EVERY) t.delete(SegmentTestSupport.idOf(i));
+                for (int i = (g - 2) * rows + 1; i < (g - 1) * rows; i += TierHaltTest.DELETE_EVERY) t.add(SegmentTestSupport.idOf(i), data[i - 1]);
+            }
             t.sealNow();
             if (!t.awaitIdle(60_000)) throw new IllegalStateException("the seal of batch " + g + " did not finish");
             // what generation g must serve is on disk before its publish starts, so that it is there whatever step the halt comes at

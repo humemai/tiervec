@@ -13,7 +13,10 @@ public interface RecordSource {
     /** The highest id the host itself found after its own recovery, or {@link Manifest#NONE} when it holds no record. Held ids above it are dropped. */
     long recoveredMax();
 
-    /** Whether the host holds a live record with this id. Called once for every id that a persisted segment holds. */
+    /**
+     * Whether the host holds a live record with this id. Called once for every id that a persisted segment holds a visible copy of; an id whose
+     * copies were all hidden at the checkpoint (deleted or replaced) is not asked about.
+     */
     boolean isLive(long id);
 
     /** Every live record with an id above {@code id}, in increasing id order. Called with the high-water id of the persisted state. */

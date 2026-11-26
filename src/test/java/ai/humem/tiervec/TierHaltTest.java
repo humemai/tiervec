@@ -41,6 +41,7 @@ import org.junit.jupiter.params.provider.MethodSource;
 class TierHaltTest {
     static final int DIM = TierReopenTest.DIM;
     static final int ROWS = 250;
+    static final int DELETE_EVERY = 10; // see TierHaltChild
     static final int GENS = 3;
     static final int QUERIES = 30;
     static final int HALT_CODE = 42;
@@ -59,6 +60,11 @@ class TierHaltTest {
         assertEquals(FaultHook.Step.values().length, checkpointOf.length, "one checkpoint number for every step");
         for (FaultHook.Step s : FaultHook.Step.values()) l.add(Arguments.of(s, checkpointOf[s.ordinal()], 1000L + s.ordinal()));
         return l.stream();
+    }
+
+    /** the ids that the child deletes from the batch before, in every batch from the second on */
+    static int deletedPerBatch() {
+        return (ROWS + DELETE_EVERY - 1) / DELETE_EVERY;
     }
 
     /** one line per query: the hits as {@code id:bits of the score}, best first */
@@ -158,7 +164,7 @@ class TierHaltTest {
         List<String> want = Files.readAllLines(expect.resolve("gen-" + live + ".txt"));
         try (TieredIndex u = TieredIndex.open(dir, TierReopenTest.cfg())) {
             assertNull(u.openFallbackCause(), what);
-            assertEquals(live * ROWS, u.size(), what);
+            assertEquals(live * ROWS - (live - 1) * deletedPerBatch(), u.size(), what);
             assertSameAnswers(want, digest(u, vectors(QUERIES, DIM, seed + 1)), what); // the child's queries: its seed plus one
         }
         assertEquals(expectedNames(latest), names(dir), what + ": open left exactly the files of the live generation");

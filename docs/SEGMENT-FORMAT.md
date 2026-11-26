@@ -1,6 +1,6 @@
 # Segment files and the manifest
 
-This page describes what the code writes and reads today (the first cut of [#9](https://github.com/humemai/tiervec/issues/9)). A settled tier is written to a directory with `TieredIndex.checkpoint(dir)` and read back with `TieredIndex.open(dir, config)`. One sealed graph can also be written alone with `SealedGraph.serialize(file)` and read with `SealedGraph.load(file)`.
+This page describes what the code writes and reads today (the first cut of [#9](https://github.com/humemai/tiervec/issues/9)). A tier with an empty tail is written to a directory with `TieredIndex.checkpoint(dir)` and read back with `TieredIndex.open(dir, config)`. One sealed graph can also be written alone with `SealedGraph.serialize(file)` and read with `SealedGraph.load(file)`.
 
 The records of the host stay the source of truth. Everything in the directory is derived data that can be deleted and rebuilt with `TieredIndex.rebuildFrom`. When `open` cannot trust the directory, it throws, and the host rebuilds from its records.
 
@@ -11,7 +11,7 @@ The claim the format makes: a process kill at any point of a publish leaves gene
 | File | What it holds |
 |---|---|
 | `seg-<id>.tvs` | One immutable segment: the arrays of one `SealedGraph`. The id is zero-padded to at least six digits. |
-| `tomb-<generation>.tvd` | The tombstone bitmaps of every segment of a generation. In this version they are all zero. |
+| `tomb-<generation>.tvd` | The tombstone bitmaps of every segment of a generation: the rows that a delete or a replace has hidden. |
 | `manifest-<generation>.tvm` | One generation: the live segments, the tombstone file, a configuration fingerprint. The generation is zero-padded to 20 digits. |
 | `*.tmp` | A file being written. Never named by a manifest. Removed at open. |
 
@@ -131,7 +131,11 @@ The manifest and the tombstone file carry their own `major.minor` under the same
 
 `manifest-<generation>.tvm` holds: magic `TVMAN001`, version, the body length, the generation, the epoch and the high-water id of the host (both "none" for a tier that never had an epoch; otherwise the host's epoch and the largest id that a segment holds), the version counter of the tier, the next free segment id, a fingerprint of the data-affecting configuration (dimension, metric, id width, `M`, `efConstruction`, whether SQ8 is on, the layer 0 layout), the generation, length and CRC of the tombstone file, one entry per live segment (id, row count, file length, the header CRC, smallest and largest row version), and a CRC32C of everything before it. File names are built from the ids in the manifest, never read from it.
 
-`tomb-<generation>.tvd` holds: magic `TVTOMB01`, version, the generation, the number of segments, then for each segment its id, its row count and one bit per row, and a CRC32C. This version writes only zero bits and refuses a file with a bit set.
+`tomb-<generation>.tvd` holds: magic `TVTOMB01`, version, the generation, the number of segments, then for each segment its id, its row count and one bit per row (in 64-bit words, row `r` is bit `r & 63` of word `r >>> 6`), and a CRC32C.
+
+A set bit marks a row that a delete or a replace has hidden. The row stays in its segment file, which is never modified, until a merge rewrites the segment. Each generation has its own tombstone file, so a checkpoint that only deleted ids writes a new tombstone file and a new manifest and no segment. A reader refuses (`CorruptException`, section `TOMBSTONES`) a bit at or above the row count of its segment, and a file that leaves a row of an id visible while it marks a newer row of the same id: a tier hides older copies only.
+
+Version 0.1.0 and 0.1.1 write only zero bits. They refuse a directory with a set bit with `UnsupportedException`, so their `checkpoint` does not overwrite it. A directory without a set bit has the same bytes as before.
 
 ## Publish
 
@@ -163,7 +167,7 @@ The table is for a process kill (the page cache survives). A crash after a step 
 | 6 or 7 | N+1 | the files of generation N |
 | 8 | N+1 | whatever the cleanup had not yet deleted |
 
-`ManifestCrashTest` and `TierReopenTest` run the publish with a hook that throws after each step and check which generation `readLatest` and `open` find, that the segments serve the same results as the in-memory graphs, and that the next open leaves exactly the files of that generation. `TierHaltTest` does the same with a real process: a child JVM halts itself (`Runtime.halt`, so no shutdown hook and no cleanup) at each step of a publish, and the parent opens the directory and compares its answers with those of the child's in-memory index. `TierHaltLongTest` (slow) does that for every step in each of three checkpoints with eight seeds, and `TierKillLongTest` (slow) kills a child that publishes in a loop at random moments (`SIGKILL` on Linux), opens the directory after each kill, and goes on in the same directory with the next child. The slow tests run on JDK 21 and 25. `TierPowerCutTest` starts from the files at each step and takes away what the publish order does not yet make durable at that step (a name that was not flushed, the bytes of the temporary manifest), and it also breaks the order on purpose (the rename reached the disk and the bytes of the manifest, of the new segment or of the tombstone file did not). In every case `open` serves exactly generation N or exactly generation N+1 and leaves exactly its files. None of those checks that the flushes are issued in the right order.
+`TierTombstoneTest` does the steps of the table with deleted, replaced and re-added ids in both generations. `ManifestCrashTest` and `TierReopenTest` run the publish with a hook that throws after each step and check which generation `readLatest` and `open` find, that the segments serve the same results as the in-memory graphs, and that the next open leaves exactly the files of that generation. `TierHaltTest` does the same with a real process: a child JVM halts itself (`Runtime.halt`, so no shutdown hook and no cleanup) at each step of a publish, and the parent opens the directory and compares its answers with those of the child's in-memory index. `TierHaltLongTest` (slow) does that for every step in each of three checkpoints with eight seeds, and `TierKillLongTest` (slow) kills a child that publishes in a loop at random moments (`SIGKILL` on Linux), opens the directory after each kill, and goes on in the same directory with the next child. The slow tests run on JDK 21 and 25. `TierPowerCutTest` starts from the files at each step and takes away what the publish order does not yet make durable at that step (a name that was not flushed, the bytes of the temporary manifest), and it also breaks the order on purpose (the rename reached the disk and the bytes of the manifest, of the new segment or of the tombstone file did not). In every case `open` serves exactly generation N or exactly generation N+1 and leaves exactly its files. None of those checks that the flushes are issued in the right order.
 
 `SimulatedFsCrashTest` does, on a simulated file system. It records every write, flush, rename and delete of three publishes (the third after a merge, so it also deletes files), then builds the directories a crash can leave after each of those changes: a file keeps what was flushed and may keep all, part, none, or a torn mix of what was written later, and each new name, rename or delete since the last flush of its directory may or may not be there, in every combination. Each directory must open as exactly generation N or exactly generation N+1 (nothing before the first one is there), answer as the in-memory index of that generation did, hold only that generation's files afterwards, and take the next publish. The test also removes the flushes one at a time and expects a broken directory: every file flush is needed, so is the flush of the directory after the rename (step 7), and the flush of step 3 is needed for the first generation. In later generations a crash that loses a name because step 3 is missing still opens generation N, which is whole until step 7 has returned. A third run kills the process after each change, opens the directory in the next process, and crashes during and after that open. Two more publish into a directory that `checkpoint` makes itself, once straight through and once retried after a kill while the directory was made.
 
@@ -177,7 +181,7 @@ The claim stays a process kill. The simulated file system is a model: it shows t
 2. Compare the fingerprint with the configuration (dimension, metric, `M`, `efConstruction`, SQ8). A difference throws `MismatchException`.
 3. Read every segment with every section checksummed, and compare it with its manifest entry.
 4. Delete the files that the manifest does not name (orphans of a crashed publish, older generations).
-5. Restore the version counter and the epoch, and start the tier with the segments, an empty tail and an empty floor map.
+5. Restore the version counter, the epoch and the floor map (for each id with a marked row, one more than the largest marked version, which hides exactly the marked rows), and start the tier with the segments and an empty tail.
 
 Any failure throws. The overload `open(dir, dim, metric, config, rebuildSource)` catches it and builds the tier from the records with `rebuildFrom`; `openFallbackCause()` tells why. The directory is left as it was in that case. The next `checkpoint` replaces its contents, with one exception: when `open` failed with `UnsupportedException`, `checkpoint` into that directory throws the same exception and changes nothing, so that an older reader does not destroy files of a newer format. A host that wants to give those files up deletes the directory.
 
@@ -187,7 +191,8 @@ Any failure throws. The overload `open(dir, dim, metric, config, rebuildSource)`
 
 - Memory mapping. A segment is read into the heap arrays of `SealedGraph`.
 - Replay of the tail by the library itself. The host replays what the segments lack through `RecordSource`.
-- Tombstones. `checkpoint` refuses a tier with a non-empty tail, a non-empty floor map, or a segment with hidden copies (an `IllegalStateException`), and `SegmentWriter` refuses a graph with soft-deleted rows. The tombstone file exists and is verified, but holds only zeros. Rebuilding the floor map from bitmaps is the follow-up.
+- The tail. `checkpoint` refuses a tier with a non-empty tail (an `IllegalStateException`).
+- Soft-deleted rows inside a segment file: `SegmentWriter` refuses a graph that has them. The tier does not make such graphs; it records hidden rows in the tombstone file.
 - Lazy and chunked CRC verification. Every section is verified at open.
 - The fixed-stride layer 0 layout and padded rows.
 - Formats for the flat tail and for IVF.

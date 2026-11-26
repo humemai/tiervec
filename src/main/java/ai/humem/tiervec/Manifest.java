@@ -98,6 +98,15 @@ public record Manifest(long generation, long epoch, long hwm, long versionCounte
      * @return the manifest as written (with the tombstone fields filled in)
      */
     public static Manifest publish(Path dir, Manifest m, FaultHook hook) throws IOException {
+        return publish(dir, m, null, hook);
+    }
+
+    /**
+     * {@link #publish(Path, Manifest, FaultHook)} with the hidden rows that the tombstone file records. {@code hidden[i]} belongs to entry i of
+     * {@code m}: one bit per row (bit {@code r & 63} of word {@code r >>> 6} is row r, set when a delete or a replace has hidden the row), in
+     * {@code (n + 63) / 64} words with no bit at or above n. A null array, or a null element, hides nothing.
+     */
+    static Manifest publish(Path dir, Manifest m, long[][] hidden, FaultHook hook) throws IOException {
         Objects.requireNonNull(hook, "hook");
         final Path fin = dir.resolve(manifestName(m.generation()));
         if (Files.exists(fin)) throw new FileAlreadyExistsException(fin.toString());
@@ -107,7 +116,7 @@ public record Manifest(long generation, long epoch, long hwm, long versionCounte
             long len = Files.size(sp);
             if (len != e.fileLength()) throw new CorruptException("segment file " + sp.getFileName() + " has " + len + " bytes, the manifest says " + e.fileLength(), "MANIFEST");
         }
-        byte[] tomb = encodeTombstones(m.generation(), m.entries());
+        byte[] tomb = encodeTombstones(m.generation(), m.entries(), hidden);
         try (FileChannel ch = FileChannel.open(dir.resolve(tombName(m.generation())), StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE)) {
             writeFully(ch, tomb);
             ch.force(true);
@@ -202,17 +211,7 @@ public record Manifest(long generation, long epoch, long hwm, long versionCounte
                 throw new CorruptException("segment file " + sp.getFileName() + " does not match its manifest entry", "MANIFEST");
             }
         }
-        final Path tp = dir.resolve(tombName(m.tombGeneration()));
-        byte[] tomb;
-        try {
-            tomb = Files.readAllBytes(tp);
-        } catch (NoSuchFileException x) {
-            throw new CorruptException("tombstone file " + tp.getFileName() + " is missing", "MANIFEST");
-        }
-        if (tomb.length != m.tombLength() || SegmentFormat.crc32c(tomb, 0, tomb.length) != m.tombCrc()) {
-            throw new CorruptException("tombstone file " + tp.getFileName() + " does not match the manifest", "TOMBSTONES");
-        }
-        verifyTombstones(tomb, m);
+        readTombstones(dir, m);
         return m;
     }
 
@@ -346,23 +345,55 @@ public record Manifest(long generation, long epoch, long hwm, long versionCounte
 
     /**
      * The tombstone file of a generation: magic, version, generation, segment count, then per segment its id, its row count and one bit per
-     * row (set = deleted), and a CRC32C of everything before it. This version writes only all-zero bitmaps.
+     * row (set = hidden by a delete or a replace), and a CRC32C of everything before it.
      */
-    private static byte[] encodeTombstones(long gen, List<Entry> entries) {
+    private static byte[] encodeTombstones(long gen, List<Entry> entries, long[][] hidden) {
+        if (hidden != null && hidden.length != entries.size()) throw new IllegalArgumentException(hidden.length + " bitmaps for " + entries.size() + " segments");
         long size = 24 + 4;
         for (Entry e : entries) size += 16 + 8L * ((e.n() + 63) / 64);
         ByteBuffer b = ByteBuffer.allocate(Math.toIntExact(size)).order(ByteOrder.LITTLE_ENDIAN);
         b.put(TOMB_MAGIC).putShort((short) FORMAT_MAJOR).putShort((short) FORMAT_MINOR).putLong(gen).putInt(entries.size());
-        for (Entry e : entries) {
+        for (int i = 0; i < entries.size(); i++) {
+            Entry e = entries.get(i);
             b.putLong(e.segId()).putLong(e.n());
-            b.position(b.position() + 8 * (int) ((e.n() + 63) / 64)); // all-zero bitmap: the array is already zero
+            final int words = (int) ((e.n() + 63) / 64);
+            final long[] bits = hidden == null ? null : hidden[i];
+            if (bits == null) {
+                b.position(b.position() + 8 * words); // nothing hidden: the array is already zero
+                continue;
+            }
+            if (bits.length != words || hasBitAtOrAbove(bits, e.n())) throw new IllegalArgumentException("the bitmap of segment " + e.segId() + " does not fit its " + e.n() + " rows");
+            for (long w : bits) b.putLong(w);
         }
         if (b.position() != size - 4) throw new IllegalStateException("tombstone file is " + b.position() + " bytes, expected " + (size - 4));
         b.putInt(SegmentFormat.crc32c(b.array(), 0, (int) size - 4));
         return b.array();
     }
 
-    private static void verifyTombstones(byte[] raw, Manifest m) throws IOException {
+    private static boolean hasBitAtOrAbove(long[] bits, long n) {
+        final int rest = (int) (n & 63);
+        return rest != 0 && bits.length > 0 && (bits[bits.length - 1] >>> rest) != 0L;
+    }
+
+    /**
+     * The hidden rows of every segment of {@code m}, read from its tombstone file in {@code dir}: one bitmap per entry, in entry order, in the
+     * layout that {@link #publish} takes. The file is compared with the length and CRC that the manifest holds before it is read.
+     */
+    static long[][] readTombstones(Path dir, Manifest m) throws IOException {
+        final Path tp = dir.resolve(tombName(m.tombGeneration()));
+        byte[] tomb;
+        try {
+            tomb = Files.readAllBytes(tp);
+        } catch (NoSuchFileException x) {
+            throw new CorruptException("tombstone file " + tp.getFileName() + " is missing", "MANIFEST");
+        }
+        if (tomb.length != m.tombLength() || SegmentFormat.crc32c(tomb, 0, tomb.length) != m.tombCrc()) {
+            throw new CorruptException("tombstone file " + tp.getFileName() + " does not match the manifest", "TOMBSTONES");
+        }
+        return parseTombstones(tomb, m);
+    }
+
+    private static long[][] parseTombstones(byte[] raw, Manifest m) throws IOException {
         if (raw.length < 28) throw new CorruptException("tombstone file too short", "TOMBSTONES");
         ByteBuffer b = ByteBuffer.wrap(raw).order(ByteOrder.LITTLE_ENDIAN);
         for (int i = 0; i < TOMB_MAGIC.length; i++) {
@@ -374,17 +405,21 @@ public record Manifest(long generation, long epoch, long hwm, long versionCounte
         if (b.getLong(12) != m.tombGeneration() || Integer.toUnsignedLong(b.getInt(20)) != m.entries().size()) {
             throw new CorruptException("tombstone file does not belong to this manifest", "TOMBSTONES");
         }
+        final long[][] hidden = new long[m.entries().size()][];
         long pos = 24;
+        int i = 0;
         for (Entry e : m.entries()) {
             long words = (e.n() + 63) / 64;
             if (pos + 16 + 8 * words > end || b.getLong((int) pos) != e.segId() || b.getLong((int) pos + 8) != e.n()) {
                 throw new CorruptException("tombstone bitmap of segment " + e.segId() + " is missing or does not match", "TOMBSTONES");
             }
             pos += 16;
-            for (long w = 0; w < words; w++, pos += 8) {
-                if (b.getLong((int) pos) != 0L) throw new UnsupportedException("non-empty tombstones are not supported by this version");
-            }
+            final long[] bits = new long[(int) words];
+            for (int w = 0; w < bits.length; w++, pos += 8) bits[w] = b.getLong((int) pos);
+            if (hasBitAtOrAbove(bits, e.n())) throw new CorruptException("tombstone bitmap of segment " + e.segId() + " marks a row that the segment does not have", "TOMBSTONES");
+            hidden[i++] = bits;
         }
         if (pos != end) throw new CorruptException("tombstone file has trailing bytes", "TOMBSTONES");
+        return hidden;
     }
 }

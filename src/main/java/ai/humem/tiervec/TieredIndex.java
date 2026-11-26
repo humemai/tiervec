@@ -8,6 +8,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -85,9 +86,10 @@ import java.util.function.Supplier;
  * for the whole batch; searches take no lock (each does one atomic add and one atomic subtract on the reader count of the view it
  * reads, and one volatile read of the batch counter before and after the scan). {@link #rebuildFrom} and {@link #sealNow} and {@link #mergeNow} take the work lock.
  *
- * <p>Persistence (first cut). A settled tier (empty tail, no hidden copies) can be written to a directory with {@link #checkpoint} and
- * read back with {@link #open}: segment files, a tombstone file and a manifest per generation, see docs/SEGMENT-FORMAT.md. The records
- * stay the truth; when {@code open} cannot read the directory, the host rebuilds from its records as above.
+ * <p>Persistence (first cut). A tier with an empty tail can be written to a directory with {@link #checkpoint} and read back with
+ * {@link #open}: segment files, a tombstone file (the rows that a delete or a replace has hidden) and a manifest per generation, see
+ * docs/SEGMENT-FORMAT.md. The records stay the truth; when {@code open} cannot read the directory, the host rebuilds from its records
+ * as above.
  *
  * <p>Epoch and replay (docs/ID-EPOCH-AND-REPLAY.md). The host names its numbering of ids with an epoch. A rebuild with an epoch
  * ({@link #rebuildFrom(Supplier, long)}) keeps the writes that arrive during the build and applies them after the swap, skipping adds at or below the
@@ -1352,16 +1354,17 @@ public final class TieredIndex implements VecIndex {
         for (long id : c.deletes()) deleteLocked(id);
     }
 
-    // ---- persistence (first cut: a settled tier, segments only) ----
+    // ---- persistence (first cut: segments and their hidden rows, no tail) ----
 
     /**
-     * Writes the settled tier into a directory as a new generation: one file per segment (a segment that an earlier checkpoint or open
-     * already put in this directory is not written again), a tombstone file and a manifest, in the publish order of {@link Manifest#publish}.
-     * A process kill at any point leaves the previous generation or this one, never a mixture. Files that the new generation no longer
-     * names are deleted afterwards.
+     * Writes the segments of the tier into a directory as a new generation: one file per segment (a segment that an earlier checkpoint or open
+     * already put in this directory is not written again), a tombstone file that marks the rows that a delete or a replace has hidden, and a
+     * manifest, in the publish order of {@link Manifest#publish}. A process kill at any point leaves the previous generation or this one, never
+     * a mixture. Files that the new generation no longer names are deleted afterwards. Hidden rows stay in their segment files until a merge
+     * rewrites the segment.
      *
-     * <p>This first cut persists segments only, so it refuses a tier that holds anything else, with an {@link IllegalStateException}: a
-     * non-empty tail (call {@link #sealNow} first), an entry in the floor map, or a segment with hidden copies. It also refuses a directory
+     * <p>This first cut does not persist the tail, so it refuses a tier with a non-empty tail with an {@link IllegalStateException} (call
+     * {@link #sealNow} first). It also refuses a directory
      * that holds files of a newer format, with a {@link SegmentFormat.UnsupportedException}, and changes nothing there. Writers and the seal and
      * merge worker wait while it runs. One process owns a directory at a time; nothing here locks it. The manifest records the epoch of the tier and, inside an epoch, the largest id that the segments hold.
      */
@@ -1379,12 +1382,7 @@ public final class TieredIndex implements VecIndex {
                 throw new IllegalStateException("checkpoint needs an empty tail: call sealNow() first (this version persists segments only)");
             }
             if (floorDue) settleFloor(); // a merge that overlapped searches may have left entries that no search needs any more
-            if (!floor.isEmpty() && held.isEmpty()) { // with a held view, entries may serve only that view: the segments of this view are checked below
-                throw new IllegalStateException("checkpoint needs an empty floor map, " + floor.size() + " ids have a replaced or deleted copy in a segment (this version persists no tombstones)");
-            }
-            for (Segment s : v.segs) {
-                if (s.dead != 0) throw new IllegalStateException("checkpoint needs segments without hidden copies (this version persists no tombstones)");
-            }
+            long[][] hidden = hiddenRows(v.segs);
             if (!Manifest.hasManifest(dir)) SegmentFormat.createDirectoriesDurably(dir); // a first generation is not lost with its directory
             Manifest cur = dir.equals(persistedDir) ? persistedManifest : null;
             if (cur == null) {
@@ -1421,7 +1419,7 @@ public final class TieredIndex implements VecIndex {
             Manifest.Fingerprint fp = new Manifest.Fingerprint(dim, metric, gp.M(), gp.efConstruction(), gp.sq8());
             long hw = epoch == Manifest.NONE ? Manifest.NONE : highWater(v.segs); // the high-water id means something only inside an epoch
             Manifest m = new Manifest(gen, epoch, hw, counter, nextSeg, fp, entries, 0L, 0L, 0);
-            Manifest done = Manifest.publish(dir, m, hook);
+            Manifest done = Manifest.publish(dir, m, hidden, hook);
             for (int i = 0; i < v.segs.length; i++) v.segs[i].fileId = fileIds[i];
             persistedDir = dir;
             persistedManifest = done;
@@ -1434,8 +1432,9 @@ public final class TieredIndex implements VecIndex {
 
     /**
      * Opens the tier that {@link #checkpoint} wrote. Takes the newest manifest that validates, checks its fingerprint against the
-     * configuration, reads every segment with every section checksummed, deletes files that the manifest does not name, and restores the
-     * version counter. The dimension and the metric come from the manifest. Any failure throws: {@link SegmentFormat.CorruptException}
+     * configuration, reads every segment with every section checksummed and the tombstone file, deletes files that the manifest does not name,
+     * and restores the version counter and the floor map, so that the rows that were hidden at the checkpoint stay hidden. The dimension and the
+     * metric come from the manifest. Any failure throws: {@link SegmentFormat.CorruptException}
      * for damage, {@link SegmentFormat.UnsupportedException} for a newer format, {@link SegmentFormat.MismatchException} when the files
      * belong to another index definition, {@link NoSuchFileException} when the directory has no manifest. A caller that holds the
      * records falls back to {@link #rebuildFrom}, or uses the overload with a rebuild source that does it. A null config means the defaults.
@@ -1484,7 +1483,8 @@ public final class TieredIndex implements VecIndex {
      * Otherwise the segments are read and then: (1) every held id above {@code host.recoveredMax()} is dropped (the host forgot the commit that wrote it, and
      * may mint the id again), and when any row was dropped the segments are rebuilt without it and a new generation with the lowered high-water id is
      * published before this method returns, so that a dropped row never comes back in a later generation (if that fails, the tier goes cold);
-     * (2) every other held id for which {@code host.isLive} says no is hidden (in memory: the files are not rewritten, and a later open asks again);
+     * (2) every other held id for which {@code host.isLive} says no is hidden (in memory: the files are not rewritten by this call; an open of
+     * the same generation asks again, and the next {@link #checkpoint} records the row as hidden);
      * (3) every live record of the host above the high-water id of the segments is added to the tail, in increasing id order, in batches. The tier is
      * ready when the call returns.
      */
@@ -1503,7 +1503,7 @@ public final class TieredIndex implements VecIndex {
             } else {
                 TieredIndex t = restore(dir, m, dim, metric, c);
                 try {
-                    t.reconcile(dir, host);
+                    t.reconcile(dir, host, m.hwm());
                     return t;
                 } catch (IOException e) {
                     t.close();
@@ -1543,16 +1543,16 @@ public final class TieredIndex implements VecIndex {
     }
 
     /** steps 5 to 7 of the replay protocol on a tier that {@link #restore} just made and that no other thread holds: see {@link #open(Path, int, Metric, Config, RecordSource)} */
-    private void reconcile(Path dir, RecordSource host) throws IOException {
+    private void reconcile(Path dir, RecordSource host, long persistedHighWater) throws IOException {
         final long recovered = host.recoveredMax();
         boolean dropped = false;
         for (Segment s : view.segs) {
             for (int i = 0; i < s.n; i++) {
                 long id = s.ids[i];
-                if (id > recovered) {
+                if (id > recovered) { // a hidden row counts too: it must not stay in a segment under an id that the host may mint again
                     delete(id);
                     dropped = true;
-                } else if (!host.isLive(id)) {
+                } else if (!isHidden(s, i) && !host.isLive(id)) {
                     delete(id);
                 }
             }
@@ -1562,7 +1562,9 @@ public final class TieredIndex implements VecIndex {
             checkpoint(dir); // the drop is durable before the index is ready; the high-water id of the new generation is the largest id that is left
         }
         List<IdVector> chunk = new ArrayList<>();
-        for (IdVector iv : host.liveAbove(highWater(view.segs))) {
+        // the high-water id of the manifest, not of the segments in memory: the worker may already have compacted hidden rows away
+        final long above = dropped ? highWater(view.segs) : persistedHighWater;
+        for (IdVector iv : host.liveAbove(above)) {
             chunk.add(iv);
             if (chunk.size() == 1024) {
                 apply(new Batch(chunk, List.of()));
@@ -1580,7 +1582,10 @@ public final class TieredIndex implements VecIndex {
                     + gp.M() + " efConstruction " + gp.efConstruction() + " sq8 " + gp.sq8());
         }
         List<Segment> segs = new ArrayList<>();
+        long[][] hidden = Manifest.readTombstones(dir, m);
+        Map<Long, Long> floorOf = new HashMap<>();
         long total = 0;
+        long hiddenTotal = 0;
         long maxVer = 0;
         for (Manifest.Entry e : m.entries()) {
             SegmentReader.Loaded l = SegmentReader.readFull(dir.resolve(Manifest.segName(e.segId())), true);
@@ -1591,17 +1596,27 @@ public final class TieredIndex implements VecIndex {
             }
             Segment s = new Segment(l.graph(), l.vers());
             s.fileId = e.segId();
+            long[] bits = hidden[segs.size()];
+            for (int row = 0; row < s.n; row++) {
+                if ((bits[row >>> 6] & (1L << row)) != 0L) {
+                    floorOf.merge(s.g.ids[row], l.vers()[row] + 1, Math::max); // the smallest floor that hides every marked copy of the id
+                    s.dead = s.dead + 1;
+                }
+            }
+            hiddenTotal += s.dead;
             segs.add(s);
             total += s.n;
             maxVer = Math.max(maxVer, si.verMax());
         }
         if (maxVer > m.versionCounter()) throw new SegmentFormat.CorruptException("a segment holds version " + maxVer + " above the manifest's counter " + m.versionCounter(), "MANIFEST");
-        int live = Math.toIntExact(total);
+        checkHidden(segs, hidden, floorOf);
+        int live = Math.toIntExact(total - hiddenTotal);
         Manifest.gc(dir, m); // orphans: files of a crashed publish, older generations
         TieredIndex t = new TieredIndex(dim, metric, cfg);
         t.work.lock();
         t.mu.lock();
         try {
+            t.floor.putAll(floorOf); // before the view: a segment with hidden copies is searched through the floor map
             t.view = new View(segs.toArray(new Segment[0]), null, t.view.active);
             t.counter = m.versionCounter();
             t.epoch = m.epoch();
@@ -1613,6 +1628,46 @@ public final class TieredIndex implements VecIndex {
             t.work.unlock();
         }
         return t;
+    }
+
+    /** under mu: for each segment the bitmap of its hidden rows (a row whose version is below the floor of its id), in the layout of a tombstone file */
+    private long[][] hiddenRows(Segment[] segs) {
+        long[][] bits = new long[segs.length][];
+        for (int i = 0; i < segs.length; i++) bits[i] = new long[(segs[i].n + 63) >>> 6];
+        for (Map.Entry<Long, Long> e : floor.entrySet()) {
+            for (int i = 0; i < segs.length; i++) {
+                int ix = segs[i].indexOf(e.getKey());
+                if (ix >= 0 && segs[i].vers[ix] < e.getValue()) {
+                    int row = segs[i].g.sortedRows[ix];
+                    bits[i][row >>> 6] |= 1L << row;
+                }
+            }
+        }
+        return bits;
+    }
+
+    /** whether the copy at position {@code ix} of the id order of a segment is hidden by the floor map */
+    private boolean isHidden(Segment s, int ix) {
+        Long f = floor.get(s.ids[ix]);
+        return f != null && s.vers[ix] < f;
+    }
+
+    /**
+     * A tier hides only older copies of an id: a row that the tombstone file leaves visible is newer than every marked row of its id. A file
+     * that says otherwise was not written by a tier and is refused, because the floor map could not express it.
+     */
+    private static void checkHidden(List<Segment> segs, long[][] hidden, Map<Long, Long> floorOf) throws SegmentFormat.CorruptException {
+        for (Map.Entry<Long, Long> e : floorOf.entrySet()) {
+            for (int i = 0; i < segs.size(); i++) {
+                Segment s = segs.get(i);
+                int ix = s.indexOf(e.getKey());
+                if (ix < 0 || s.vers[ix] >= e.getValue()) continue;
+                int row = s.g.sortedRows[ix];
+                if ((hidden[i][row >>> 6] & (1L << row)) == 0L) {
+                    throw new SegmentFormat.CorruptException("the tombstone file hides a newer copy of id " + e.getKey() + " and leaves an older one visible", "TOMBSTONES");
+                }
+            }
+        }
     }
 
     // ---- reports ----

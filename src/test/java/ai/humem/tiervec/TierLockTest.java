@@ -157,7 +157,9 @@ class TierLockTest {
             BufferedReader said = new BufferedReader(new InputStreamReader(p.getInputStream(), StandardCharsets.UTF_8));
             String line = CompletableFuture.supplyAsync(() -> {
                 try {
-                    return said.readLine();
+                    String l = said.readLine(); // the child's JVM may print warnings first
+                    while (l != null && !l.startsWith(READY)) l = said.readLine();
+                    return l;
                 } catch (IOException e) {
                     throw new IllegalStateException(e);
                 }

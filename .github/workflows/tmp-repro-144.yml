@@ -1,0 +1,36 @@
+# Temporary, on the branch of issue #144 only, and removed before the merge: runs MergeInsertTest in rounds until it fails or hangs, so that
+# the thread dump of a hang can be read.
+name: Temporary repro 144
+
+on:
+  push:
+    branches:
+      - merge-insert-hang-144
+
+permissions:
+  contents: read
+
+jobs:
+  repro:
+    name: MergeInsertTest rounds (JDK ${{ matrix.java }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        java: ["21", "25"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.java }}
+          cache: maven
+      - name: Rounds
+        run: |
+          for round in $(seq 1 18); do
+            echo "ROUND $round"
+            mvn -B -ntp test -Dtest=MergeInsertTest -Dsurefire.failIfNoSpecifiedTests=false -Dtest.scalar.skip=true || exit 1
+          done

@@ -24,7 +24,7 @@ Every row says what the repository itself shows, and links the evidence. "Not me
 
 | Question | Where it stands | Evidence |
 |---|---|---|
-| Does it build and pass its tests? | Yes, on Linux x86-64 (JDK 21 and 25, fast and slow tests), Linux arm64, macOS arm64 and Windows x64 (fast tests only on these three). Native image smoke jobs run on the same four platforms. | [Platform support](#platform-support), [docs/STATUS.md](docs/STATUS.md#what-exists) |
+| Does it build and pass its tests? | Yes, on Linux x86-64 (JDK 21 and 25, fast and slow tests), Linux arm64, macOS arm64 and Windows x64 (fast tests on these three, and on Windows the two slow crash tests too). Native image smoke jobs run on the same four platforms. | [Platform support](#platform-support), [docs/STATUS.md](docs/STATUS.md#what-exists) |
 | Sizes the tests use | The tests run on small collections. The long id-reuse test (`RidReuseBigLongTest`) and the long IVF program use 20,000 vectors, and the threaded graph program stays below 67,000. A self-search probe on the graph index ran at 100,000 to 200,000 vectors. | [docs/STATUS.md](docs/STATUS.md#graph-self-search-recall) |
 | Speed and recall at scale | Not measured yet. No benchmark numbers are published in this repository, and nothing here is proven at 1,000,000 vectors or at 10,000,000. A harness for these measurements exists, and CI runs it at 10,000 vectors as a smoke test. | [docs/BENCHMARKS.md](docs/BENCHMARKS.md), [docs/STATUS.md](docs/STATUS.md) |
 | Concurrent readers and writers | Tested at small sizes: threaded programs of 5 to 60 seconds, batch stress tests, and tests that hold a search inside a merge or a seal. Concurrent writers at scale: not proven. | [docs/STATUS.md](docs/STATUS.md#record-id-reuse-and-tombstones) |
@@ -64,7 +64,7 @@ The library runs in a GraalVM native image. The CI job `native image smoke` buil
 
 ## Requirements
 
-- JDK 21 or newer. CI builds and tests with Temurin 21 and 25 on x86-64 Linux, and runs the fast tests on arm64 Linux (JDK 21 and 25) and arm64 macOS (JDK 21). The job `fast tests (Windows x64, JDK 21)` runs the fast tests on Windows x64 (not the slow tests).
+- JDK 21 or newer. CI builds and tests with Temurin 21 and 25 on x86-64 Linux, and runs the fast tests on arm64 Linux (JDK 21 and 25) and arm64 macOS (JDK 21). The job `fast tests (Windows x64, JDK 21)` runs the fast tests on Windows x64, and `slow crash tests (Windows x64, JDK 21)` the two slow crash tests. What a checkpoint guarantees differs on Windows: see [the table in SEGMENT-FORMAT.md](docs/SEGMENT-FORMAT.md#guarantees-per-platform).
 - Maven 3.9 or newer.
 - The Vector API is an incubator module in these JDKs. Compile with `--add-modules jdk.incubator.vector`, and run with it to get the Vector API kernels; the `pom.xml` sets it for the compiler and for the test JVMs. At run time the module is optional: every kernel (flat, IVF, and graph) falls back to its scalar twin when the module is missing, or when `-Dai.humem.tiervec.scalar=true` is set.
 - On a JVM with the Vector API, x86-64 vectorizes the fp32 `dot` and `l2sq`, the int8 dot, the SQ8 dots, and `block16`. On aarch64 (NEON, 128-bit float lanes) the fp32 `dot` and `l2sq` use the JVM kernels and the int8 dot, the SQ8 dots, and `block16` use the 128-bit forms of `NKernels`. `hamming` is scalar everywhere. A JVM with 128-bit lanes that is not aarch64 runs those four as scalar code. AVX-512 and SVE are not used ([#52](https://github.com/humemai/tiervec/issues/52)).
@@ -85,6 +85,7 @@ There are three tiers. For tier 1, each row names the CI job that proves it. A j
 | Linux arm64, Temurin 21 and 25 | fast tests | `fast tests (arm64 Linux, JDK 21)`, `fast tests (arm64 Linux, JDK 25)` | no |
 | macOS arm64, Temurin 21 | fast tests | `fast tests (arm64 macOS, JDK 21)` | no |
 | Windows x64, Temurin 21 | fast tests | `fast tests (Windows x64, JDK 21)` | no |
+| Windows x64, Temurin 21 | slow crash tests (a process halted or killed during a checkpoint) | `slow crash tests (Windows x64, JDK 21)` | no |
 | Linux x86-64, GraalVM Community 21.0.2 | native image smoke, scalar kernels | `native image smoke` | no |
 | Linux arm64, GraalVM Community 21.0.2 | native image smoke, scalar kernels | `native image smoke (arm64 Linux)` | no |
 | macOS arm64, GraalVM Community 21.0.2 | native image smoke, scalar kernels | `native image smoke (macOS arm64)` | no |
@@ -93,7 +94,7 @@ There are three tiers. For tier 1, each row names the CI job that proves it. A j
 | macOS arm64, GraalVM Community 25.0.2 | native image smoke, Vector API kernels | `native image smoke (vector, macOS arm64)` | no |
 | Windows x64, GraalVM Community 25.0.2 | native image smoke, Vector API kernels | `native image smoke (vector, Windows x64)` | no |
 
-The slow tests run on Linux x86-64 only. There is no scalar-kernel native image job on Windows. The native image jobs run only when `src/main`, `src/smoke` or their workflow file change.
+The full slow tests run on Linux x86-64 only; Windows x64 runs the two slow crash tests. There is no scalar-kernel native image job on Windows. The native image jobs run only when `src/main`, `src/smoke` or their workflow file change.
 
 **Tier 2: measured.** None yet. No benchmark numbers are published in this repository. The harness is described in [docs/BENCHMARKS.md](docs/BENCHMARKS.md); a row moves here when a result file with its hardware, JDK and commit is committed under `results/`. The `SPEED` lines that the native image jobs print are informational, and the one measurement in the repository (the graph self-search recall in [docs/STATUS.md](docs/STATUS.md#graph-self-search-recall)) does not record its hardware. The shared GitHub runners are not a benchmark machine: a timing from them is a ratio between two things measured in the same run, not an absolute speed. A row moves here when its numbers and its hardware are published.
 

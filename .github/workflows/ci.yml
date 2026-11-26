@@ -213,6 +213,38 @@ jobs:
           echo "jvector without the jars exit code: $code"
           test "$code" -eq 2
           grep -q 'needs the JVector arm and the JVector jars' target/bench/no-jvector.log
+      # issue #16: many merges of one tier in a row, in both merge modes, on the same rows (MergeGenerations)
+      - name: Successive merges in both merge modes
+        run: |
+          run() { timeout 300 java -Xmx2g --add-modules jdk.incubator.vector -cp target/bench/classes "$@"; }
+          merges() { run -Xlog:gc:file="target/bench/gen-$1.gc.log":uptimemillis,level,tags ai.humem.tiervec.MergeGenerations --merge-mode "$1" \
+            --data target/bench/smoke-data --base 3000 --add-pct 10 --delete-pct 10 --generations 3 --queries 100 --reps 2 --min-recall 0.85 \
+            --host-label github-runner --out "target/bench/gen-$1.txt"; }
+          for mode in rebuild insert; do
+            merges "$mode"
+            cat "target/bench/gen-$mode.txt"
+            grep -E 'Pause' "target/bench/gen-$mode.gc.log" | tail -n 40
+            grep -q '^GEN-SUMMARY status=OK failures=0' "target/bench/gen-$mode.txt"
+            grep -q '^TRUTH-CHECK mismatchedQueries=0 ' "target/bench/gen-$mode.txt"
+            test "$(grep -c '^GEN g=' "target/bench/gen-$mode.txt")" -eq 3
+            grep -q 'Pause Full (System.gc())' "target/bench/gen-$mode.gc.log"
+          done
+          # each generation deletes 300 of 3,000 rows and adds 300: a rebuild puts every live row into a graph, an insert merge only the added ones
+          test "$(grep -c '^GEN g=.* live=3000 .* built=3000 ' target/bench/gen-rebuild.txt)" -eq 3
+          test "$(grep -c '^GEN g=.* live=3000 .* built=300 ' target/bench/gen-insert.txt)" -eq 3
+          # both modes saw the same rows
+          test "$(grep -h '^DATA ' target/bench/gen-rebuild.txt target/bench/gen-insert.txt | sed 's/ loadSeconds=.*//' | sort -u | wc -l)" -eq 1
+          # a floor that cannot be met fails the run, and a wrong option is refused
+          code=0
+          run ai.humem.tiervec.MergeGenerations --data target/bench/smoke-data --base 3000 --generations 1 --queries 20 --reps 1 --min-recall 1.5 \
+            > target/bench/gen-control.log || code=$?
+          echo "control exit code: $code"
+          test "$code" -eq 1
+          grep -q '^GEN-FAILURE .*below the floor' target/bench/gen-control.log
+          code=0
+          run ai.humem.tiervec.MergeGenerations --data target/bench/smoke-data --merge-mode other > target/bench/gen-wrong.log 2>&1 || code=$?
+          echo "wrong --merge-mode exit code: $code"
+          test "$code" -eq 2
       - name: Result file
         if: always()
         run: |

@@ -22,5 +22,7 @@ public enum Capability {
     /** a rebuild from a snapshot of the records while writes go on ({@link TieredIndex#rebuildFrom(java.util.function.Supplier, long)}) */
     SNAPSHOT_REBUILD,
     /** the host gives the threads, the build permits and the memory budget ({@link HostEnv}) */
-    HOST_ENVIRONMENT
+    HOST_ENVIRONMENT,
+    /** a filter that says how many ids it allows ({@link SizedIdFilter}) is scanned exactly, without a graph walk, when it allows few */
+    SELECTIVE_PLAN
 }

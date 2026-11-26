@@ -6,6 +6,7 @@ All notable changes to tiervec are in this file. The layout follows [Keep a Chan
 
 ### Added
 
+- `SizedIdFilter`: a `LongPredicate` that says how many ids it allows. When the count is at most `ef`, `TieredIndex`, `GraphIndex` and `SealedGraph` scan the allowed ids exactly instead of walking the graph; a wrong count never changes which ids may be returned. Also `liveCount()` and `Capability.SELECTIVE_PLAN`. The threshold is not measured ([issue #12](https://github.com/humemai/tiervec/issues/12)).
 - `HostEnv`: a tier that runs on the host's executor, creates no thread of its own, asks a permit before every seal, merge and rebuild, and reads a memory budget; the peak estimate is not measured ([issue #13](https://github.com/humemai/tiervec/issues/13)).
 - The configuration as text: `Config.toMap`, `Config.fromMap` (refuses an unknown key, for the creation of an index), `Config.fromStoredMap` (reports and ignores one, so a downgrade opens), and `Config.fingerprint` over the data-affecting settings. `TieredIndex.reconfigure` changes the search-time knobs `graph.efSearch` and `splitBeam` of an open index ([issue #18](https://github.com/humemai/tiervec/issues/18)).
 - `TieredIndex.contractVersion` and `capabilities` (`ContractVersion`, `Capability`), `metrics` and `bindMetrics` (`MetricSink`), `health` (`TieredIndex.Health`), and the exception base `TiervecException` with `CorruptStateException`, `ClosedException`, and `BuildRefusedException`; `SearchCancelledException` extends the base now ([issue #18](https://github.com/humemai/tiervec/issues/18)).

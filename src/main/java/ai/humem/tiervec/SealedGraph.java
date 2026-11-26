@@ -123,11 +123,8 @@ public final class SealedGraph implements VecIndex {
     Hit[] search(float[] q, int k, LongPredicate allow, int ef, double scanBelow, Poll poll) {
         FilterPlan.check(scanBelow);
         if (k <= 0 || n == 0) return new Hit[0];
-        if (q.length != dim) throw new IllegalArgumentException("dim");
-        Sc s = tl.get(); ef = Math.max(ef, k);
-        float[] qq = q.clone();
-        if (mode == GraphIndex.COS) { double nn = 0; for (float x : qq) nn += (double) x * x; if (nn > 0) { float inv = (float) (1 / Math.sqrt(nn)); for (int i = 0; i < dim; i++) qq[i] *= inv; } }
-        s.q = qq; s.sumq = Kern.sum(qq, dim); s.qq = Kern.dot(qq, 0, qq, 0, dim);
+        Sc s = prepare(q); ef = Math.max(ef, k);
+        if (FilterPlan.smallByHint(allow, ef)) return scanExact(s, k, allow, poll);
         boolean q8 = codes != null && params.sq8();
         if (poll != null) poll.before(1);
         int cur = entryRow; float curD = dist(s, cur, q8);
@@ -153,7 +150,23 @@ public final class SealedGraph implements VecIndex {
         return collect(s, k, q8, poll);
     }
 
-    private void beam(Sc s, int entryNode, float entryDist, int ef, LongPredicate allow, boolean q8, int budget, Poll poll) {
+    /** the exact top {@code k} of the live rows that pass {@code allow} (not null), without a walk */
+    Hit[] scan(float[] q, int k, LongPredicate allow, Poll poll) {
+        if (k <= 0 || n == 0) return new Hit[0];
+        return scanExact(prepare(q), k, allow, poll);
+    }
+
+    /** the scratch state of this thread with the query in it, normalized for COSINE */
+    private Sc prepare(float[] q) {
+        if (q.length != dim) throw new IllegalArgumentException("dim");
+        Sc s = tl.get();
+        float[] qq = q.clone();
+        if (mode == GraphIndex.COS) { double nn = 0; for (float x : qq) nn += (double) x * x; if (nn > 0) { float inv = (float) (1 / Math.sqrt(nn)); for (int i = 0; i < dim; i++) qq[i] *= inv; } }
+        s.q = qq; s.sumq = Kern.sum(qq, dim); s.qq = Kern.dot(qq, 0, qq, 0, dim);
+        return s;
+    }
+
+    private void beam(Sc s,int entryNode, float entryDist, int ef, LongPredicate allow, boolean q8, int budget, Poll poll) {
         Heap cand = s.cand, res = s.res; cand.clear(); res.clear(); s.exhausted = false; int visited = 0;
         s.stamp[entryNode] = s.gen;
         cand.push(entryDist, entryNode);

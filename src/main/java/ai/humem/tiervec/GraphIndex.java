@@ -492,6 +492,7 @@ public final class GraphIndex implements VecIndex {
             Entry e = entry;
             if (e == null) return new Hit[0];
             ef = Math.max(ef, k);
+            if (FilterPlan.smallByHint(allow, ef)) return scanExact(s, k, allow);
             boolean q8 = p.sq8();
             int cur = e.node;
             float curD = distC(s, chunk(cur), cur & MASK, q8);

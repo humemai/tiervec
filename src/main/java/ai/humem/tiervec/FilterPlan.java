@@ -22,6 +22,16 @@ final class FilterPlan {
     }
 
     /**
+     * True when the filter says that it allows at most {@code ef} ids ({@link SizedIdFilter}): the caller scans exactly and does not walk. A
+     * count of 0 is true as well, so that a wrong count never changes which ids a search may return.
+     */
+    static boolean smallByHint(LongPredicate allow, int ef) {
+        if (!(allow instanceof SizedIdFilter sized)) return false;
+        long count = sized.allowedCount();
+        return count >= 0 && count <= ef;
+    }
+
+    /**
      * True when the sampled live slots pass the filter at a share of at most {@code below}: the caller scans exactly.
      * The slots are spread over [0, slots) with a golden-ratio sequence, so the sample is the same for every query and does not line up
      * with a regular pattern of ids. When no sampled slot is live the answer is false (the walk handles an empty index).

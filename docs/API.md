@@ -15,6 +15,7 @@ The supported surface is these classes, their public members as listed here, and
 | `SearchContext` | What a host gives a search so that it can stop it: a deadline, a cancel flag, or both | All |
 | `SearchCancelledException` | What a search throws when its context says stop | All |
 | `Metric` | `COSINE`, `DOT`, `L2` | All |
+| `DirectoryLockedException` | What `TieredIndex.open` and `checkpoint` throw when another process holds the index directory | All |
 | `TieredIndex` | The index a host database uses: exact tail, sealed segments, merges, batches, checkpoint and reopen | The constructors, `add`, `delete`, `search` (all overloads), `apply`, `awaitCapacity`, `filterScanBelow`, `sealNow`, `mergeNow`, `awaitIdle`, `rebuildFrom` (all overloads), `epoch`, `checkpoint`, `open` (all overloads), `openFallbackCause`, `config`, `stats`, `segmentSizes`, `lastError`, `size`, `dim`, `metric`, `bytesHeld`, `close` |
 | `TieredIndex.Config`, `TieredIndex.Stats`, `TieredIndex.Batch`, `TieredIndex.IdVector`, `TieredIndex.Snapshot`, `TieredIndex.SearchResult`, `TieredIndex.Freshness` | The records and the enum of the tier | All |
 | `RecordSource` | What a host offers so that `TieredIndex.open` can reconcile persisted state with the host's records | All |

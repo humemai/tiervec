@@ -113,7 +113,9 @@ class TierCorruptionTest {
 
     private static void copy(Path from, Path to) throws IOException {
         try (Stream<Path> s = Files.list(from)) {
-            for (Path p : (Iterable<Path>) s::iterator) Files.copy(p, to.resolve(p.getFileName().toString()));
+            for (Path p : (Iterable<Path>) s::iterator) {
+                if (!p.getFileName().toString().equals(DirectoryLock.FILE)) Files.copy(p, to.resolve(p.getFileName().toString()));
+            }
         }
     }
 
@@ -128,10 +130,13 @@ class TierCorruptionTest {
         }
     }
 
+    /** the files of a directory, without the lock file (it holds nothing, and Windows does not let a locked file be read) */
     private static Map<String, byte[]> snapshot(Path d) throws IOException {
         Map<String, byte[]> m = new TreeMap<>();
         try (Stream<Path> s = Files.list(d)) {
-            for (Path p : (Iterable<Path>) s::iterator) m.put(p.getFileName().toString(), Files.readAllBytes(p));
+            for (Path p : (Iterable<Path>) s::iterator) {
+                if (!p.getFileName().toString().equals(DirectoryLock.FILE)) m.put(p.getFileName().toString(), Files.readAllBytes(p));
+            }
         }
         return m;
     }

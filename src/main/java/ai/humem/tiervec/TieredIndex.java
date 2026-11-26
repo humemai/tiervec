@@ -372,6 +372,7 @@ public final class TieredIndex implements VecIndex {
     private volatile int activity; // 0 idle, 1 sealing, 2 merging
     private volatile Throwable lastError;
     private Path persistedDir;           // the directory of the last checkpoint or open, guarded by mu
+    private DirectoryLock dirLock;       // the claim on the directory that this tier uses, null before it uses one and after close; guarded by mu
     private Manifest persistedManifest;  // the generation that directory holds, guarded by mu
     private volatile Throwable fallbackCause; // why open fell back to a rebuild, null when the segments were read from files
     /** the host's id epoch: set by a rebuild with an epoch, by open with a record source, and read back from a manifest; {@link Manifest#NONE} when none was ever given */
@@ -1366,7 +1367,11 @@ public final class TieredIndex implements VecIndex {
      * <p>This first cut does not persist the tail, so it refuses a tier with a non-empty tail with an {@link IllegalStateException} (call
      * {@link #sealNow} first). It also refuses a directory
      * that holds files of a newer format, with a {@link SegmentFormat.UnsupportedException}, and changes nothing there. Writers and the seal and
-     * merge worker wait while it runs. One process owns a directory at a time; nothing here locks it. The manifest records the epoch of the tier and, inside an epoch, the largest id that the segments hold.
+     * merge worker wait while it runs. The manifest records the epoch of the tier and, inside an epoch, the largest id that the segments hold.
+     *
+     * <p>One process owns a directory at a time. The call locks the file {@code LOCK} in it and throws {@link DirectoryLockedException}, having
+     * changed nothing, when another process holds that lock. The tier keeps the lock until {@link #close}, or until a checkpoint into another
+     * directory has succeeded; the tiers of one process share it.
      */
     public void checkpoint(Path dir) throws IOException {
         checkpoint(dir, FaultHook.NONE);
@@ -1384,6 +1389,21 @@ public final class TieredIndex implements VecIndex {
             if (floorDue) settleFloor(); // a merge that overlapped searches may have left entries that no search needs any more
             long[][] hidden = hiddenRows(v.segs);
             if (!Manifest.hasManifest(dir)) SegmentFormat.createDirectoriesDurably(dir); // a first generation is not lost with its directory
+            publishGeneration(dir, v, hidden, hook);
+        } finally {
+            mu.unlock();
+            work.unlock();
+        }
+    }
+
+    /**
+     * under mu and the work lock: the part of a checkpoint that reads and writes an existing directory, under the lock of that directory, which
+     * the tier keeps when the generation was published
+     */
+    private void publishGeneration(Path dir, View v, long[][] hidden, FaultHook hook) throws IOException {
+        DirectoryLock claim = DirectoryLock.acquire(dir);
+        boolean kept = false;
+        try {
             Manifest cur = dir.equals(persistedDir) ? persistedManifest : null;
             if (cur == null) {
                 try {
@@ -1424,9 +1444,25 @@ public final class TieredIndex implements VecIndex {
             persistedDir = dir;
             persistedManifest = done;
             Manifest.gc(dir, done);
+            if (!closed) { // a closed tier holds no directory
+                if (dirLock != null) dirLock.close();
+                dirLock = claim;
+                kept = true;
+            }
+        } finally {
+            if (!kept) claim.close();
+        }
+    }
+
+    /** a tier takes the claim that an open made on its directory; when a checkpoint inside that open has given it one already, the spare is closed */
+    private void hold(DirectoryLock claim) {
+        if (claim == null) return;
+        mu.lock();
+        try {
+            if (dirLock == null) dirLock = claim;
+            else claim.close();
         } finally {
             mu.unlock();
-            work.unlock();
         }
     }
 
@@ -1438,12 +1474,25 @@ public final class TieredIndex implements VecIndex {
      * for damage, {@link SegmentFormat.UnsupportedException} for a newer format, {@link SegmentFormat.MismatchException} when the files
      * belong to another index definition, {@link NoSuchFileException} when the directory has no manifest. A caller that holds the
      * records falls back to {@link #rebuildFrom}, or uses the overload with a rebuild source that does it. A null config means the defaults.
+     *
+     * <p>The directory is locked before it is read ({@link DirectoryLockedException} when another process holds it), and the returned tier keeps
+     * the lock until {@link #close}, or until a checkpoint into another directory has succeeded. A failed open releases it. This holds for every
+     * overload of {@code open}.
      */
     public static TieredIndex open(Path dir, Config cfg) throws IOException {
         Config c = cfg != null ? cfg : Config.defaults();
-        Manifest m = Manifest.readLatest(dir);
-        if (m == null) throw new NoSuchFileException(dir.toString(), null, "no manifest in the directory");
-        return restore(dir, m, m.fingerprint().dim(), m.fingerprint().metric(), c);
+        DirectoryLock claim = DirectoryLock.acquireIfPresent(dir);
+        boolean kept = false;
+        try {
+            Manifest m = Manifest.readLatest(dir);
+            if (m == null) throw new NoSuchFileException(dir.toString(), null, "no manifest in the directory");
+            TieredIndex t = restore(dir, m, m.fingerprint().dim(), m.fingerprint().metric(), c);
+            t.hold(claim);
+            kept = true;
+            return t;
+        } finally {
+            if (!kept && claim != null) claim.close();
+        }
     }
 
     /**
@@ -1455,23 +1504,37 @@ public final class TieredIndex implements VecIndex {
      */
     public static TieredIndex open(Path dir, int dim, Metric metric, Config cfg, Supplier<? extends Iterable<IdVector>> rebuildSource) {
         Config c = cfg != null ? cfg : Config.defaults();
-        Throwable cause;
+        DirectoryLock claim = null;
+        boolean kept = false;
         try {
-            Manifest m = Manifest.readLatest(dir);
-            if (m != null) return restore(dir, m, dim, metric, c);
-            cause = new NoSuchFileException(dir.toString(), null, "no manifest in the directory");
-        } catch (IOException e) {
-            cause = e;
+            Throwable cause;
+            try {
+                claim = DirectoryLock.acquireIfPresent(dir);
+                Manifest m = Manifest.readLatest(dir);
+                if (m != null) {
+                    TieredIndex t = restore(dir, m, dim, metric, c);
+                    t.hold(claim);
+                    kept = true;
+                    return t;
+                }
+                cause = new NoSuchFileException(dir.toString(), null, "no manifest in the directory");
+            } catch (IOException e) {
+                cause = e;
+            }
+            TieredIndex t = new TieredIndex(dim, metric, c);
+            try {
+                t.rebuildFrom(rebuildSource.get());
+            } catch (RuntimeException e) {
+                t.close();
+                throw e;
+            }
+            t.fallbackCause = cause;
+            t.hold(claim);
+            kept = true;
+            return t;
+        } finally {
+            if (!kept && claim != null) claim.close();
         }
-        TieredIndex t = new TieredIndex(dim, metric, c);
-        try {
-            t.rebuildFrom(rebuildSource.get());
-        } catch (RuntimeException e) {
-            t.close();
-            throw e;
-        }
-        t.fallbackCause = cause;
-        return t;
     }
 
     /**
@@ -1492,40 +1555,51 @@ public final class TieredIndex implements VecIndex {
         Config c = cfg != null ? cfg : Config.defaults();
         final long hostEpoch = host.epoch();
         checkEpoch(hostEpoch);
-        Throwable cause;
+        DirectoryLock claim = null;
+        boolean kept = false;
         try {
-            Manifest m = Manifest.readLatest(dir);
-            if (m == null) {
-                cause = new NoSuchFileException(dir.toString(), null, "no manifest in the directory");
-            } else if (m.epoch() != hostEpoch) {
-                cause = new SegmentFormat.MismatchException("the persisted state belongs to epoch " + (m.epoch() == Manifest.NONE ? "none" : Long.toString(m.epoch()))
-                        + ", the host is at epoch " + hostEpoch);
-            } else {
-                TieredIndex t = restore(dir, m, dim, metric, c);
-                try {
-                    t.reconcile(dir, host, m.hwm());
-                    return t;
-                } catch (IOException e) {
-                    t.close();
-                    cause = e;
-                } catch (RuntimeException e) {
-                    t.close();
-                    throw e;
+            Throwable cause;
+            try {
+                claim = DirectoryLock.acquireIfPresent(dir);
+                Manifest m = Manifest.readLatest(dir);
+                if (m == null) {
+                    cause = new NoSuchFileException(dir.toString(), null, "no manifest in the directory");
+                } else if (m.epoch() != hostEpoch) {
+                    cause = new SegmentFormat.MismatchException("the persisted state belongs to epoch " + (m.epoch() == Manifest.NONE ? "none" : Long.toString(m.epoch()))
+                            + ", the host is at epoch " + hostEpoch);
+                } else {
+                    TieredIndex t = restore(dir, m, dim, metric, c);
+                    try {
+                        t.reconcile(dir, host, m.hwm());
+                        t.hold(claim);
+                        kept = true;
+                        return t;
+                    } catch (IOException e) {
+                        t.close();
+                        cause = e;
+                    } catch (RuntimeException e) {
+                        t.close();
+                        throw e;
+                    }
                 }
+            } catch (IOException e) {
+                cause = e;
             }
-        } catch (IOException e) {
-            cause = e;
+            TieredIndex t = new TieredIndex(dim, metric, c);
+            try {
+                t.rebuildFrom(host.allLive());
+                t.epoch = hostEpoch;
+            } catch (RuntimeException e) {
+                t.close();
+                throw e;
+            }
+            t.fallbackCause = cause;
+            t.hold(claim);
+            kept = true;
+            return t;
+        } finally {
+            if (!kept && claim != null) claim.close();
         }
-        TieredIndex t = new TieredIndex(dim, metric, c);
-        try {
-            t.rebuildFrom(host.allLive());
-            t.epoch = hostEpoch;
-        } catch (RuntimeException e) {
-            t.close();
-            throw e;
-        }
-        t.fallbackCause = cause;
-        return t;
     }
 
     /** why {@link #open(Path, int, Metric, Config, Supplier)} rebuilt instead of reading files, or null when the segments came from files */
@@ -1718,6 +1792,13 @@ public final class TieredIndex implements VecIndex {
             worker.join(30_000L);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+        }
+        mu.lock(); // after a checkpoint that is running: it publishes under the lock of the directory
+        try {
+            if (dirLock != null) dirLock.close();
+            dirLock = null;
+        } finally {
+            mu.unlock();
         }
     }
 }

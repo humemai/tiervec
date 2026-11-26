@@ -1053,7 +1053,7 @@ public final class Bench {
             double seconds = (System.nanoTime() - t0) / 1e9;
             List<Path> files;
             try (Stream<Path> s = Files.list(dir)) {
-                files = s.filter(Files::isRegularFile).sorted().toList();
+                files = s.filter(Files::isRegularFile).filter(p -> !p.getFileName().toString().equals(DirectoryLock.FILE)).sorted().toList(); // the empty lock file is not part of the index
             }
             long bytes = 0;
             StringBuilder detail = new StringBuilder();

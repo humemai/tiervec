@@ -412,9 +412,11 @@ class TierCorruptionTest {
         clear();
         copy(single, dir);
         forgeTombstones(t -> t[24 + 16] |= 1); // the first word of the bitmap of the first segment
-        final long rows = Manifest.readLatest(dir).entries().get(0).n();
+        final List<Manifest.Entry> listed = Manifest.readLatest(dir).entries();
+        final long rows = listed.get(0).n(); // of the first segment, whose bitmap comes first
+        final long all = listed.stream().mapToLong(Manifest.Entry::n).sum();
         try (TieredIndex u = TieredIndex.open(dir, cfg())) {
-            assertEquals(rows - 1, u.size());
+            assertEquals(all - 1, u.size());
         }
         // a mark for a row that the segment does not have
         clear();

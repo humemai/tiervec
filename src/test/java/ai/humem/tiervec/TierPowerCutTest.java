@@ -103,10 +103,13 @@ class TierPowerCutTest {
         for (int i = 0; i < qs.length; i++) assertArrayEquals(want[i], u.search(qs[i], 10, null), what + ", query " + i);
     }
 
+    /** the files of a directory, without the lock file (it holds nothing, and Windows does not let a locked file be read) */
     private static Map<String, byte[]> snapshot(Path d) throws IOException {
         Map<String, byte[]> m = new TreeMap<>();
         try (Stream<Path> s = Files.list(d)) {
-            for (Path p : (Iterable<Path>) s::iterator) m.put(p.getFileName().toString(), Files.readAllBytes(p));
+            for (Path p : (Iterable<Path>) s::iterator) {
+                if (!p.getFileName().toString().equals(DirectoryLock.FILE)) m.put(p.getFileName().toString(), Files.readAllBytes(p));
+            }
         }
         return m;
     }
@@ -121,7 +124,7 @@ class TierPowerCutTest {
 
     private static Set<String> names(Path d) throws IOException {
         try (Stream<Path> s = Files.list(d)) {
-            return s.map(p -> p.getFileName().toString()).collect(Collectors.toCollection(TreeSet::new));
+            return s.map(p -> p.getFileName().toString()).filter(n -> !n.equals(DirectoryLock.FILE)).collect(Collectors.toCollection(TreeSet::new));
         }
     }
 

@@ -133,7 +133,7 @@ class TierKillLongTest {
 
     private static Set<String> names(Path d) throws IOException {
         try (Stream<Path> s = Files.list(d)) {
-            return s.map(p -> p.getFileName().toString()).collect(Collectors.toCollection(TreeSet::new));
+            return s.map(p -> p.getFileName().toString()).filter(n -> !n.equals(DirectoryLock.FILE)).collect(Collectors.toCollection(TreeSet::new));
         }
     }
 }

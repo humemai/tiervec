@@ -12,6 +12,7 @@ All notable changes to tiervec are in this file. The layout follows [Keep a Chan
 
 ### Changed
 
+- One process owns an index directory, and the library now enforces it: `checkpoint` and `open` lock the file `LOCK` in the directory, keep the lock until `close`, and throw the new `DirectoryLockedException` when another process holds it. The `open` overloads with a rebuild source throw it too and do not rebuild ([issue #27](https://github.com/humemai/tiervec/issues/27)).
 - `checkpoint` accepts a tier with deleted, replaced and re-added ids. It writes the hidden rows into the tombstone file, and `open` rebuilds the floor map from them. Before, it threw `IllegalStateException` until a merge had rewritten every segment with a hidden row. Version 0.1.x refuses a directory with a hidden row (`UnsupportedException`) and does not overwrite it. `RecordSource.isLive` is not called for an id whose copies were all hidden at the checkpoint ([issue #27](https://github.com/humemai/tiervec/issues/27)).
 
 ### Fixed

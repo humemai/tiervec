@@ -14,8 +14,15 @@ The claim the format makes: a process kill at any point of a publish leaves gene
 | `tomb-<generation>.tvd` | The tombstone bitmaps of every segment of a generation: the rows that a delete or a replace has hidden. |
 | `manifest-<generation>.tvm` | One generation: the live segments, the tombstone file, a configuration fingerprint. The generation is zero-padded to 20 digits. |
 | `*.tmp` | A file being written. Never named by a manifest. Removed at open. |
+| `LOCK` | An empty file whose operating system lock says which process owns the directory (see "One process per directory"). Never deleted. |
 
 Nothing that a manifest names is ever modified. A new state is a new manifest and, when needed, new segment files.
+
+## One process per directory
+
+`checkpoint` and every `open` take an exclusive lock on `LOCK` before they read or write anything else in the directory, and the tier keeps it until `close`, or until a `checkpoint` into another directory has succeeded. A second process gets `DirectoryLockedException`, which names the directory, and nothing there changes. This includes the `open` overloads with a rebuild source: they do not rebuild, because two owners of one directory would delete each other's files. The tiers of one process share the lock, and it is released when the last of them lets go.
+
+The lock is the operating system's, so it ends with the process, however the process ends, and there is no stale lock to remove. Do not delete the file while a process uses the directory. No lock is taken on a file system other than the default one, or in a directory that the process cannot write to. Whether the lock holds between machines on a network file system depends on that file system, and nothing here tests it. A version before this one neither takes nor checks the lock.
 
 ## Segment file
 
@@ -196,6 +203,6 @@ Any failure throws. The overload `open(dir, dim, metric, config, rebuildSource)`
 - Lazy and chunked CRC verification. Every section is verified at open.
 - The fixed-stride layer 0 layout and padded rows.
 - Formats for the flat tail and for IVF.
-- A lock file and a marker for an unclean shutdown. One process must own a directory.
+- A marker for an unclean shutdown.
 - A claim about power loss. The order of the flushes is tested on a simulated file system only.
 - Per-segment repair: any integrity failure rebuilds the whole tier.

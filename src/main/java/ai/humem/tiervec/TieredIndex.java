@@ -7,12 +7,16 @@ import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.Comparator;
+import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
+import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
@@ -20,7 +24,10 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.LockSupport;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.Consumer;
+import java.util.function.LongConsumer;
 import java.util.function.LongPredicate;
+import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 
 /**
@@ -97,8 +104,27 @@ import java.util.function.Supplier;
  * snapshot position. A checkpoint stores the epoch and the largest id that the segments hold (the high-water id) in the manifest. {@link #open(Path, int,
  * Metric, Config, RecordSource)} discards persisted state of another epoch, drops held ids above the id the host recovered (durably), hides ids that
  * the host no longer holds, and replays the host's live records above the high-water id.
+ *
+ * <p>Host contract (docs/PROVIDER-CONTRACT.md). {@link Config#toMap}, {@link Config#fromMap} and {@link Config#fingerprint} give the text form
+ * of the settings, {@link #reconfigure} changes the search-time knobs of an open index, {@link #contractVersion} and {@link #capabilities} say
+ * what exists, {@link #metrics}, {@link #bindMetrics} and {@link #health} report, and the exceptions for the state of an index extend
+ * {@link TiervecException}. After {@link #close} the calls that read or change vectors or files throw {@link ClosedException}.
  */
 public final class TieredIndex implements VecIndex {
+
+    /**
+     * How the background maintenance is doing. OK: the last seal and the last merge, if any, worked. DEGRADED: a seal or a merge has failed
+     * 3 times in a row; it is retried, {@link TieredIndex#lastError} holds the failure, and writes and searches go on (the tail grows while seals
+     * fail). FAILED: the maintenance cannot run any more, so nothing is sealed or merged until the index is rebuilt in a new object.
+     */
+    public enum Health { OK, DEGRADED, FAILED }
+
+    /**
+     * The fingerprint of an index definition, see {@link Config#fingerprint}.
+     * @param text the canonical text, {@code key=value} parts joined by {@code ;}, that names every data-affecting setting
+     * @param sha256 the SHA-256 of that text in UTF-8, 64 hex digits
+     */
+    public record Fingerprint(String text, String sha256) {}
 
     /** FRESH (default): tails included, read-your-writes. SEALED_ONLY: segments only, may lag. */
     public enum Freshness { FRESH, SEALED_ONLY }
@@ -223,6 +249,57 @@ public final class TieredIndex implements VecIndex {
         /** this configuration with another way to build a merge that takes the largest segment (see {@link MergeMode}) */
         public Config withMergeMode(MergeMode mode) {
             return new Config(tailLimit, tailAgeMs, smallLimit, maxSegments, mergeFan, deadFraction, mergeRatePerSec, hardTailFactor, tailQuant, graph, buildThreads, splitBeam, mergeTriggerRatio, mode);
+        }
+
+        /**
+         * This configuration as text, for a host that stores its index definitions as text: one entry per component and per graph parameter
+         * ({@code graph.M} and so on), all of them present, in a fixed order. The keys are listed in docs/DESIGN.md, "Tier configuration".
+         * {@link #fromMap} of the result equals this configuration. The dimension and the metric are not part of a configuration.
+         *
+         * @return an unmodifiable map
+         */
+        public Map<String, String> toMap() {
+            return ConfigMap.write(this);
+        }
+
+        /**
+         * The configuration of a map, for the moment an index is created: a key that the map does not have takes the default of this version
+         * of the library, and an unknown key or a value that cannot be used is refused.
+         *
+         * @param map keys and values as {@link #toMap} writes them; an empty map gives the defaults
+         * @return the configuration
+         * @throws IllegalArgumentException naming the key, when a key is unknown or a value cannot be used
+         */
+        public static Config fromMap(Map<String, String> map) {
+            return ConfigMap.read(map, null);
+        }
+
+        /**
+         * {@link #fromMap} for the moment a stored definition is loaded: an unknown key, which a newer version of the library may have written, is
+         * reported and ignored, so that a downgrade can open the index. A value that cannot be used is refused as {@code fromMap} refuses it.
+         *
+         * @param map the stored keys and values
+         * @param warning receives one message per ignored key, which names the key
+         * @return the configuration
+         * @throws IllegalArgumentException naming the key, when a value of a known key cannot be used
+         */
+        public static Config fromStoredMap(Map<String, String> map, Consumer<String> warning) {
+            return ConfigMap.read(map, Objects.requireNonNull(warning, "warning"));
+        }
+
+        /**
+         * The fingerprint of an index with this configuration. It covers what decides the data of the graphs and their files: the dimension, the
+         * metric, the id width, {@code graph.M}, {@code graph.efConstruction}, {@code graph.alpha}, {@code graph.sq8} and the layer 0 layout. It
+         * does not cover the search-time knobs, the tail settings (the tail is not persisted), the seal and merge policy, or {@code graph.seed}.
+         * A host stores it with its index definition and compares it before it opens the persisted state: {@link TieredIndex#open} itself checks
+         * the dimension, the metric, {@code M}, {@code efConstruction} and {@code sq8}, and the files do not record {@code alpha}.
+         *
+         * @param dim the dimension of the index
+         * @param metric the metric of the index
+         * @return the fingerprint
+         */
+        public Fingerprint fingerprint(int dim, Metric metric) {
+            return ConfigMap.fingerprint(this, dim, metric);
         }
     }
 
@@ -370,7 +447,7 @@ public final class TieredIndex implements VecIndex {
 
     private final int dim;
     private final Metric metric;
-    private final Config cfg;
+    private volatile Config cfg; // replaced only by reconfigure, under mu, and only in its search-time knobs
     private final int hardTail;
     private final ReentrantLock mu = new ReentrantLock();
     private final ReentrantLock work = new ReentrantLock();
@@ -412,6 +489,15 @@ public final class TieredIndex implements VecIndex {
     private final AtomicLong bigMerges = new AtomicLong(), bigMergedVectors = new AtomicLong(); // merges that rewrote the largest segment, and the rows they built
     private volatile long addsCount; // add() calls; incremented under mu
     private final Thread worker;
+    /** background seals and merges that failed in a row, per kind; a success of that kind resets it (see {@link Health}) */
+    private volatile int sealFailStreak, mergeFailStreak;
+    private static final int DEGRADED_AFTER = 3;
+    /** the counters of a bound {@link MetricSink}, in the order of {@link #COUNTERS}, or null */
+    private volatile LongConsumer[] sinkCounters;
+    private static final String[] COUNTERS = {"tiervec.seals", "tiervec.merges", "tiervec.failures", "tiervec.backpressureWaits",
+            "tiervec.sealedVectors", "tiervec.mergedVectors", "tiervec.bigMerges", "tiervec.bigMergedVectors"};
+    private static final int C_SEALS = 0, C_MERGES = 1, C_FAILURES = 2, C_BACKPRESSURE = 3, C_SEALED = 4, C_MERGED = 5, C_BIG = 6, C_BIG_MERGED = 7;
+    private static final ContractVersion CONTRACT = new ContractVersion(1, 0);
 
     // task log: the seal and merge intervals as System.nanoTime() stamps, so a benchmark can compare them with its own timestamps. doSeal and doMerge always run
     // under the work lock (the worker loop, sealNow, mergeNow), so there is one writer; stats() reads the slots below taskCount, which is written after the slot (volatile).
@@ -462,10 +548,127 @@ public final class TieredIndex implements VecIndex {
     @Override public Metric metric() { return metric; }
     @Override public int size() { return live.get(); }
     public Config config() { return cfg; }
+
+    /**
+     * Changes search-time knobs of this index while it runs: {@code graph.efSearch}, the beam of a search that names none, and {@code splitBeam}.
+     * They take effect for the searches that start after the call, and {@link #config} shows them. Every other key is refused: a data-affecting
+     * key describes graphs that exist already, and the settings of the tail and of the maintenance are fixed for the life of the object.
+     * Either all changes are made or none. {@link #filterScanBelow(double)} is the other knob that changes at run time.
+     *
+     * @param changes keys and values as {@link Config#toMap} writes them; a key whose value does not change is accepted
+     * @throws IllegalArgumentException naming the key, when a key is unknown, cannot change or has a value that cannot be used
+     * @throws ClosedException when the index is closed
+     */
+    public void reconfigure(Map<String, String> changes) {
+        mu.lock();
+        try {
+            checkOpen();
+            Map<String, String> now = cfg.toMap();
+            Config next = cfg;
+            for (Map.Entry<String, String> e : new TreeMap<>(changes).entrySet()) {
+                String k = e.getKey();
+                if (!now.containsKey(k)) throw new IllegalArgumentException("unknown configuration key '" + k + "'");
+                if (!now.get(k).equals(e.getValue())) next = ConfigMap.reconfigured(next, k, e.getValue());
+            }
+            cfg = next; // one write, after every change was accepted
+        } finally {
+            mu.unlock();
+        }
+    }
+
+    /** the version of the contract between a host and this library, see {@link ContractVersion} */
+    public static ContractVersion contractVersion() {
+        return CONTRACT;
+    }
+
+    /** what this library can do, an unmodifiable set; see {@link Capability} for what each means and for what the tier does not offer */
+    public static Set<Capability> capabilities() {
+        return Collections.unmodifiableSet(EnumSet.allOf(Capability.class));
+    }
+
+    /** how the background maintenance is doing, see {@link Health}; a closed index keeps the state it had apart from FAILED */
+    public Health health() {
+        if (!closed && !worker.isAlive()) return Health.FAILED;
+        return sealFailStreak >= DEGRADED_AFTER || mergeFailStreak >= DEGRADED_AFTER ? Health.DEGRADED : Health.OK;
+    }
+
+    /**
+     * The statistics as names and numbers, for a host that forwards them to its own metrics: counters since the object was made, and gauges.
+     * The names start with {@code tiervec.} and are listed in docs/DESIGN.md, "Statistics". A later version may add names. A write
+     * amplification is in thousandths, and {@code tiervec.health} is 0 for OK, 1 for DEGRADED and 2 for FAILED.
+     *
+     * @return an unmodifiable map in a fixed order
+     */
+    public Map<String, Long> metrics() {
+        Map<String, Long> m = new LinkedHashMap<>();
+        long[] counted = {seals.get(), merges.get(), failures.get(), backpressure.get(), sealedVectors.get(), mergedVectors.get(), bigMerges.get(),
+                bigMergedVectors.get()};
+        for (int i = 0; i < counted.length; i++) m.put(COUNTERS[i], counted[i]);
+        for (Map.Entry<String, LongSupplier> g : gauges().entrySet()) m.put(g.getKey(), g.getValue().getAsLong());
+        return Collections.unmodifiableMap(m);
+    }
+
+    /**
+     * Pushes the statistics to a sink: it receives every gauge once, to read when it wants, and from now on each increment of the counters
+     * (the names of {@link #metrics} that the sink is asked a counter for). Increments from before this call are not repeated. A second call
+     * replaces the sink for the counters.
+     *
+     * @param sink the receiver
+     */
+    public void bindMetrics(MetricSink sink) {
+        Objects.requireNonNull(sink, "sink");
+        LongConsumer[] c = new LongConsumer[COUNTERS.length];
+        for (int i = 0; i < c.length; i++) c[i] = Objects.requireNonNull(sink.counter(COUNTERS[i]), COUNTERS[i]);
+        for (Map.Entry<String, LongSupplier> g : gauges().entrySet()) sink.gauge(g.getKey(), g.getValue());
+        sinkCounters = c;
+    }
+
+    private Map<String, LongSupplier> gauges() {
+        Map<String, LongSupplier> g = new LinkedHashMap<>();
+        g.put("tiervec.adds", () -> addsCount);
+        g.put("tiervec.live", live::get);
+        g.put("tiervec.tailSize", this::pendingTail);
+        g.put("tiervec.segments", () -> view.segs.length);
+        g.put("tiervec.bytesHeld", this::bytesHeld);
+        g.put("tiervec.floorEntries", floor::size);
+        g.put("tiervec.sealMillis", () -> sealNanos.get() / 1_000_000L);
+        g.put("tiervec.mergeMillis", () -> mergeNanos.get() / 1_000_000L);
+        g.put("tiervec.maxSealMillis", () -> maxSealNanos.get() / 1_000_000L);
+        g.put("tiervec.maxMergeMillis", () -> maxMergeNanos.get() / 1_000_000L);
+        g.put("tiervec.mergeWriteAmpThousandths", () -> thousandths(mergedVectors.get()));
+        g.put("tiervec.totalWriteAmpThousandths", () -> thousandths(sealedVectors.get() + mergedVectors.get()));
+        g.put("tiervec.health", () -> health().ordinal());
+        return g;
+    }
+
+    private long thousandths(long rows) {
+        long a = addsCount;
+        return a > 0 ? rows * 1000L / a : 0L;
+    }
+
+    /** adds to a counter and passes the increment to the bound sink; a sink that throws does not disturb the index */
+    private void count(AtomicLong counter, int index, long n) {
+        counter.addAndGet(n);
+        LongConsumer[] c = sinkCounters;
+        if (c != null && n > 0) {
+            try {
+                c[index].accept(n);
+            } catch (RuntimeException hostMetrics) {
+                // the number is still in metrics() and stats()
+            }
+        }
+    }
+
+    private void checkOpen() {
+        if (closed) throw new ClosedException("the index is closed");
+    }
+
     /** 0 idle, 1 a seal is running, 2 a merge is running (for per-phase latency reports) */
     public int activity() { return activity; }
     public Throwable lastError() { return lastError; }
     public boolean workerAlive() { return worker.isAlive(); }
+    /** test hook: ends the maintenance worker while the tier stays open, which {@link #health} reports as FAILED */
+    void interruptWorker() { worker.interrupt(); }
     public int segmentCount() { return view.segs.length; }
     /** vectors in the tails (active plus frozen): what a SEALED_ONLY search does not see */
     public int pendingTail() {
@@ -511,6 +714,7 @@ public final class TieredIndex implements VecIndex {
         boolean wakeUp;
         mu.lock();
         try {
+            checkOpen();
             wakeUp = addLocked(id, copy);
             if (capture != null) capture.add(new Change(new long[] {id}, new float[][] {copy}, new long[0]));
         } finally {
@@ -537,6 +741,7 @@ public final class TieredIndex implements VecIndex {
     public boolean delete(long id) {
         mu.lock();
         try {
+            checkOpen();
             boolean was = deleteLocked(id);
             if (capture != null) capture.add(new Change(new long[0], new float[0][], new long[] {id}));
             return was;
@@ -590,6 +795,7 @@ public final class TieredIndex implements VecIndex {
         boolean wakeUp;
         mu.lock();
         try {
+            checkOpen();
             batchSeq = batchSeq + 1;     // odd: a batch is in progress
             VarHandle.storeStoreFence(); // the odd value is visible before the first change of the batch
             try {
@@ -621,7 +827,7 @@ public final class TieredIndex implements VecIndex {
     public boolean awaitCapacity(long deadlineNanos) {
         while (view.active.raw.size() >= hardTail) {
             if (closed || !worker.isAlive() || deadlineNanos - System.nanoTime() <= 0L) return false;
-            backpressure.incrementAndGet();
+            count(backpressure, C_BACKPRESSURE, 1);
             if (wake.availablePermits() == 0) wake.release();
             LockSupport.parkNanos(200_000L);
         }
@@ -693,6 +899,7 @@ public final class TieredIndex implements VecIndex {
     }
 
     private SearchResult searchImpl(float[] q, int k, LongPredicate allow, Freshness freshness, int efSearch, SearchContext context) {
+        checkOpen();
         if (q.length != dim) throw new IllegalArgumentException("dim " + q.length + " != " + dim);
         if (k <= 0) return new SearchResult(NONE, true, 0, 0);
         Poll poll = context == null ? null : new Poll(context);
@@ -872,8 +1079,23 @@ public final class TieredIndex implements VecIndex {
                     work.lock();
                     try {
                         if (closed) break;
-                        if (sealDue()) did = doSeal(false);
-                        else if (pickMerge(view.segs, false) != null) did = doMerge(false);
+                        if (sealDue()) {
+                            boolean ran = false;
+                            try {
+                                did = doSeal(false);
+                                ran = true;
+                            } finally {
+                                if (!ran && !closed) sealFailStreak++; // under the work lock
+                            }
+                        } else if (pickMerge(view.segs, false) != null) {
+                            boolean ran = false;
+                            try {
+                                did = doMerge(false);
+                                ran = true;
+                            } finally {
+                                if (!ran && !closed) mergeFailStreak++;
+                            }
+                        }
                     } finally {
                         work.unlock();
                     }
@@ -884,7 +1106,7 @@ public final class TieredIndex implements VecIndex {
             } catch (Throwable t) {
                 if (closed) return;
                 lastError = t;
-                failures.incrementAndGet();
+                count(failures, C_FAILURES, 1);
                 LockSupport.parkNanos(200_000_000L); // do not spin on a failing task
             }
         }
@@ -1022,8 +1244,9 @@ public final class TieredIndex implements VecIndex {
             }
             Runnable after = hookAfterPublish;
             if (after != null) after.run();
-            seals.incrementAndGet();
-            sealedVectors.addAndGet(n);
+            sealFailStreak = 0;
+            count(seals, C_SEALS, 1);
+            count(sealedVectors, C_SEALED, n);
             final long sealEnd = System.nanoTime();
             final long sealDt = sealEnd - t0;
             logTask(1, t0, sealEnd, n);
@@ -1125,9 +1348,10 @@ public final class TieredIndex implements VecIndex {
             } finally {
                 mu.unlock();
             }
-            merges.incrementAndGet();
-            mergedVectors.addAndGet(built);
-            if (intoLargest) { bigMerges.incrementAndGet(); bigMergedVectors.addAndGet(built); }
+            mergeFailStreak = 0;
+            count(merges, C_MERGES, 1);
+            count(mergedVectors, C_MERGED, built);
+            if (intoLargest) { count(bigMerges, C_BIG, 1); count(bigMergedVectors, C_BIG_MERGED, built); }
             final long mergeEnd = System.nanoTime();
             final long mergeDt = mergeEnd - t0;
             logTask(2, t0, mergeEnd, built);
@@ -1203,6 +1427,7 @@ public final class TieredIndex implements VecIndex {
                     throw new IllegalStateException(e);
                 }
             }
+            if (err[0] instanceof ClosedException c) throw c;
             if (err[0] != null) throw new IllegalStateException(err[0]);
         }
     }
@@ -1210,7 +1435,7 @@ public final class TieredIndex implements VecIndex {
     private void addRange(GraphIndex gi, long[] ids, VecSource src, int lo, int hi, int rate) {
         long t0 = System.nanoTime();
         for (int i = lo; i < hi; i++) {
-            if (closed) throw new IllegalStateException("closed");
+            if (closed) throw new ClosedException("the index was closed during a build");
             gi.add(ids[i], src.vec(i));
             if (rate > 0 && ((i - lo) & 127) == 127) {
                 long due = t0 + (long) (i - lo + 1) * 1_000_000_000L / rate;
@@ -1226,6 +1451,7 @@ public final class TieredIndex implements VecIndex {
     public void sealNow() {
         work.lock();
         try {
+            checkOpen();
             doSeal(true);
             settleFloorIfDue();
         } finally {
@@ -1237,6 +1463,7 @@ public final class TieredIndex implements VecIndex {
     public void mergeNow() {
         work.lock();
         try {
+            checkOpen();
             doMerge(true);
             settleFloorIfDue();
         } finally {
@@ -1274,6 +1501,7 @@ public final class TieredIndex implements VecIndex {
         work.lock();
         mu.lock();
         try {
+            checkOpen();
             install(buildFrom(src));
         } finally {
             mu.unlock();
@@ -1306,6 +1534,7 @@ public final class TieredIndex implements VecIndex {
         try {
             mu.lock();
             try {
+                checkOpen();
                 capture = new ArrayList<>();
             } finally {
                 mu.unlock();
@@ -1439,6 +1668,7 @@ public final class TieredIndex implements VecIndex {
         work.lock();
         mu.lock();
         try {
+            checkOpen();
             View v = view;
             if (v.frozen != null || !v.active.raw.isEmpty()) {
                 throw new IllegalStateException("checkpoint needs an empty tail: call sealNow() first (this version persists segments only)");
@@ -1527,8 +1757,8 @@ public final class TieredIndex implements VecIndex {
      * Opens the tier that {@link #checkpoint} wrote. Takes the newest manifest that validates, checks its fingerprint against the
      * configuration, reads every segment with every section checksummed and the tombstone file, deletes files that the manifest does not name,
      * and restores the version counter and the floor map, so that the rows that were hidden at the checkpoint stay hidden. The dimension and the
-     * metric come from the manifest. Any failure throws: {@link SegmentFormat.CorruptException}
-     * for damage, {@link SegmentFormat.UnsupportedException} for a newer format, {@link SegmentFormat.MismatchException} when the files
+     * metric come from the manifest. Any failure throws: {@link CorruptStateException} for damage (its cause is the
+     * {@link SegmentFormat.CorruptException}), {@link SegmentFormat.UnsupportedException} for a newer format, {@link SegmentFormat.MismatchException} when the files
      * belong to another index definition, {@link NoSuchFileException} when the directory has no manifest. A caller that holds the
      * records falls back to {@link #rebuildFrom}, or uses the overload with a rebuild source that does it. A null config means the defaults.
      *
@@ -1547,6 +1777,8 @@ public final class TieredIndex implements VecIndex {
             t.hold(claim);
             kept = true;
             return t;
+        } catch (SegmentFormat.CorruptException damaged) {
+            throw new CorruptStateException(damaged.getMessage(), damaged);
         } finally {
             if (!kept && claim != null) claim.close();
         }

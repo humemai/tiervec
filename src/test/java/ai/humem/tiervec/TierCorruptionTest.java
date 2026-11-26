@@ -155,7 +155,9 @@ class TierCorruptionTest {
             u.close();
             fail(what + ": open returned an index with " + size + " rows from a damaged directory");
             return null;
-        } catch (CorruptException | UnsupportedException e) {
+        } catch (CorruptStateException e) { // damage is unchecked at open, with the exception that names it as its cause
+            return assertInstanceOf(CorruptException.class, e.getCause(), what);
+        } catch (UnsupportedException e) {
             return e;
         } catch (AssertionFailedError e) {
             throw e;
@@ -164,7 +166,7 @@ class TierCorruptionTest {
         }
     }
 
-    /** the same for {@link Manifest#readLatest} */
+    /** the same for {@link Manifest#readLatest}, which throws the checked exceptions */
     private static IOException latestRefused(Path d, String what) {
         try {
             Manifest m = Manifest.readLatest(d);

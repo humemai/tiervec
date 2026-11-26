@@ -14,10 +14,13 @@ The supported surface is these classes, their public members as listed here, and
 | `Hit` | One result: an id and a score, higher is better | All |
 | `SearchContext` | What a host gives a search so that it can stop it: a deadline, a cancel flag, or both | All |
 | `SearchCancelledException` | What a search throws when its context says stop | All |
+| `TiervecException`, `CorruptStateException`, `ClosedException`, `BuildRefusedException` | The unchecked exceptions for the state of an index, and their base, which `SearchCancelledException` extends too | All |
+| `ContractVersion`, `Capability` | What a host checks before it uses the library: the version of the contract and what exists | All |
+| `MetricSink` | What a host offers so that `TieredIndex.bindMetrics` can push statistics to it | All |
 | `Metric` | `COSINE`, `DOT`, `L2` | All |
 | `DirectoryLockedException` | What `TieredIndex.open` and `checkpoint` throw when another process holds the index directory | All |
-| `TieredIndex` | The index a host database uses: exact tail, sealed segments, merges, batches, checkpoint and reopen | The constructors, `add`, `delete`, `search` (all overloads), `apply`, `awaitCapacity`, `filterScanBelow`, `sealNow`, `mergeNow`, `awaitIdle`, `rebuildFrom` (all overloads), `epoch`, `checkpoint`, `open` (all overloads), `openFallbackCause`, `config`, `stats`, `segmentSizes`, `lastError`, `size`, `dim`, `metric`, `bytesHeld`, `close` |
-| `TieredIndex.Config`, `TieredIndex.Stats`, `TieredIndex.Batch`, `TieredIndex.IdVector`, `TieredIndex.Snapshot`, `TieredIndex.SearchResult`, `TieredIndex.Freshness`, `TieredIndex.MergeMode` | The records and the enum of the tier | All |
+| `TieredIndex` | The index a host database uses: exact tail, sealed segments, merges, batches, checkpoint and reopen | The constructors, `add`, `delete`, `search` (all overloads), `apply`, `awaitCapacity`, `filterScanBelow`, `sealNow`, `mergeNow`, `awaitIdle`, `rebuildFrom` (all overloads), `epoch`, `checkpoint`, `open` (all overloads), `openFallbackCause`, `config`, `reconfigure`, `contractVersion`, `capabilities`, `health`, `metrics`, `bindMetrics`, `stats`, `segmentSizes`, `lastError`, `size`, `dim`, `metric`, `bytesHeld`, `close` |
+| `TieredIndex.Config`, `TieredIndex.Stats`, `TieredIndex.Batch`, `TieredIndex.IdVector`, `TieredIndex.Snapshot`, `TieredIndex.SearchResult`, `TieredIndex.Fingerprint`, `TieredIndex.Freshness`, `TieredIndex.MergeMode`, `TieredIndex.Health` | The records and the enums of the tier | All |
 | `RecordSource` | What a host offers so that `TieredIndex.open` can reconcile persisted state with the host's records | All |
 | `FlatIndex`, `GraphIndex`, `IvfIndex` | Standalone indexes: exact and quantized scan, concurrent HNSW, inverted file | The constructors, the methods of `VecIndex`, the nested `Params` of `GraphIndex` and `IvfIndex`, and the maintenance and diagnostic methods that each class documents in its Javadoc |
 | `Quant`, `Sq8Kernel` | The code kind and the SQ8 kernel that the flat index and the tier configuration name | All |

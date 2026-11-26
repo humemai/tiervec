@@ -12,6 +12,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
@@ -103,6 +104,15 @@ public final class TieredIndex implements VecIndex {
     public enum Freshness { FRESH, SEALED_ONLY }
 
     /**
+     * How a merge that takes the largest segment builds its result. REBUILD (default): a new graph over the valid vectors of all inputs.
+     * INSERT: a copy of the graph of the largest segment, without its hidden rows, into which the valid vectors of the other inputs are
+     * inserted; the cost of the graph work then follows what changed and not the size of the largest segment. A merge rebuilds in both modes
+     * when it does not take the largest segment, when it takes one segment only, or when the hidden share of the largest segment is above
+     * {@code deadFraction}. The graph of repeated INSERT merges is not the graph that a rebuild makes, and its cost has not been measured.
+     */
+    public enum MergeMode { REBUILD, INSERT }
+
+    /**
      * Result of a search with its meta (what the facets report as exact/patched/lag).
      * @param exact true when no segment was searched and the tail scan was exact (the answer equals brute force)
      * @param tailScanned live tail vectors scanned (0 for SEALED_ONLY)
@@ -139,9 +149,17 @@ public final class TieredIndex implements VecIndex {
      * F8X4) and reranks the best 5 * k candidates in fp32. mergeTriggerRatio (default 0 = off): the size-ratio merge trigger. When it is above 0 and
      * the live rows of all segments except the largest exceed mergeTriggerRatio times the live rows of the largest, the worker merges ALL segments into one (the small ones go into the big one); otherwise
      * the count rule (maxSegments, mergeFan) applies to the small segments only (the largest is not a candidate) when maxSegments is at least 2, and to all segments when it is 1 (merge at every seal).
+     * mergeMode (default REBUILD): how a merge that takes the largest segment builds its result, see {@link MergeMode}.
      */
     public record Config(int tailLimit, long tailAgeMs, int smallLimit, int maxSegments, int mergeFan, double deadFraction,
-                         int mergeRatePerSec, int hardTailFactor, Quant tailQuant, GraphIndex.Params graph, int buildThreads, boolean splitBeam, double mergeTriggerRatio) {
+                         int mergeRatePerSec, int hardTailFactor, Quant tailQuant, GraphIndex.Params graph, int buildThreads, boolean splitBeam, double mergeTriggerRatio,
+                         MergeMode mergeMode) {
+        /** the 13-component form without mergeMode: it is REBUILD */
+        public Config(int tailLimit, long tailAgeMs, int smallLimit, int maxSegments, int mergeFan, double deadFraction,
+                      int mergeRatePerSec, int hardTailFactor, Quant tailQuant, GraphIndex.Params graph, int buildThreads, boolean splitBeam, double mergeTriggerRatio) {
+            this(tailLimit, tailAgeMs, smallLimit, maxSegments, mergeFan, deadFraction, mergeRatePerSec, hardTailFactor, tailQuant, graph, buildThreads, splitBeam, mergeTriggerRatio, MergeMode.REBUILD);
+        }
+
         /** the 12-component form without mergeTriggerRatio: it is 0 (off) */
         public Config(int tailLimit, long tailAgeMs, int smallLimit, int maxSegments, int mergeFan, double deadFraction,
                       int mergeRatePerSec, int hardTailFactor, Quant tailQuant, GraphIndex.Params graph, int buildThreads, boolean splitBeam) {
@@ -155,6 +173,7 @@ public final class TieredIndex implements VecIndex {
         }
 
         public Config {
+            Objects.requireNonNull(mergeMode, "mergeMode");
             if (tailLimit < 1 || smallLimit < 0 || maxSegments < 1 || mergeFan < 2 || hardTailFactor < 2 || buildThreads < 1 || !(mergeTriggerRatio >= 0.0) || Double.isInfinite(mergeTriggerRatio))
                 throw new IllegalArgumentException("bad config");
             if (tailQuant == Quant.BINARY) throw new IllegalArgumentException("tail quant must be NONE or SQ8");
@@ -166,43 +185,49 @@ public final class TieredIndex implements VecIndex {
         }
 
         public Config withTail(int tailLimit, int smallLimit) {
-            return new Config(tailLimit, tailAgeMs, smallLimit, maxSegments, mergeFan, deadFraction, mergeRatePerSec, hardTailFactor, tailQuant, graph, buildThreads, splitBeam, mergeTriggerRatio);
+            return new Config(tailLimit, tailAgeMs, smallLimit, maxSegments, mergeFan, deadFraction, mergeRatePerSec, hardTailFactor, tailQuant, graph, buildThreads, splitBeam, mergeTriggerRatio, mergeMode);
         }
 
         public Config withMaxSegments(int m) {
-            return new Config(tailLimit, tailAgeMs, smallLimit, m, mergeFan, deadFraction, mergeRatePerSec, hardTailFactor, tailQuant, graph, buildThreads, splitBeam, mergeTriggerRatio);
+            return new Config(tailLimit, tailAgeMs, smallLimit, m, mergeFan, deadFraction, mergeRatePerSec, hardTailFactor, tailQuant, graph, buildThreads, splitBeam, mergeTriggerRatio, mergeMode);
         }
 
         public Config withTailQuant(Quant q) {
-            return new Config(tailLimit, tailAgeMs, smallLimit, maxSegments, mergeFan, deadFraction, mergeRatePerSec, hardTailFactor, q, graph, buildThreads, splitBeam, mergeTriggerRatio);
+            return new Config(tailLimit, tailAgeMs, smallLimit, maxSegments, mergeFan, deadFraction, mergeRatePerSec, hardTailFactor, q, graph, buildThreads, splitBeam, mergeTriggerRatio, mergeMode);
         }
 
         public Config withGraph(GraphIndex.Params p) {
-            return new Config(tailLimit, tailAgeMs, smallLimit, maxSegments, mergeFan, deadFraction, mergeRatePerSec, hardTailFactor, tailQuant, p, buildThreads, splitBeam, mergeTriggerRatio);
+            return new Config(tailLimit, tailAgeMs, smallLimit, maxSegments, mergeFan, deadFraction, mergeRatePerSec, hardTailFactor, tailQuant, p, buildThreads, splitBeam, mergeTriggerRatio, mergeMode);
         }
 
         public Config withBuildThreads(int t) {
-            return new Config(tailLimit, tailAgeMs, smallLimit, maxSegments, mergeFan, deadFraction, mergeRatePerSec, hardTailFactor, tailQuant, graph, t, splitBeam, mergeTriggerRatio);
+            return new Config(tailLimit, tailAgeMs, smallLimit, maxSegments, mergeFan, deadFraction, mergeRatePerSec, hardTailFactor, tailQuant, graph, t, splitBeam, mergeTriggerRatio, mergeMode);
         }
 
         public Config withMergeRate(int perSec) {
-            return new Config(tailLimit, tailAgeMs, smallLimit, maxSegments, mergeFan, deadFraction, perSec, hardTailFactor, tailQuant, graph, buildThreads, splitBeam, mergeTriggerRatio);
+            return new Config(tailLimit, tailAgeMs, smallLimit, maxSegments, mergeFan, deadFraction, perSec, hardTailFactor, tailQuant, graph, buildThreads, splitBeam, mergeTriggerRatio, mergeMode);
         }
 
         public Config withMergeFan(int f) {
-            return new Config(tailLimit, tailAgeMs, smallLimit, maxSegments, f, deadFraction, mergeRatePerSec, hardTailFactor, tailQuant, graph, buildThreads, splitBeam, mergeTriggerRatio);
+            return new Config(tailLimit, tailAgeMs, smallLimit, maxSegments, f, deadFraction, mergeRatePerSec, hardTailFactor, tailQuant, graph, buildThreads, splitBeam, mergeTriggerRatio, mergeMode);
         }
 
         public Config withSplitBeam(boolean sb) {
-            return new Config(tailLimit, tailAgeMs, smallLimit, maxSegments, mergeFan, deadFraction, mergeRatePerSec, hardTailFactor, tailQuant, graph, buildThreads, sb, mergeTriggerRatio);
+            return new Config(tailLimit, tailAgeMs, smallLimit, maxSegments, mergeFan, deadFraction, mergeRatePerSec, hardTailFactor, tailQuant, graph, buildThreads, sb, mergeTriggerRatio, mergeMode);
         }
 
         public Config withMergeTriggerRatio(double r) {
-            return new Config(tailLimit, tailAgeMs, smallLimit, maxSegments, mergeFan, deadFraction, mergeRatePerSec, hardTailFactor, tailQuant, graph, buildThreads, splitBeam, r);
+            return new Config(tailLimit, tailAgeMs, smallLimit, maxSegments, mergeFan, deadFraction, mergeRatePerSec, hardTailFactor, tailQuant, graph, buildThreads, splitBeam, r, mergeMode);
+        }
+
+        /** this configuration with another way to build a merge that takes the largest segment (see {@link MergeMode}) */
+        public Config withMergeMode(MergeMode mode) {
+            return new Config(tailLimit, tailAgeMs, smallLimit, maxSegments, mergeFan, deadFraction, mergeRatePerSec, hardTailFactor, tailQuant, graph, buildThreads, splitBeam, mergeTriggerRatio, mode);
         }
     }
 
-    /** counters for the report. segmentSizes: rows of each segment, oldest first, hidden copies included; its length is segments. adds (calls of add), mergeWriteAmp (mergedVectors / adds, 0 when adds is 0),
+    /** counters for the report. mergedVectors counts the rows that merges put into a graph: with {@link MergeMode#INSERT} the inserted rows only, not those of a copied graph.
+     *  segmentSizes: rows of each segment, oldest first, hidden copies included; its length is segments. adds (calls of add), mergeWriteAmp (mergedVectors / adds, 0 when adds is 0),
      *  totalWriteAmp ((sealedVectors + mergedVectors) / adds), maxSealMillis and maxMergeMillis (the longest single seal or merge).
      *  The task log, one slot per finished seal or merge in finish order: taskKinds (1 seal, 2 merge), taskStartNs and taskEndNs (System.nanoTime() values; end is the instant after the swap),
      *  taskRows (rows built); taskDropped counts tasks that did not fit the 4096 slots.
@@ -1015,7 +1040,10 @@ public final class TieredIndex implements VecIndex {
         View v0 = view;
         List<Segment> picked = pickMerge(v0.segs, force);
         if (picked == null || picked.isEmpty()) return false;
-        final boolean intoLargest = picked.contains(v0.segs[largestIndex(v0.segs)]); // this merge rewrites the largest segment
+        final Segment largest = v0.segs[largestIndex(v0.segs)];
+        final boolean intoLargest = picked.contains(largest); // this merge rewrites the largest segment
+        // MergeMode.INSERT: the graph of the largest segment is copied and the rest inserted, unless too much of it is hidden
+        final boolean insert = cfg.mergeMode() == MergeMode.INSERT && intoLargest && picked.size() > 1 && largest.dead <= cfg.deadFraction() * largest.n;
         activity = 2;
         try {
             int total = 0;
@@ -1025,6 +1053,7 @@ public final class TieredIndex implements VecIndex {
             Segment[] srcSeg = new Segment[total];
             int[] srcRow = new int[total];
             int m = 0;
+            final boolean[] kept = insert ? new boolean[largest.g.n] : null; // the rows of the copied graph that stay in it
             for (Segment s : picked) {
                 for (int r = 0; r < s.g.n; r++) {
                     long id = s.g.ids[r];
@@ -1036,10 +1065,12 @@ public final class TieredIndex implements VecIndex {
                     vers[m] = ver;
                     srcSeg[m] = s;
                     srcRow[m] = r;
+                    if (insert && s == largest) kept[r] = true;
                     m++;
                 }
             }
             Segment merged = null;
+            int built = m; // the rows that this merge put into a graph
             if (m > 0) {
                 int[] ord = orderByVersion(Arrays.copyOf(vers, m), m);
                 final Segment[] fss = new Segment[m];
@@ -1051,10 +1082,31 @@ public final class TieredIndex implements VecIndex {
                 final long[] mi = permute(Arrays.copyOf(ids, m), ord);
                 final long[] mv = permute(Arrays.copyOf(vers, m), ord);
                 final int d = dim;
-                SealedGraph sg = build(mi, m, j -> {
+                final VecSource rows = j -> {
                     int o = frr[j] * d;
                     return Arrays.copyOfRange(fss[j].g.vec, o, o + d);
-                }, true);
+                };
+                final SealedGraph sg;
+                if (insert) {
+                    GraphIndex gi = GraphIndex.fromSealed(largest.g);
+                    for (int r = 0; r < kept.length; r++) {
+                        if (!kept[r]) gi.delete(largest.g.ids[r]); // before the inserts: another input may hold the newer vector of the id
+                    }
+                    final long[] others = new long[m];
+                    final int[] at = new int[m];
+                    int no = 0;
+                    for (int i = 0; i < m; i++) {
+                        if (fss[i] != largest) {
+                            others[no] = mi[i];
+                            at[no++] = i;
+                        }
+                    }
+                    insertAll(gi, others, no, j -> rows.vec(at[j]), true);
+                    built = no;
+                    sg = gi.seal(); // seal repairs the neighbor lists that pointed at deleted rows
+                } else {
+                    sg = build(mi, m, rows, true);
+                }
                 if (sg.n != m) throw new IllegalStateException("merged rows " + sg.n + " != " + m);
                 merged = new Segment(sg, mi, mv);
             }
@@ -1074,11 +1126,11 @@ public final class TieredIndex implements VecIndex {
                 mu.unlock();
             }
             merges.incrementAndGet();
-            mergedVectors.addAndGet(m);
-            if (intoLargest) { bigMerges.incrementAndGet(); bigMergedVectors.addAndGet(m); }
+            mergedVectors.addAndGet(built);
+            if (intoLargest) { bigMerges.incrementAndGet(); bigMergedVectors.addAndGet(built); }
             final long mergeEnd = System.nanoTime();
             final long mergeDt = mergeEnd - t0;
-            logTask(2, t0, mergeEnd, m);
+            logTask(2, t0, mergeEnd, built);
             mergeNanos.addAndGet(mergeDt);
             maxMergeNanos.accumulateAndGet(mergeDt, Math::max);
             return true;
@@ -1117,6 +1169,12 @@ public final class TieredIndex implements VecIndex {
     /** build and seal a graph over n rows (ids[i], src.vec(i)); throttle: apply the merge rate cap */
     private SealedGraph build(long[] ids, int n, VecSource src, boolean throttle) {
         GraphIndex gi = new GraphIndex(dim, metric, cfg.graph());
+        insertAll(gi, ids, n, src, throttle);
+        return gi.seal();
+    }
+
+    /** insert n rows (ids[i], src.vec(i)) into a graph with the build threads; throttle: apply the merge rate cap */
+    private void insertAll(GraphIndex gi, long[] ids, int n, VecSource src, boolean throttle) {
         int th = Math.max(1, Math.min(cfg.buildThreads(), n / 256 + 1));
         int rate = throttle ? cfg.mergeRatePerSec() : sealRate; // sealRate is 0 (unthrottled) unless a benchmark sets it
         if (th == 1) {
@@ -1147,7 +1205,6 @@ public final class TieredIndex implements VecIndex {
             }
             if (err[0] != null) throw new IllegalStateException(err[0]);
         }
-        return gi.seal();
     }
 
     private void addRange(GraphIndex gi, long[] ids, VecSource src, int lo, int hi, int rate) {

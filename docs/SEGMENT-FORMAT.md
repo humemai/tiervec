@@ -162,6 +162,22 @@ The rename is the only moment a generation becomes visible, and by then every by
 
 On Windows the directory flush of steps 3 and 7 does nothing, because Java cannot open a directory there (`FileChannel.open` is refused). File contents are still forced with `FileChannel.force`, so the bytes of every file are flushed before the rename. The directory entry (the new name, the rename) is not flushed by the library, so a power loss right after a rename can lose the rename on Windows. A process kill is covered on Windows as on Linux, because the claim above is about process kills only.
 
+### Guarantees per platform
+
+These are the platforms that CI runs. "N or N+1" means that the directory opens as the generation before the publish or the new one, never a mixture.
+
+| | Linux x86-64 | Linux arm64 | macOS arm64 | Windows x64 |
+|---|---|---|---|---|
+| File contents flushed before the rename (`FileChannel.force`) | yes | yes | yes | yes |
+| The rename itself flushed (directory flush) | yes | yes | yes | no |
+| A process kill during a publish leaves N or N+1 | yes | yes | yes | yes |
+| A power loss | no claim | no claim | no claim | no claim, and a rename that has returned can be lost |
+| Tested by a child process halted at each publish step, and from the directories a power cut can leave (fast: `TierHaltTest`, `TierPowerCutTest`, `ManifestCrashTest`, `TierReopenTest`) | every change | every change | every change | every change |
+| Tested by many seeds and random process kills (slow: `TierHaltLongTest`, `TierKillLongTest`) | slow runs | no | no | slow runs |
+| Flush order tested on a simulated file system (`SimulatedFsCrashTest`) | every change | every change | every change | no, there is no directory flush to order |
+
+"Every change" is the fast tests of a pull request. "Slow runs" is a push to `main`, the daily run, and a pull request with the label `ci:slow`. None of these tests cuts the power. The library has no memory-mapped reader, so no file is mapped while a merge replaces it; what a mapped reader changes on Windows belongs to [#27](https://github.com/humemai/tiervec/issues/27).
+
 ### What a crash leaves behind
 
 The table is for a process kill (the page cache survives). A crash after a step leaves:

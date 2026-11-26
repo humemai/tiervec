@@ -65,7 +65,7 @@ The other jobs of a pull request (arm64, Windows, the benchmark smoke, native im
 | When | What runs |
 | --- | --- |
 | Every pull request | The fast tests (x86-64 Linux on JDK 21 and 25, arm64 Linux, arm64 macOS, Windows x64), the benchmark smoke, the documentation build and the workflow check. The native image jobs and the Maven Central dry run start only when the files they cover change. It ends in about 12 minutes. |
-| A pull request with the label `ci:slow` | The same, and the slow tests on JDK 21 and 25 (about 40 minutes each). |
+| A pull request with the label `ci:slow` | The same, the slow tests on JDK 21 and 25 (about 40 minutes each), and the two slow crash tests on Windows x64. |
 | Every push to `main` | Everything above, the slow tests included. |
 | Every day at 19:17 UTC | The slow tests, on the head of `main`. |
 

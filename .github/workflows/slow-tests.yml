@@ -84,16 +84,59 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
+  # The two slow crash tests on Windows x64 (issue #77): a child JVM halted at each publish step with several seeds (TierHaltLongTest) and one
+  # killed at random moments (TierKillLongTest). Windows ends a process and releases its file locks in its own way and cannot flush a
+  # directory, so these are run there too; the rest of the slow tests stays on Linux. The job starts when the jobs above start. It is not a
+  # required check.
+  slow-windows:
+    name: slow crash tests (Windows x64, JDK 21)
+    if: >-
+      github.event_name != 'pull_request' ||
+      (contains(github.event.pull_request.labels.*.name, 'ci:slow') &&
+      (github.event.action != 'labeled' || github.event.label.name == 'ci:slow'))
+    runs-on: windows-2025
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+      - name: Toolchain
+        shell: bash
+        run: |
+          java -version
+          mvn -B -ntp -version
+      # -Dtest also filters the scalar-twin execution, which has none of these tests, so "no tests matched" must not fail the build
+      - name: Build and run the slow crash tests
+        shell: bash
+        run: mvn -B -ntp verify -Pslow "-Dtest=TierHaltLongTest,TierKillLongTest" -Dsurefire.failIfNoSpecifiedTests=false
+      - name: Check that both tests ran
+        shell: bash
+        run: |
+          ls target/surefire-reports/TEST-ai.humem.tiervec.TierHaltLongTest.xml target/surefire-reports/TEST-ai.humem.tiervec.TierKillLongTest.xml
+      - name: Upload test reports
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: surefire-reports-slow-windows-jdk21
+          path: target/surefire-reports
+          retention-days: 7
+          if-no-files-found: ignore
+
   # A slow run on main that failed, timed out or was cancelled opens the issue "Slow tests are red on main", or comments on it when it is
   # already open, with a link to the run. A person closes the issue when main is green again. Only push and schedule runs report (both are on
   # main): a pull request shows its own checks, and a run by hand has someone watching it. The job has its own permissions so that
   # `issues: write` is not granted to the jobs that build and run the code.
   report:
     name: report a red slow run on main
-    needs: slow
+    needs: [slow, slow-windows]
     if: >-
       always() && (github.event_name == 'push' || github.event_name == 'schedule') &&
-      (needs.slow.result == 'failure' || needs.slow.result == 'cancelled')
+      (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -103,7 +146,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-          RESULT: ${{ needs.slow.result }}
+          RESULT: ${{ contains(needs.*.result, 'failure') && 'failure' || 'cancelled' }}
           EVENT: ${{ github.event_name }}
           SHA: ${{ github.sha }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}

@@ -1,0 +1,89 @@
+BENCH-RESULT format=1 harness=ai.humem.tiervec.Bench
+RUN started=2026-11-12T11:41:47.232901736Z host=laptop-lpe-cores-12-15
+COMMIT sha=70d5dee6c373c7cd547ef3c3c9d685e849c3f820 modifiedFiles=0
+SEED seed=42 data=clustered-gaussian clusters=100 sigma=0.4 filter=hash-uniform queryIdBase=1125899906842624
+CPU model="Intel(R) Core(TM) Ultra X9 388H" logicalCpus=16 cpusAllowedList=12-15 availableProcessors=4 flagsOfCpu=12
+CPUFLAGS fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush dts acpi mmx fxsr sse sse2 ss ht tm pbe syscall nx pdpe1gb rdtscp lm constant_tsc art arch_perfmon bts rep_good nopl xtopology nonstop_tsc cpuid aperfmperf tsc_known_freq pni pclmulqdq dtes64 monitor ds_cpl vmx smx est tm2 ssse3 sdbg fma cx16 xtpr pdcm pcid sse4_1 sse4_2 x2apic movbe popcnt tsc_deadline_timer aes xsave avx f16c rdrand lahf_lm abm 3dnowprefetch cpuid_fault epb ssbd ibrs ibpb stibp ibrs_enhanced tpr_shadow flexpriority ept vpid ept_ad fsgsbase tsc_adjust bmi1 avx2 smep bmi2 erms invpcid rdt_a rdseed adx smap clflushopt clwb intel_pt sha_ni xsaveopt xsavec xgetbv1 xsaves split_lock_detect user_shstk avx_vnni lam wbnoinvd dtherm ida arat pln pts hwp hwp_notify hwp_act_window hwp_epp hwp_pkg_req hfi vnmi umip pku ospke waitpkg gfni vaes vpclmulqdq rdpid bus_lock_detect movdiri movdir64b fsrm md_clear serialize arch_lbr ibt flush_l1d arch_capabilities
+CPUFREQ governor=powersave noTurbo=0 cpuMaxKHz=3700000
+RAM totalKiB=31825356 availableKiB=23098472
+OS name=Linux version=7.0.0-43-generic arch=amd64
+JDK version=25.0.5 vendor=Eclipse Adoptium runtime=25.0.5+8-LTS vm="OpenJDK 64-Bit Server VM" vmVersion=25.0.5+8-LTS
+JVM maxHeapMiB=13312 collectors=G1 Young Generation,G1 Concurrent GC,G1 Old Generation args=[-Xmx13g, --add-modules=jdk.incubator.vector]
+VECTORAPI module=true kernels=vector lanes=8 scalarProperty=null
+PARAMS build-threads=0 build-timeout-s=14400 clusters=100 conc-seconds=600 conc-window-s=30 delete-rate=100 dim=768 ef=100 ef-sweep=20,50,200,400 efc=200 final-queries=100 host-label=laptop-lpe-cores-12-15 k=10 load=add m=16 max-segments=8 merge-fan=4 min-recall=0 min-scan-recall=0 n=1000000 out=results/106/synthetic/h1m-jdk25.txt queries=200 repo=. reps=5 scan-below=0,1 searchers=2 seed=42 settle=none shares=0.5,0.1,0.01,0.001 sigma=0.4 small-limit=1000 tail-limit=2000 threads=0 write-rate=500 writers=2
+PHASE data at=2026-11-12T11:41:47.334153724Z
+DATA n=1000000 dim=768 queries=200 checksumFirst1000AndQuery0=4a4aeb27 generateSeconds=8.4 exactScanSeconds=15.4 exactScanThreads=4 gcCount=44 gcMillis=420
+TRUTH unfiltered:minTruthSize=10 share0.5:minTruthSize=10 share0.1:minTruthSize=10 share0.01:minTruthSize=10 share0.001:minTruthSize=10
+PHASE build at=2026-11-12T11:42:11.236714362Z
+CONFIG Config[tailLimit=2000, tailAgeMs=60000, smallLimit=1000, maxSegments=8, mergeFan=4, deadFraction=0.3, mergeRatePerSec=50000, hardTailFactor=4, tailQuant=NONE, graph=Params[M=16, efConstruction=200, efSearch=100, alpha=1.0, sq8=false, seed=42], buildThreads=3, splitBeam=false, mergeTriggerRatio=0.0]
+BUILD-T added=200000 seconds=73 seals=24 merges=0 tail=14000 segments=24 segmentSizes=[2000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000] bytesHeldMB=694.9 sealMs=72565 mergeMs=0 maxSealMs=3288 maxMergeMs=0 backpressureWaits=282585 failures=0 live=200000 floorEntries=0 totalWriteAmp=0.93
+BUILD-T added=400000 seconds=150 seals=49 merges=0 tail=14000 segments=49 segmentSizes=[2000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000] bytesHeldMB=1340.0 sealMs=149633 mergeMs=0 maxSealMs=3308 maxMergeMs=0 backpressureWaits=583708 failures=0 live=400000 floorEntries=0 totalWriteAmp=0.97
+BUILD-T added=600000 seconds=226 seals=74 merges=0 tail=14000 segments=74 segmentSizes=[2000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000] bytesHeldMB=1985.1 sealMs=225833 mergeMs=0 maxSealMs=3308 maxMergeMs=0 backpressureWaits=880704 failures=0 live=600000 floorEntries=0 totalWriteAmp=0.98
+BUILD-T added=800000 seconds=301 seals=99 merges=0 tail=14000 segments=99 segmentSizes=[2000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000] bytesHeldMB=2630.2 sealMs=301070 mergeMs=0 maxSealMs=3308 maxMergeMs=0 backpressureWaits=1172587 failures=0 live=800000 floorEntries=0 totalWriteAmp=0.98
+BUILD-T added=1000000 seconds=376 seals=124 merges=0 tail=14000 segments=124 segmentSizes=[2000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000] bytesHeldMB=3275.3 sealMs=376094 mergeMs=0 maxSealMs=3308 maxMergeMs=0 backpressureWaits=1464770 failures=0 live=1000000 floorEntries=0 totalWriteAmp=0.99
+BUILD load=add addSeconds=376.3 settledSeconds=1175.7 insertsPerSecondSettled=851 size=1000000 gcCount=37 gcMillis=1036
+BUILD-STATS seals=126 merges=1 tail=0 segments=8 segmentSizes=[8000, 8000, 8000, 8000, 8000, 8000, 8000, 944000] bytesHeldMB=3212.3 sealMs=381043 mergeMs=794525 maxSealMs=3308 maxMergeMs=794525 backpressureWaits=1464770 failures=0 live=1000000 floorEntries=0 totalWriteAmp=1.94
+MEMORY afterBuild heapUsedMB=6337 heapCommittedMB=13959 rssMB=13674 rssPeakMB=13674
+PHASE search at=2026-11-12T12:01:47.074880077Z
+SEARCH kind=unfiltered share=none scanBelow=0.0 scanFirst=false k=10 ef=100 recall=0.5830 recallMin=0.00 p50us=5706 p99us=8694 p999us=9756 meanUs=5914 maxUs=9756 opsPerSecond=169.1 samples=1000 badAnswers=0 maxScoreError=1.79e-07 gcCount=0 gcMillis=0
+SEARCH kind=unfiltered share=none scanBelow=0.0 scanFirst=false k=10 ef=20 recall=0.2685 recallMin=0.00 p50us=1649 p99us=2664 p999us=2838 meanUs=1769 maxUs=2838 opsPerSecond=565.3 samples=1000 badAnswers=0 maxScoreError=1.79e-07 gcCount=0 gcMillis=0
+SEARCH kind=unfiltered share=none scanBelow=0.0 scanFirst=false k=10 ef=50 recall=0.4125 recallMin=0.00 p50us=3208 p99us=4691 p999us=5273 meanUs=3332 maxUs=5273 opsPerSecond=300.1 samples=1000 badAnswers=0 maxScoreError=1.79e-07 gcCount=0 gcMillis=0
+SEARCH kind=unfiltered share=none scanBelow=0.0 scanFirst=false k=10 ef=200 recall=0.7490 recallMin=0.00 p50us=11495 p99us=15859 p999us=16956 meanUs=11721 maxUs=16956 opsPerSecond=85.3 samples=1000 badAnswers=0 maxScoreError=1.79e-07 gcCount=0 gcMillis=0
+SEARCH kind=unfiltered share=none scanBelow=0.0 scanFirst=false k=10 ef=400 recall=0.8840 recallMin=0.00 p50us=18780 p99us=25830 p999us=28321 meanUs=19058 maxUs=28321 opsPerSecond=52.5 samples=1000 badAnswers=0 maxScoreError=1.79e-07 gcCount=0 gcMillis=0
+SEARCH kind=filtered share=0.5 scanBelow=0.0 scanFirst=false k=10 ef=100 recall=0.7265 recallMin=0.00 p50us=11848 p99us=16100 p999us=17405 meanUs=12021 maxUs=17405 opsPerSecond=83.2 samples=1000 badAnswers=0 maxScoreError=1.79e-07 gcCount=0 gcMillis=0
+SEARCH kind=filtered share=0.5 scanBelow=1.0 scanFirst=true k=10 ef=100 recall=1.0000 recallMin=1.00 p50us=144217 p99us=171787 p999us=180133 meanUs=146123 maxUs=180133 opsPerSecond=6.8 samples=1000 badAnswers=0 maxScoreError=1.79e-07 gcCount=0 gcMillis=0
+SEARCH kind=filtered share=0.1 scanBelow=0.0 scanFirst=false k=10 ef=100 recall=0.9460 recallMin=0.60 p50us=20090 p99us=30480 p999us=37461 meanUs=20928 maxUs=37461 opsPerSecond=47.8 samples=1000 badAnswers=0 maxScoreError=2.09e-07 gcCount=0 gcMillis=0
+SEARCH kind=filtered share=0.1 scanBelow=1.0 scanFirst=true k=10 ef=100 recall=1.0000 recallMin=1.00 p50us=41667 p99us=53855 p999us=56169 meanUs=43212 maxUs=56169 opsPerSecond=23.1 samples=1000 badAnswers=0 maxScoreError=2.09e-07 gcCount=0 gcMillis=0
+SEARCH kind=filtered share=0.01 scanBelow=0.0 scanFirst=false k=10 ef=100 recall=0.9670 recallMin=0.80 p50us=32064 p99us=51939 p999us=59453 meanUs=32754 maxUs=59453 opsPerSecond=30.5 samples=1000 badAnswers=0 maxScoreError=1.79e-07 gcCount=0 gcMillis=0
+SEARCH kind=filtered share=0.01 scanBelow=1.0 scanFirst=true k=10 ef=100 recall=1.0000 recallMin=1.00 p50us=7598 p99us=9863 p999us=11132 meanUs=7923 maxUs=11132 opsPerSecond=126.2 samples=1000 badAnswers=0 maxScoreError=1.79e-07 gcCount=0 gcMillis=0
+SEARCH kind=filtered share=0.001 scanBelow=0.0 scanFirst=false k=10 ef=100 recall=1.0000 recallMin=1.00 p50us=49037 p99us=64012 p999us=68152 meanUs=50867 maxUs=68152 opsPerSecond=19.7 samples=1000 badAnswers=0 maxScoreError=1.49e-07 gcCount=0 gcMillis=0
+SEARCH kind=filtered share=0.001 scanBelow=1.0 scanFirst=true k=10 ef=100 recall=1.0000 recallMin=1.00 p50us=3580 p99us=3951 p999us=4260 meanUs=3613 maxUs=4260 opsPerSecond=276.8 samples=1000 badAnswers=0 maxScoreError=1.49e-07 gcCount=0 gcMillis=0
+PHASE concurrent at=2026-11-12T12:08:59.037611940Z
+CONC-T seconds=30 adds=15016 deletes=3003 searches=6751 tail=1768 segments=8 seals=129 merges=2 backpressureWaits=1479962 errors=0
+CONC-T seconds=60 adds=30034 deletes=6007 searches=13781 tail=3150 segments=9 seals=133 merges=3 backpressureWaits=1479962 errors=0
+CONC-T seconds=90 adds=45050 deletes=9010 searches=21027 tail=7190 segments=6 seals=136 merges=5 backpressureWaits=1479962 errors=0
+CONC-T seconds=120 adds=60066 deletes=12013 searches=29397 tail=1028 segments=9 seals=142 merges=6 backpressureWaits=1479962 errors=0
+CONC-T seconds=150 adds=75080 deletes=15016 searches=36513 tail=1992 segments=9 seals=145 merges=7 backpressureWaits=1505649 errors=0
+CONC-T seconds=180 adds=90094 deletes=18019 searches=43079 tail=1806 segments=9 seals=148 merges=8 backpressureWaits=1546839 errors=0
+CONC-T seconds=210 adds=105006 deletes=21001 searches=49988 tail=1340 segments=9 seals=151 merges=9 backpressureWaits=1593580 errors=0
+CONC-T seconds=240 adds=120020 deletes=24004 searches=56930 tail=312 segments=9 seals=154 merges=10 backpressureWaits=1650902 errors=0
+CONC-T seconds=270 adds=135034 deletes=27007 searches=63427 tail=7327 segments=7 seals=155 merges=11 backpressureWaits=1722895 errors=0
+CONC-T seconds=300 adds=144708 deletes=30011 searches=70197 tail=8002 segments=9 seals=157 merges=11 backpressureWaits=1805422 errors=0
+CONC-T seconds=330 adds=163242 deletes=33013 searches=76513 tail=8000 segments=9 seals=160 merges=12 backpressureWaits=1847384 errors=0
+CONC-T seconds=360 adds=180076 deletes=36016 searches=82955 tail=4170 segments=9 seals=163 merges=13 backpressureWaits=1975184 errors=0
+CONC-T seconds=390 adds=195090 deletes=39018 searches=88951 tail=11182 segments=7 seals=164 merges=14 backpressureWaits=2143337 errors=0
+CONC-T seconds=420 adds=205284 deletes=42001 searches=95234 tail=8000 segments=9 seals=166 merges=14 backpressureWaits=2216214 errors=0
+CONC-T seconds=450 adds=225028 deletes=45006 searches=101661 tail=5328 segments=9 seals=169 merges=15 backpressureWaits=2325744 errors=0
+CONC-T seconds=480 adds=235299 deletes=48009 searches=107355 tail=15599 segments=6 seals=169 merges=16 backpressureWaits=2514249 errors=0
+CONC-T seconds=510 adds=255024 deletes=51014 searches=113052 tail=8000 segments=10 seals=173 merges=16 backpressureWaits=2564979 errors=0
+CONC-T seconds=540 adds=266856 deletes=54017 searches=119408 tail=8000 segments=9 seals=175 merges=17 backpressureWaits=2636815 errors=0
+CONC-T seconds=570 adds=274862 deletes=57019 searches=125455 tail=16006 segments=6 seals=175 merges=18 backpressureWaits=2866808 errors=0
+CONC-T seconds=600 adds=299998 deletes=60000 searches=131166 tail=7254 segments=11 seals=180 merges=18 backpressureWaits=2912962 errors=0
+CONC seconds=600.0 writers=2 searchers=2 addsTargetPerSecond=500.0 addsPerSecond=500 adds=299998 deletesTargetPerSecond=100.0 deletesPerSecond=100 deletes=60000 searchesPerSecond=219 searches=131168 searchP50us=8045 searchP99us=19782 searchP999us=22934 searchMaxUs=38826 errors=0 orderViolations=0 deletedReturned=0 gcCount=14 gcMillis=102
+CONC-WINDOW window=0 fromSeconds=0 searches=6738 searchesPerSecond=225 p50us=8065 p99us=20364 maxUs=23742
+CONC-WINDOW window=1 fromSeconds=30 searches=7023 searchesPerSecond=234 p50us=7549 p99us=19113 maxUs=25945
+CONC-WINDOW window=2 fromSeconds=60 searches=7239 searchesPerSecond=241 p50us=7418 p99us=18530 maxUs=23006
+CONC-WINDOW window=3 fromSeconds=90 searches=8377 searchesPerSecond=279 p50us=6537 p99us=17638 maxUs=23523
+CONC-WINDOW window=4 fromSeconds=120 searches=7101 searchesPerSecond=237 p50us=7484 p99us=18799 maxUs=22424
+CONC-WINDOW window=5 fromSeconds=150 searches=6557 searchesPerSecond=219 p50us=8047 p99us=19987 maxUs=25591
+CONC-WINDOW window=6 fromSeconds=180 searches=6949 searchesPerSecond=232 p50us=7640 p99us=19009 maxUs=25144
+CONC-WINDOW window=7 fromSeconds=210 searches=6932 searchesPerSecond=231 p50us=7650 p99us=19004 maxUs=30870
+CONC-WINDOW window=8 fromSeconds=240 searches=6487 searchesPerSecond=216 p50us=7932 p99us=19390 maxUs=29763
+CONC-WINDOW window=9 fromSeconds=270 searches=6769 searchesPerSecond=226 p50us=7736 p99us=18810 maxUs=24646
+CONC-WINDOW window=10 fromSeconds=300 searches=6313 searchesPerSecond=210 p50us=8105 p99us=19599 maxUs=25028
+CONC-WINDOW window=11 fromSeconds=330 searches=6440 searchesPerSecond=215 p50us=8201 p99us=19385 maxUs=23604
+CONC-WINDOW window=12 fromSeconds=360 searches=5984 searchesPerSecond=199 p50us=8523 p99us=19850 maxUs=24237
+CONC-WINDOW window=13 fromSeconds=390 searches=6323 searchesPerSecond=211 p50us=8117 p99us=19352 maxUs=32168
+CONC-WINDOW window=14 fromSeconds=420 searches=6418 searchesPerSecond=214 p50us=8012 p99us=19696 maxUs=31524
+CONC-WINDOW window=15 fromSeconds=450 searches=5687 searchesPerSecond=190 p50us=9009 p99us=21452 maxUs=38826
+CONC-WINDOW window=16 fromSeconds=480 searches=5690 searchesPerSecond=190 p50us=8916 p99us=21641 maxUs=25262
+CONC-WINDOW window=17 fromSeconds=510 searches=6347 searchesPerSecond=212 p50us=8093 p99us=20122 maxUs=33001
+CONC-WINDOW window=18 fromSeconds=540 searches=6037 searchesPerSecond=201 p50us=8505 p99us=19811 maxUs=24709
+CONC-WINDOW window=19 fromSeconds=570 searches=5757 searchesPerSecond=192 p50us=9159 p99us=22189 maxUs=30923
+CONC-SETTLE idle=true seconds=40.9 seals=181 merges=20 tail=0 segments=6 segmentSizes=[944000, 55500, 58004, 64458, 85332, 92704] bytesHeldMB=4181.1 sealMs=535614 mergeMs=1252040 maxSealMs=5067 maxMergeMs=794525 backpressureWaits=2912962 failures=0 live=1239998 floorEntries=60000 totalWriteAmp=2.33
+CONC-CHECK size=1239998 expected=1239998 sizeMatches=true lastError=null workerAlive=true
+MEMORY afterConcurrent heapUsedMB=7338 heapCommittedMB=13959 rssMB=13710 rssPeakMB=13710
+CONC-RECALL queries=100 live=1239998 recall=0.6640 p50us=4653 p99us=8151 badAnswers=0 (the tier is idle, unfiltered, single thread)
+MEMORY end rssPeakMB=13710
+BENCH-SUMMARY status=OK failures=0 wallSeconds=2285 ended=2026-11-12T12:19:51.842508747Z
+BENCH-END

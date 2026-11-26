@@ -21,16 +21,19 @@ import java.util.TreeMap;
  *
  * <ul>
  * <li>{@code meta.properties}: {@code key=value} lines. The keys the loader reads are {@code format} (1), {@code dim}, {@code count} (vectors in
- * the index), {@code queries}, {@code truth-k} (exact answers per query) and {@code normalized} (must be {@code true}). Every other key is
- * copied into the DATASET line of the result file (where the data came from, the seed, the range of the lengths before normalising).</li>
+ * the index), {@code queries}, {@code truth-k} (exact answers per query), {@code metric} ({@code cosine}, the default, or {@code l2}) and
+ * {@code normalized} (must be {@code true} for the cosine). Every other key is copied into the DATASET line of the result file (where the data
+ * came from, the seed, the range of the lengths before normalising).</li>
  * <li>{@code vectors.f32}: {@code count} vectors of {@code dim} floats, 4 bytes each, little endian, row after row. The id of a vector is its row.</li>
  * <li>{@code queries.f32}: {@code queries} vectors, the same layout. They are held out: none of them is a row of {@code vectors.f32}.</li>
  * <li>{@code truth.i32}: {@code queries} rows of {@code truth-k} int32 values, little endian: the rows of {@code vectors.f32} that are nearest to the
- * query by the cosine, best first. The vectors have unit length, so the cosine is the dot product, which is what the harness scores by.</li>
+ * query by the metric, best first. For the cosine the vectors have unit length, so the cosine is the dot product, which is what the harness
+ * scores by. An {@code l2} set keeps the vectors as they are and means the Euclidean distance ({@code scripts/prep_ann_hdf5.py});
+ * {@link PacedWrites} reads it, {@link Bench} and {@link MergeGenerations} refuse it.</li>
  * </ul>
  *
- * <p>The loader checks the sizes of the files against the header, and every vector for a non-finite value and for a length other than 1 (to 1e-3),
- * so a file that was not normalised fails before a measurement is made on it.
+ * <p>The loader checks the sizes of the files against the header, and every vector for a non-finite value and, for the cosine, for a length other
+ * than 1 (to 1e-3), so a file that was not normalised fails before a measurement is made on it.
  */
 final class RealData {
     static final String META = "meta.properties", VECTORS = "vectors.f32", QUERIES = "queries.f32", TRUTH = "truth.i32";
@@ -65,7 +68,9 @@ final class RealData {
         if (format != 1) throw new IllegalArgumentException(mp + ": format " + format + " is not supported (this harness reads format 1)");
         int dim = intOf(meta, "dim"), count = intOf(meta, "count"), queries = intOf(meta, "queries"), truthK = intOf(meta, "truth-k");
         if (dim < 1 || count < 1 || queries < 1 || truthK < 1) throw new IllegalArgumentException(mp + ": dim, count, queries and truth-k must be positive");
-        if (!"true".equals(meta.get("normalized")))
+        String metric = meta.getOrDefault("metric", "cosine");
+        if (!metric.equals("cosine") && !metric.equals("l2")) throw new IllegalArgumentException(mp + ": metric is cosine or l2, not " + metric);
+        if (metric.equals("cosine") && !"true".equals(meta.get("normalized")))
             throw new IllegalArgumentException(mp + ": normalized must be true (the harness scores by the dot product, which is the cosine only for unit vectors)");
         expectSize(dir.resolve(VECTORS), (long) count * dim * 4);
         expectSize(dir.resolve(QUERIES), (long) queries * dim * 4);
@@ -145,7 +150,7 @@ final class RealData {
                 for (int r = 0; r < take; r++) {
                     float[] x = new float[dim];
                     fb.get(x);
-                    check(file, row + r, x);
+                    check(file, row + r, x, metric() == Metric.COSINE);
                     v[row + r] = x;
                 }
                 row += take;
@@ -154,13 +159,19 @@ final class RealData {
         return v;
     }
 
-    private static void check(Path file, int row, float[] x) {
+    /** the metric of the set: {@link Metric#L2} when meta.properties says {@code metric=l2}, else {@link Metric#COSINE} */
+    Metric metric() {
+        return "l2".equals(meta.get("metric")) ? Metric.L2 : Metric.COSINE;
+    }
+
+    /** every value is finite and, with unit, the length is 1 */
+    static void check(Path file, int row, float[] x, boolean unit) {
         double s = 0;
         for (float f : x) {
             if (!Float.isFinite(f)) throw new IllegalArgumentException(file + ": row " + row + " holds a value that is not a finite number");
             s += (double) f * f;
         }
-        if (Math.abs(Math.sqrt(s) - 1.0) > 1e-3)
+        if (unit && Math.abs(Math.sqrt(s) - 1.0) > 1e-3)
             throw new IllegalArgumentException(file + ": row " + row + " has length " + Math.sqrt(s) + ", not 1 (scripts/prep_real_dataset.py normalises the vectors)");
     }
 }

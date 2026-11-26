@@ -123,6 +123,32 @@ public final class MergeGenerations {
         return ManagementFactory.getRuntimeMXBean().getUptime();
     }
 
+    /** the lines at the head of a result file about the run, the machine, the JVM, the options, and the data set; {@link PacedWrites} writes them too */
+    static void machine(Bench.Out out, Map<String, String> o, RealData real) {
+        String label = o.get("host-label").isEmpty() ? Bench.firstLine("/proc/sys/kernel/hostname") : o.get("host-label");
+        out.line("RUN started=" + Instant.now() + " host=" + label);
+        String sha = Bench.sh("git", "-C", o.get("repo"), "rev-parse", "HEAD");
+        out.line("COMMIT sha=" + (sha == null ? "unknown" : sha));
+        String allowed = "unknown";
+        for (String l : Bench.readLines("/proc/self/status")) if (l.startsWith("Cpus_allowed_list:")) allowed = l.substring(18).trim();
+        String first = allowed.split("[-,]")[0];
+        int cpu = first.matches("[0-9]+") ? Integer.parseInt(first) : 0;
+        out.line("CPU model=\"" + Bench.cpuinfoOf(cpu)[0] + "\" cpusAllowedList=" + allowed + " availableProcessors=" + Runtime.getRuntime().availableProcessors());
+        out.line("CPUFREQ governor=" + Bench.firstLine("/sys/devices/system/cpu/cpu" + cpu + "/cpufreq/scaling_governor") + " noTurbo="
+                + Bench.firstLine("/sys/devices/system/cpu/intel_pstate/no_turbo"));
+        out.line("RAM totalKiB=" + Bench.meminfoKb("MemTotal") + " availableKiB=" + Bench.meminfoKb("MemAvailable"));
+        out.line("JDK version=" + System.getProperty("java.version") + " vendor=" + System.getProperty("java.vendor") + " runtime=" + System.getProperty("java.runtime.version"));
+        StringBuilder gcs = new StringBuilder();
+        for (GarbageCollectorMXBean b : ManagementFactory.getGarbageCollectorMXBeans()) gcs.append(gcs.length() == 0 ? "" : ",").append(b.getName());
+        out.line("JVM maxHeapMiB=" + Runtime.getRuntime().maxMemory() / (1 << 20) + " collectors=" + gcs + " args=" + ManagementFactory.getRuntimeMXBean().getInputArguments());
+        out.line("VECTORAPI module=" + ModuleLayer.boot().findModule("jdk.incubator.vector").isPresent() + " kernels=" + (Kernels.VECTOR ? "vector" : "scalar")
+                + " lanes=" + Kern.lanes() + " scalarProperty=" + System.getProperty("ai.humem.tiervec.scalar"));
+        StringBuilder ps = new StringBuilder();
+        for (Map.Entry<String, String> e : new TreeMap<>(o).entrySet()) ps.append(ps.length() == 0 ? "" : " ").append(e.getKey()).append('=').append(e.getValue());
+        out.line("PARAMS " + ps);
+        out.line("DATASET " + real.describe());
+    }
+
     /** the rows that a run uses, outside the heap: row s of this object is the row {@code order[s]} of the file */
     static final class Rows {
         private final FloatBuffer values;
@@ -133,7 +159,8 @@ public final class MergeGenerations {
             this.dim = dim;
         }
 
-        static Rows read(Path file, int[] order, int dim) throws IOException {
+        /** the rows {@code order} of the file; every value is checked, and with unit (a cosine set) every length */
+        static Rows read(Path file, int[] order, int dim, boolean unit) throws IOException {
             final int rowBytes = dim * 4;
             ByteBuffer all = ByteBuffer.allocateDirect(Math.multiplyExact(order.length, rowBytes));
             try (FileChannel ch = FileChannel.open(file, StandardOpenOption.READ)) {
@@ -151,10 +178,7 @@ public final class MergeGenerations {
             float[] x = new float[dim];
             for (int s = 0; s < order.length; s++) {
                 rows.get(s, x);
-                double norm = 0;
-                for (float f : x) norm += (double) f * f;
-                if (!(Math.abs(Math.sqrt(norm) - 1.0) <= 1e-3))
-                    throw new IllegalArgumentException(file + ": row " + order[s] + " has length " + Math.sqrt(norm) + ", not 1 (scripts/prep_real_dataset.py normalises the vectors)");
+                RealData.check(file, order[s], x, unit);
             }
             return rows;
         }
@@ -244,6 +268,7 @@ public final class MergeGenerations {
             this.o = o;
             if (o.get("data").isEmpty()) throw new IllegalArgumentException("--data is required: the directory of a prepared real data set (docs/BENCHMARKS.md, \"Real data\")");
             real = RealData.open(Path.of(o.get("data")));
+            if (real.metric() != Metric.COSINE) throw new IllegalArgumentException("--data " + o.get("data") + " is an l2 set; this program scores by the cosine");
             String m = o.get("merge-mode");
             if (!m.equals("rebuild") && !m.equals("insert")) throw new IllegalArgumentException("--merge-mode is rebuild or insert, not " + m);
             mode = m.equals("insert") ? TieredIndex.MergeMode.INSERT : TieredIndex.MergeMode.REBUILD;
@@ -286,7 +311,8 @@ public final class MergeGenerations {
             out = new Bench.Out(o.get("out"));
             long t0 = System.nanoTime();
             try {
-                header();
+                out.line("GEN-RESULT format=1 harness=ai.humem.tiervec.MergeGenerations");
+                machine(out, o, real);
                 load();
                 build();
                 for (int g = 1; g <= generations; g++) generation(g);
@@ -306,36 +332,10 @@ public final class MergeGenerations {
             return failures.isEmpty() ? 0 : 1;
         }
 
-        private void header() {
-            out.line("GEN-RESULT format=1 harness=ai.humem.tiervec.MergeGenerations");
-            String label = o.get("host-label").isEmpty() ? Bench.firstLine("/proc/sys/kernel/hostname") : o.get("host-label");
-            out.line("RUN started=" + Instant.now() + " host=" + label);
-            String sha = Bench.sh("git", "-C", o.get("repo"), "rev-parse", "HEAD");
-            out.line("COMMIT sha=" + (sha == null ? "unknown" : sha));
-            String allowed = "unknown";
-            for (String l : Bench.readLines("/proc/self/status")) if (l.startsWith("Cpus_allowed_list:")) allowed = l.substring(18).trim();
-            String first = allowed.split("[-,]")[0];
-            int cpu = first.matches("[0-9]+") ? Integer.parseInt(first) : 0;
-            out.line("CPU model=\"" + Bench.cpuinfoOf(cpu)[0] + "\" cpusAllowedList=" + allowed + " availableProcessors=" + Runtime.getRuntime().availableProcessors());
-            out.line("CPUFREQ governor=" + Bench.firstLine("/sys/devices/system/cpu/cpu" + cpu + "/cpufreq/scaling_governor") + " noTurbo="
-                    + Bench.firstLine("/sys/devices/system/cpu/intel_pstate/no_turbo"));
-            out.line("RAM totalKiB=" + Bench.meminfoKb("MemTotal") + " availableKiB=" + Bench.meminfoKb("MemAvailable"));
-            out.line("JDK version=" + System.getProperty("java.version") + " vendor=" + System.getProperty("java.vendor") + " runtime=" + System.getProperty("java.runtime.version"));
-            StringBuilder gcs = new StringBuilder();
-            for (GarbageCollectorMXBean b : ManagementFactory.getGarbageCollectorMXBeans()) gcs.append(gcs.length() == 0 ? "" : ",").append(b.getName());
-            out.line("JVM maxHeapMiB=" + Runtime.getRuntime().maxMemory() / (1 << 20) + " collectors=" + gcs + " args=" + ManagementFactory.getRuntimeMXBean().getInputArguments());
-            out.line("VECTORAPI module=" + ModuleLayer.boot().findModule("jdk.incubator.vector").isPresent() + " kernels=" + (Kernels.VECTOR ? "vector" : "scalar")
-                    + " lanes=" + Kern.lanes() + " scalarProperty=" + System.getProperty("ai.humem.tiervec.scalar"));
-            StringBuilder ps = new StringBuilder();
-            for (Map.Entry<String, String> e : new TreeMap<>(o).entrySet()) ps.append(ps.length() == 0 ? "" : " ").append(e.getKey()).append('=').append(e.getValue());
-            out.line("PARAMS " + ps);
-            out.line("DATASET " + real.describe());
-        }
-
         private void load() throws IOException {
             long t0 = System.nanoTime();
             int[] order = drawOrder(real.count, rows, seed);
-            data = Rows.read(real.dir.resolve(RealData.VECTORS), order, real.dim);
+            data = Rows.read(real.dir.resolve(RealData.VECTORS), order, real.dim, true);
             qs = real.readQueries(nq);
             CRC32 orderCrc = new CRC32();
             for (int row : order) crc(orderCrc, row);

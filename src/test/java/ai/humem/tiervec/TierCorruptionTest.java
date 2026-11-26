@@ -408,11 +408,23 @@ class TierCorruptionTest {
         forgeTombstones(t -> t[0] ^= 1);
         CorruptException e = assertInstanceOf(CorruptException.class, latestRefused(dir, "tombstone magic").getCause());
         assertEquals("TOMBSTONES", e.section());
-        // a deleted row: this version stores none and does not guess
+        // a marked row is hidden
         clear();
         copy(single, dir);
         forgeTombstones(t -> t[24 + 16] |= 1); // the first word of the bitmap of the first segment
-        assertInstanceOf(UnsupportedException.class, openRefused(dir, "a tombstone bit set"));
+        final List<Manifest.Entry> listed = Manifest.readLatest(dir).entries();
+        final long rows = listed.get(0).n(); // of the first segment, whose bitmap comes first
+        final long all = listed.stream().mapToLong(Manifest.Entry::n).sum();
+        try (TieredIndex u = TieredIndex.open(dir, cfg())) {
+            assertEquals(all - 1, u.size());
+        }
+        // a mark for a row that the segment does not have
+        clear();
+        copy(single, dir);
+        assertTrue(rows % 64 != 0, "the last word of the bitmap has spare bits: " + rows + " rows");
+        forgeTombstones(t -> t[24 + 16 + 8 * (int) (rows / 64) + 7] |= (byte) 0x80); // the highest bit of the last word of the first segment
+        CorruptException beyond = assertInstanceOf(CorruptException.class, latestRefused(dir, "a tombstone bit beyond the rows").getCause());
+        assertEquals("TOMBSTONES", beyond.section());
     }
 
     // ---- versions, in the directory ----

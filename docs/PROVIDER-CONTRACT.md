@@ -124,7 +124,7 @@ The id models, their consequences, and the open questions are in [ID-EPOCH-AND-R
 - Rebuild from records: always available, and always correct, because the vectors in the host's records are the truth. It is the answer to every integrity failure.
 - Flush, close, drop, clear, and verify: as in the operations table.
 - Files: a host may keep the library's files outside its own storage. The library never registers a file with the host's storage manager, writes only inside the directory it is given, and treats a restored or replicated copy that has no files as a cold index. `planned` ([#9]).
-- Persistence: the format, as the first cut writes it, is in [SEGMENT-FORMAT.md](SEGMENT-FORMAT.md). A settled tier is written by `TieredIndex.checkpoint` and read by `TieredIndex.open`. The tests for damaged files and crashes at scale are [#17].
+- Persistence: the format, as the first cut writes it, is in [SEGMENT-FORMAT.md](SEGMENT-FORMAT.md). A tier with an empty tail is written by `TieredIndex.checkpoint` and read by `TieredIndex.open`, with the rows that deletes and replaces have hidden. The tests for damaged files and crashes at scale are [#17].
 
 ## Recovery
 
@@ -206,7 +206,7 @@ Rows marked `exists today` or `partly` name the class and method, and the test t
 | Host executor, build permit, memory budget, no own threads | `planned` | | | [#13] |
 | Epoch, high-water id, replay, liveness check, durable prefix | `exists today` | `TieredIndex.open(dir, dim, metric, config, RecordSource)`, `TieredIndex.checkpoint`, `RecordSource` | `EpochReplayTest`, `EpochReplayStressTest`, `EpochReplayLongTest` (slow) | A check of the id order: [#7]. A delete that the host forgot after a checkpoint: the host flushes its deletes first |
 | Segment file and manifest specification | `partly` | [SEGMENT-FORMAT.md](SEGMENT-FORMAT.md) (the format as the first cut writes it) | `SegmentFormatTest.sectionBytesMatchTheInMemoryCounter` (size formulas against the in-memory counter) | Review of the format: [#6] |
-| Persistence, open, flush, drop, clear, verify | `partly` | `TieredIndex.checkpoint`, `TieredIndex.open`, `SealedGraph.serialize`, `SealedGraph.load` | `TierReopenTest`, `ManifestCrashTest`, `SegmentFormatTest` | A settled tier only (the host replays the tail through `RecordSource`), no non-empty tombstones, no memory mapping. `flush`, `drop`, `clear`, `verify`: [#9] follow-ups |
+| Persistence, open, flush, drop, clear, verify | `partly` | `TieredIndex.checkpoint`, `TieredIndex.open`, `SealedGraph.serialize`, `SealedGraph.load` | `TierReopenTest`, `TierTombstoneTest`, `ManifestCrashTest`, `SegmentFormatTest` | An empty tail only (the host replays the tail through `RecordSource`), no memory mapping. `flush`, `drop`, `clear`, `verify`: [#9] follow-ups |
 | Corruption and crash tests | `partly` | `TieredIndex.checkpoint`, `TieredIndex.open` | `SegmentCorruptionTest`, `TierCorruptionTest`, `SegmentForgedFileTest`, `ManifestCrashTest`, `TierHaltTest`, `TierPowerCutTest`, `SimulatedFsCrashTest`, `TierHaltLongTest` and `TierKillLongTest` (slow) | Crashes and corruption at scale are not tested. Power loss is not claimed |
 | Configuration map, fingerprint, capabilities, contract version, error classes, health | `planned` | | | [#18] |
 | Scalar twin of the graph kernel | `exists today` | `Kern`, `VKern` | `KernDiffTest`, `NoIncubatorTest` | |

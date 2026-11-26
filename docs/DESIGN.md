@@ -20,7 +20,7 @@ Every index implements `VecIndex`, over `float[]` vectors with a `long` id and o
 | `GraphIndex` | Mutable, concurrent HNSW-style graph. `seal()` turns it into a `SealedGraph`, `fromSealed` turns it back. |
 | `SealedGraph` | Immutable compact graph. The only mutation is a soft delete through a bitset. Has `serialize` and `load` (one segment file, see [SEGMENT-FORMAT.md](SEGMENT-FORMAT.md)). |
 | `IvfIndex` | Standalone inverted-file index with k-means lists and a background retrain. Not a segment type of `TieredIndex`. |
-| `TieredIndex` | The tier: an exact tail in front of sealed graph segments. A settled tier can be written with `checkpoint` and read with `open`. |
+| `TieredIndex` | The tier: an exact tail in front of sealed graph segments. A tier with an empty tail can be written with `checkpoint` and read with `open`. |
 | `Kernels`, `VKernels`, `NKernels`, `Kern`, `VKern` | Distance kernels. `Kernels` picks vector or scalar code once per JVM or image, for the flat, IVF, and graph kernels. `NKernels` holds the Vector API kernels for a native image: the fp32 dot and squared L2, the int8 dot, the SQ8 dots, and block16; its 128-bit forms of the last four are also what an aarch64 JVM uses for them. |
 
 ### Flat index
@@ -86,7 +86,7 @@ The query path pays one volatile read before the scan and one fence and one vola
 
 ### Tombstones and the version floor
 
-Versions come from one counter under the write lock. The floor map says "a segment copy of `id` is valid only when its version is at least `floor[id]`". Replace and delete raise the floor, but only when a segment or the frozen tail holds a copy of the id, so the map stays small. Searches filter segments through the floor inside the beam, so a deleted or replaced vector never appears and nothing waits for a merge. Each segment counts its hidden copies, and a segment with none is searched with the plain filter. Because the floor is a version and not a flag, an id that the host reuses after a delete is added with a newer version, so the new vector is visible while the old copies stay hidden.
+Versions come from one counter under the write lock. The floor map says "a segment copy of `id` is valid only when its version is at least `floor[id]`". Replace and delete raise the floor, but only when a segment or the frozen tail holds a copy of the id, so the map stays small. Searches filter segments through the floor inside the beam, so a deleted or replaced vector never appears and nothing waits for a merge. Each segment counts its hidden copies, and a segment with none is searched with the plain filter. Because the floor is a version and not a flag, an id that the host reuses after a delete is added with a newer version, so the new vector is visible while the old copies stay hidden. `checkpoint` writes the hidden rows of every segment into the tombstone file, and `open` rebuilds the floor map from those bits ([SEGMENT-FORMAT.md](SEGMENT-FORMAT.md)), so a reopened tier hides the same rows.
 
 ### Search
 

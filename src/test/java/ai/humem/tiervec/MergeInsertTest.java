@@ -45,6 +45,8 @@ class MergeInsertTest {
     private static final int EF = 40;
     private static final double BOUND = 0.02;
     private static final long SEED = 16;
+    /** a bound on the rows of the concurrent test: its check searches once per id, so its cost grows with the square of the rows */
+    private static final int WRITES = 40_000;
 
     @TempDir
     Path dir;
@@ -219,7 +221,7 @@ class MergeInsertTest {
                 Random r = new Random(1);
                 long next = 1000;
                 long serial = 1000;
-                while (!stop.get()) {
+                while (!stop.get() && serial < WRITES) {
                     int what = r.nextInt(10);
                     long old = r.nextInt((int) next);
                     if (what < 2) {
@@ -234,7 +236,7 @@ class MergeInsertTest {
                         gone.remove(id);
                         t.add(id, v);
                     }
-                    if ((serial & 63) == 0) Thread.sleep(1);
+                    if ((serial & 7) == 0) Thread.sleep(1); // spreads the writes over the five seconds
                 }
             } catch (Throwable e) {
                 failed.set(e);

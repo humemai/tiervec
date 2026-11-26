@@ -466,7 +466,12 @@ public final class TieredIndex implements VecIndex {
     private static final long NOW = Long.MIN_VALUE, FIRST_BACKOFF = 50_000_000L, MAX_BACKOFF = 5_000_000_000L;
     private static final int MIN_TAIL = 64; // a memory budget does not shrink the seal threshold below this
     private final ReentrantLock mu = new ReentrantLock();
-    private final ReentrantLock work = new ReentrantLock();
+    /**
+     * One seal, merge, rebuild or checkpoint at a time. Fair: the worker takes it again right after each task while more is due, and
+     * under steady writes a lock that lets a newcomer pass a waiting thread can keep a caller of {@code sealNow}, {@code mergeNow} or
+     * {@code checkpoint} out for as long as the writes go on (issue #144).
+     */
+    private final ReentrantLock work = new ReentrantLock(true);
     private volatile View view;
     private volatile double filterScanBelow;
     /**

@@ -20,5 +20,7 @@ public enum Capability {
     /** {@link TieredIndex#checkpoint} and {@link TieredIndex#open}: segments and their hidden rows, not the tail */
     PERSISTENCE,
     /** a rebuild from a snapshot of the records while writes go on ({@link TieredIndex#rebuildFrom(java.util.function.Supplier, long)}) */
-    SNAPSHOT_REBUILD
+    SNAPSHOT_REBUILD,
+    /** the host gives the threads, the build permits and the memory budget ({@link HostEnv}) */
+    HOST_ENVIRONMENT
 }

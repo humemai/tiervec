@@ -18,10 +18,14 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicLongArray;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.LockSupport;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
@@ -448,7 +452,18 @@ public final class TieredIndex implements VecIndex {
     private final int dim;
     private final Metric metric;
     private volatile Config cfg; // replaced only by reconfigure, under mu, and only in its search-time knobs
-    private final int hardTail;
+    private final HostEnv env;
+    private final boolean hosted; // the host runs the tasks and grants the builds; there is no worker thread
+    /** hosted only: a maintenance task is with the executor or running */
+    private final AtomicBoolean queued = new AtomicBoolean();
+    private volatile boolean rejected; // hosted only: the executor refused the last task
+    /** per {@link HostEnv.BuildKind}: the System.nanoTime() before which a refused or failed background build is not tried again, or {@link #NOW} */
+    private final AtomicLongArray retryAt = new AtomicLongArray(new long[] {NOW, NOW, NOW});
+    private final long[] backoff = new long[3];
+    private final AtomicLong deferrals = new AtomicLong();
+    private volatile long ageAskedFor = NOW; // hosted only: Tail.firstNs of the tail for which the host's timer was last asked to look again
+    private static final long NOW = Long.MIN_VALUE, FIRST_BACKOFF = 50_000_000L, MAX_BACKOFF = 5_000_000_000L;
+    private static final int MIN_TAIL = 64; // a memory budget does not shrink the seal threshold below this
     private final ReentrantLock mu = new ReentrantLock();
     private final ReentrantLock work = new ReentrantLock();
     private volatile View view;
@@ -495,8 +510,9 @@ public final class TieredIndex implements VecIndex {
     /** the counters of a bound {@link MetricSink}, in the order of {@link #COUNTERS}, or null */
     private volatile LongConsumer[] sinkCounters;
     private static final String[] COUNTERS = {"tiervec.seals", "tiervec.merges", "tiervec.failures", "tiervec.backpressureWaits",
-            "tiervec.sealedVectors", "tiervec.mergedVectors", "tiervec.bigMerges", "tiervec.bigMergedVectors"};
-    private static final int C_SEALS = 0, C_MERGES = 1, C_FAILURES = 2, C_BACKPRESSURE = 3, C_SEALED = 4, C_MERGED = 5, C_BIG = 6, C_BIG_MERGED = 7;
+            "tiervec.sealedVectors", "tiervec.mergedVectors", "tiervec.bigMerges", "tiervec.bigMergedVectors", "tiervec.deferredBuilds"};
+    private static final int C_SEALS = 0, C_MERGES = 1, C_FAILURES = 2, C_BACKPRESSURE = 3, C_SEALED = 4, C_MERGED = 5, C_BIG = 6, C_BIG_MERGED = 7,
+            C_DEFERRED = 8;
     private static final ContractVersion CONTRACT = new ContractVersion(1, 0);
 
     // task log: the seal and merge intervals as System.nanoTime() stamps, so a benchmark can compare them with its own timestamps. doSeal and doMerge always run
@@ -533,15 +549,30 @@ public final class TieredIndex implements VecIndex {
     }
 
     public TieredIndex(int dim, Metric metric, Config cfg) {
+        this(dim, metric, cfg, HostEnv.standalone());
+    }
+
+    /**
+     * A tier that runs on the threads, the build permits and the memory budget of a host, see {@link HostEnv}. With
+     * {@link HostEnv#standalone()} it is the tier that {@link #TieredIndex(int, Metric, Config)} makes.
+     */
+    public TieredIndex(int dim, Metric metric, Config cfg, HostEnv env) {
         if (dim < 1) throw new IllegalArgumentException("dim");
         this.dim = dim;
         this.metric = metric;
         this.cfg = cfg;
-        this.hardTail = (int) Math.min(Integer.MAX_VALUE / 2, (long) cfg.hardTailFactor() * Math.max(cfg.tailLimit(), cfg.smallLimit()));
+        this.env = Objects.requireNonNull(env, "env");
+        this.hosted = !(env instanceof StandaloneEnv);
         this.view = new View(new Segment[0], null, new Tail(dim, metric, cfg.tailQuant()));
-        this.worker = new Thread(this::workerLoop, "tiered-worker");
-        this.worker.setDaemon(true);
-        this.worker.start();
+        if (hosted) {
+            this.worker = null;
+        } else {
+            this.worker = new Thread(this::workerLoop, "tiered-worker");
+            this.worker.setDaemon(true);
+            this.worker.start();
+        }
+        MetricSink sink = env.metrics();
+        if (sink != null) bindMetrics(sink);
     }
 
     @Override public int dim() { return dim; }
@@ -588,7 +619,7 @@ public final class TieredIndex implements VecIndex {
 
     /** how the background maintenance is doing, see {@link Health}; a closed index keeps the state it had apart from FAILED */
     public Health health() {
-        if (!closed && !worker.isAlive()) return Health.FAILED;
+        if (!closed && (hosted ? rejected : !worker.isAlive())) return Health.FAILED;
         return sealFailStreak >= DEGRADED_AFTER || mergeFailStreak >= DEGRADED_AFTER ? Health.DEGRADED : Health.OK;
     }
 
@@ -602,7 +633,7 @@ public final class TieredIndex implements VecIndex {
     public Map<String, Long> metrics() {
         Map<String, Long> m = new LinkedHashMap<>();
         long[] counted = {seals.get(), merges.get(), failures.get(), backpressure.get(), sealedVectors.get(), mergedVectors.get(), bigMerges.get(),
-                bigMergedVectors.get()};
+                bigMergedVectors.get(), deferrals.get()};
         for (int i = 0; i < counted.length; i++) m.put(COUNTERS[i], counted[i]);
         for (Map.Entry<String, LongSupplier> g : gauges().entrySet()) m.put(g.getKey(), g.getValue().getAsLong());
         return Collections.unmodifiableMap(m);
@@ -666,9 +697,172 @@ public final class TieredIndex implements VecIndex {
     /** 0 idle, 1 a seal is running, 2 a merge is running (for per-phase latency reports) */
     public int activity() { return activity; }
     public Throwable lastError() { return lastError; }
-    public boolean workerAlive() { return worker.isAlive(); }
+    /** whether the worker thread of a standalone tier runs; false for a tier with a host environment, which has none */
+    public boolean workerAlive() { return worker != null && worker.isAlive(); }
     /** test hook: ends the maintenance worker while the tier stays open, which {@link #health} reports as FAILED */
     void interruptWorker() { worker.interrupt(); }
+
+    // ---- the host environment ----
+
+    /**
+     * For a tier with a host environment: drops floor entries that no search needs any more, and submits a maintenance task to the executor
+     * when a seal or a merge is due (a seal by age included) and no refused or failed build is still waiting for its retry. The tier calls it
+     * itself after every write; a host calls it from its timer when {@link HostEnv#schedule} has none. A standalone tier ignores the call.
+     */
+    public void maintain() {
+        if (!hosted || closed) return;
+        settleFloorIfDue();
+        askForAgeSeal();
+        if (due()) submit();
+    }
+
+    /** asks the host's timer, once per tail, to look again when the active tail is older than {@code tailAgeMs} */
+    private void askForAgeSeal() {
+        long age = cfg.tailAgeMs();
+        Tail t = view.active;
+        if (age <= 0 || t.raw.isEmpty()) return;
+        long first = t.firstNs;
+        if (first == ageAskedFor) return;
+        ageAskedFor = first; // the value, not the tail: a sealed tail must not stay reachable
+        long left = age * 1_000_000L - (System.nanoTime() - first);
+        if (left > 0) env.schedule(this::maintain, left + 1_000_000L); // a tail that is old already is due now
+    }
+
+    private boolean due() {
+        return (ready(HostEnv.BuildKind.SEAL) && sealDue()) || (ready(HostEnv.BuildKind.MERGE) && pickMerge(view.segs, false) != null);
+    }
+
+    private void submit() {
+        if (work.isHeldByCurrentThread()) return; // inside a build of this thread (a same-thread executor): the work is looked at again later
+        if (!queued.compareAndSet(false, true)) return; // the task that is queued or running looks again when it ends
+        try {
+            env.executor().execute(this::maintenanceTask);
+            rejected = false;
+        } catch (RuntimeException refused) {
+            queued.set(false);
+            rejected = true;
+            lastError = refused;
+            count(failures, C_FAILURES, 1);
+        }
+    }
+
+    private void maintenanceTask() {
+        try {
+            while (!closed) {
+                settleFloorIfDue();
+                boolean did;
+                work.lock();
+                try {
+                    did = !closed && runOne();
+                } finally {
+                    work.unlock();
+                }
+                if (!did) break;
+            }
+        } catch (Throwable t) {
+            if (!closed) {
+                lastError = t;
+                count(failures, C_FAILURES, 1);
+            }
+        } finally {
+            queued.set(false);
+        }
+        if (!closed && due()) submit(); // what became due after the last look, while the task still held its place
+    }
+
+    /** under the work lock: one background seal or merge, when one is due and not waiting for a retry; true when it ran */
+    private boolean runOne() {
+        if (sealDue() && ready(HostEnv.BuildKind.SEAL)) {
+            boolean ran = false;
+            try {
+                boolean did = doSeal(false);
+                ran = true;
+                return did;
+            } finally {
+                if (!ran && !closed) {
+                    sealFailStreak++;
+                    if (hosted) retryLater(HostEnv.BuildKind.SEAL);
+                }
+            }
+        }
+        if (ready(HostEnv.BuildKind.MERGE) && pickMerge(view.segs, false) != null) {
+            boolean ran = false;
+            try {
+                boolean did = doMerge(false);
+                ran = true;
+                return did;
+            } finally {
+                if (!ran && !closed) {
+                    mergeFailStreak++;
+                    if (hosted) retryLater(HostEnv.BuildKind.MERGE);
+                }
+            }
+        }
+        return false;
+    }
+
+    private boolean ready(HostEnv.BuildKind kind) {
+        long at = retryAt.get(kind.ordinal());
+        return at == NOW || System.nanoTime() - at >= 0;
+    }
+
+    /** a background build of this kind waits before its next try, twice as long as the last time, up to five seconds */
+    private void retryLater(HostEnv.BuildKind kind) {
+        int k = kind.ordinal();
+        long wait = Math.min(MAX_BACKOFF, Math.max(FIRST_BACKOFF, backoff[k] * 2));
+        backoff[k] = wait;
+        retryAt.set(k, System.nanoTime() + wait);
+        env.schedule(this::maintain, wait); // a host without a timer returns false: the next write or maintain() tries again
+    }
+
+    /** the permit for a build of {@code rows} rows, or null when the host refused it, and then a background build waits before its next try */
+    private HostEnv.Permit permit(HostEnv.BuildKind kind, long rows) {
+        HostEnv.Permit p = env.acquireBuild(kind, estimatedBuildBytes(rows));
+        if (p == null) {
+            count(deferrals, C_DEFERRED, 1);
+            retryLater(kind);
+        } else {
+            retryAt.set(kind.ordinal(), NOW);
+        }
+        return p;
+    }
+
+    /** under the work lock: a build of this kind ended well, so the next refusal or failure starts at the first back-off again */
+    private boolean built(HostEnv.BuildKind kind, boolean done) {
+        backoff[kind.ordinal()] = 0; // not on a granted permit: a build that fails every time keeps backing off
+        return done;
+    }
+
+    /**
+     * An estimate of the memory that a graph build over {@code rows} rows needs at its peak: the graph being built and its sealed copy, each
+     * with the vectors (and codes) and about 12 * M bytes of links per row, and 200 bytes per row around them. It is arithmetic and has not
+     * been compared with measurements (issue 13).
+     */
+    long estimatedBuildBytes(long rows) {
+        GraphIndex.Params g = cfg.graph();
+        long vector = 4L * dim + (g.sq8() ? dim + 12L : 0L);
+        return rows * (2L * (vector + 12L * g.M()) + 200L);
+    }
+
+    /** the seal threshold in force: {@code tailLimit}, or less when the memory budget of the host is small (about an eighth of it for the tail) */
+    int effectiveTailLimit() {
+        int limit = cfg.tailLimit();
+        if (!hosted) return limit;
+        long budget = env.memoryBudgetBytes();
+        if (budget == Long.MAX_VALUE) return limit;
+        long perRow = 8L * dim + 128L; // the flat copy and the raw copy of a tail vector, and the maps around them
+        return (int) Math.max(Math.min(MIN_TAIL, limit), Math.min(limit, budget / 8 / perRow));
+    }
+
+    private int hardTail() {
+        return (int) Math.min(Integer.MAX_VALUE / 2, (long) cfg.hardTailFactor() * Math.max(effectiveTailLimit(), cfg.smallLimit()));
+    }
+
+    /** after a write, outside any lock: wakes the worker when the tail is full, or lets a hosted tier look for work */
+    private void afterWrite(boolean tailFull) {
+        if (hosted) maintain();
+        else if (tailFull && wake.availablePermits() == 0) wake.release();
+    }
     public int segmentCount() { return view.segs.length; }
     /** vectors in the tails (active plus frozen): what a SEALED_ONLY search does not see */
     public int pendingTail() {
@@ -720,7 +914,7 @@ public final class TieredIndex implements VecIndex {
         } finally {
             mu.unlock();
         }
-        if (wakeUp && wake.availablePermits() == 0) wake.release();
+        afterWrite(wakeUp);
     }
 
     /** under mu: the body of add (copy is the tier's own copy of the vector); true when the active tail has reached tailLimit */
@@ -734,20 +928,22 @@ public final class TieredIndex implements VecIndex {
         if (p.valid() != null) p.valid().dead = p.valid().dead + 1;
         if (p.inFrozen()) vw.frozen.remove(id);           // 3. the old frozen copy goes
         if (!(p.inActive() || p.inFrozen() || p.valid() != null)) live.incrementAndGet();
-        return vw.active.raw.size() >= cfg.tailLimit();
+        return vw.active.raw.size() >= effectiveTailLimit();
     }
 
     @Override
     public boolean delete(long id) {
+        boolean was;
         mu.lock();
         try {
             checkOpen();
-            boolean was = deleteLocked(id);
+            was = deleteLocked(id);
             if (capture != null) capture.add(new Change(new long[0], new float[0][], new long[] {id}));
-            return was;
         } finally {
             mu.unlock();
         }
+        afterWrite(false);
+        return was;
     }
 
     /** under mu: the body of delete; true when the id was live */
@@ -811,11 +1007,11 @@ public final class TieredIndex implements VecIndex {
             } finally {
                 batchSeq = batchSeq + 1; // even: the batch is whole, a volatile write after all of its changes
             }
-            wakeUp = view.active.raw.size() >= cfg.tailLimit();
+            wakeUp = view.active.raw.size() >= effectiveTailLimit();
         } finally {
             mu.unlock();
         }
-        if (wakeUp && wake.availablePermits() == 0) wake.release();
+        afterWrite(wakeUp);
     }
 
     /**
@@ -825,10 +1021,10 @@ public final class TieredIndex implements VecIndex {
      * {@code true} as soon as a seal or a delete makes room. {@link #apply} never calls it; {@link #add} calls it with a deadline 10 s away and adds anyway.
      */
     public boolean awaitCapacity(long deadlineNanos) {
-        while (view.active.raw.size() >= hardTail) {
-            if (closed || !worker.isAlive() || deadlineNanos - System.nanoTime() <= 0L) return false;
+        while (view.active.raw.size() >= hardTail()) {
+            if (closed || (!hosted && !worker.isAlive()) || deadlineNanos - System.nanoTime() <= 0L) return false;
             count(backpressure, C_BACKPRESSURE, 1);
-            if (wake.availablePermits() == 0) wake.release();
+            afterWrite(true);
             LockSupport.parkNanos(200_000L);
         }
         return true;
@@ -1079,23 +1275,7 @@ public final class TieredIndex implements VecIndex {
                     work.lock();
                     try {
                         if (closed) break;
-                        if (sealDue()) {
-                            boolean ran = false;
-                            try {
-                                did = doSeal(false);
-                                ran = true;
-                            } finally {
-                                if (!ran && !closed) sealFailStreak++; // under the work lock
-                            }
-                        } else if (pickMerge(view.segs, false) != null) {
-                            boolean ran = false;
-                            try {
-                                did = doMerge(false);
-                                ran = true;
-                            } finally {
-                                if (!ran && !closed) mergeFailStreak++;
-                            }
-                        }
+                        did = runOne();
                     } finally {
                         work.unlock();
                     }
@@ -1117,7 +1297,7 @@ public final class TieredIndex implements VecIndex {
         if (vw.frozen != null) return true; // a failed seal is retried
         int n = vw.active.raw.size();
         if (n == 0 || live.get() < cfg.smallLimit()) return false;
-        if (n >= cfg.tailLimit()) return true;
+        if (n >= effectiveTailLimit()) return true;
         long age = cfg.tailAgeMs();
         return age > 0 && System.nanoTime() - vw.active.firstNs > age * 1_000_000L;
     }
@@ -1174,7 +1354,22 @@ public final class TieredIndex implements VecIndex {
         return best;
     }
 
+    /** under the work lock: a seal when there is something to seal and the host permits the build; ignoreSmall is the call of {@link #sealNow} */
     private boolean doSeal(boolean ignoreSmall) {
+        View v = view;
+        Tail tail = v.frozen != null ? v.frozen : v.active;
+        if (v.frozen == null && (tail.raw.isEmpty() || (!ignoreSmall && live.get() < cfg.smallLimit()))) return false;
+        HostEnv.Permit granted = permit(HostEnv.BuildKind.SEAL, tail.raw.size());
+        if (granted == null) {
+            if (ignoreSmall) throw new BuildRefusedException("the host refused the build of a seal");
+            return false;
+        }
+        try (granted) {
+            return built(HostEnv.BuildKind.SEAL, seal(ignoreSmall));
+        }
+    }
+
+    private boolean seal(boolean ignoreSmall) {
         long t0 = System.nanoTime();
         activity = 1;
         try {
@@ -1258,7 +1453,34 @@ public final class TieredIndex implements VecIndex {
         }
     }
 
+    /**
+     * under the work lock: a merge when one is due and the host permits the build. A background merge also waits while the bytes held plus the
+     * estimate are above the memory budget; force is the call of {@link #mergeNow}.
+     */
     private boolean doMerge(boolean force) {
+        List<Segment> due = pickMerge(view.segs, force);
+        if (due == null || due.isEmpty()) return false;
+        long rows = 0;
+        for (Segment s : due) rows += s.n;
+        if (!force && hosted) {
+            long budget = env.memoryBudgetBytes();
+            if (budget != Long.MAX_VALUE && bytesHeld() + estimatedBuildBytes(rows) > budget) {
+                count(deferrals, C_DEFERRED, 1);
+                retryLater(HostEnv.BuildKind.MERGE);
+                return false;
+            }
+        }
+        HostEnv.Permit granted = permit(HostEnv.BuildKind.MERGE, rows);
+        if (granted == null) {
+            if (force) throw new BuildRefusedException("the host refused the build of a merge");
+            return false;
+        }
+        try (granted) {
+            return built(HostEnv.BuildKind.MERGE, merge(force));
+        }
+    }
+
+    private boolean merge(boolean force) {
         long t0 = System.nanoTime();
         View v0 = view;
         List<Segment> picked = pickMerge(v0.segs, force);
@@ -1403,6 +1625,41 @@ public final class TieredIndex implements VecIndex {
         int rate = throttle ? cfg.mergeRatePerSec() : sealRate; // sealRate is 0 (unthrottled) unless a benchmark sets it
         if (th == 1) {
             addRange(gi, ids, src, 0, n, rate);
+        } else if (hosted) {
+            // th ranges, claimed one by one by the calling thread and by helper tasks of the host's executor. The caller waits only for ranges
+            // that a helper has claimed, so a helper that never starts (an executor with one thread) cannot stop the build.
+            final int per = (n + th - 1) / th;
+            final int perRate = rate > 0 ? Math.max(1, rate / th) : 0;
+            final int ranges = th;
+            final AtomicInteger next = new AtomicInteger();
+            final CountDownLatch done = new CountDownLatch(ranges);
+            final AtomicReference<Throwable> err = new AtomicReference<>();
+            Runnable claim = () -> {
+                for (int t = next.getAndIncrement(); t < ranges; t = next.getAndIncrement()) {
+                    try {
+                        if (err.get() == null) addRange(gi, ids, src, Math.min(n, t * per), Math.min(n, (t + 1) * per), perRate);
+                    } catch (Throwable e) {
+                        err.compareAndSet(null, e);
+                    } finally {
+                        done.countDown();
+                    }
+                }
+            };
+            for (int t = 1; t < ranges; t++) {
+                try {
+                    env.executor().execute(claim);
+                } catch (RuntimeException refused) {
+                    break; // the calling thread claims what no helper takes
+                }
+            }
+            claim.run();
+            try {
+                done.await();
+            } catch (InterruptedException e) {
+                throw new IllegalStateException(e);
+            }
+            if (err.get() instanceof ClosedException c) throw c;
+            if (err.get() != null) throw new IllegalStateException(err.get());
         } else {
             final int per = (n + th - 1) / th;
             final int perRate = rate > 0 ? Math.max(1, rate / th) : 0;
@@ -1483,7 +1740,8 @@ public final class TieredIndex implements VecIndex {
                 work.unlock();
                 if (!floorDue && !sealDue() && pickMerge(view.segs, false) == null) return true;
             }
-            if (!worker.isAlive()) return false;
+            if (hosted ? closed : !worker.isAlive()) return false;
+            maintain(); // a standalone tier ignores it
             LockSupport.parkNanos(2_000_000L);
         }
         return false;
@@ -1572,7 +1830,7 @@ public final class TieredIndex implements VecIndex {
         } finally {
             work.unlock();
         }
-        if (view.active.raw.size() >= cfg.tailLimit() && wake.availablePermits() == 0) wake.release();
+        afterWrite(view.active.raw.size() >= effectiveTailLimit());
     }
 
     /** {@link #rebuildFrom(Supplier, long)} for a host that hands over its records and the snapshot position, and that holds back its own writes from the moment it took the position until this call has started */
@@ -1610,7 +1868,11 @@ public final class TieredIndex implements VecIndex {
         }
         SealedGraph sg = null;
         if (n >= cfg.smallLimit() && n > 0) {
-            sg = build(ids, n, j -> vecs[j].clone(), false);
+            HostEnv.Permit granted = env.acquireBuild(HostEnv.BuildKind.REBUILD, estimatedBuildBytes(n));
+            if (granted == null) throw new BuildRefusedException("the host refused a rebuild of " + n + " rows");
+            try (granted) {
+                sg = build(ids, n, j -> vecs[j].clone(), false);
+            }
             if (sg.n != n) throw new IllegalStateException("rebuilt rows " + sg.n + " != " + n);
         }
         return new Built(ids, vecs, sg);
@@ -1767,15 +2029,21 @@ public final class TieredIndex implements VecIndex {
      * overload of {@code open}.
      */
     public static TieredIndex open(Path dir, Config cfg) throws IOException {
+        return open(dir, cfg, HostEnv.standalone());
+    }
+
+    /** {@link #open(Path, Config)} for a tier that runs on a host environment ({@link #TieredIndex(int, Metric, Config, HostEnv)}) */
+    public static TieredIndex open(Path dir, Config cfg, HostEnv env) throws IOException {
         Config c = cfg != null ? cfg : Config.defaults();
         DirectoryLock claim = DirectoryLock.acquireIfPresent(dir);
         boolean kept = false;
         try {
             Manifest m = Manifest.readLatest(dir);
             if (m == null) throw new NoSuchFileException(dir.toString(), null, "no manifest in the directory");
-            TieredIndex t = restore(dir, m, m.fingerprint().dim(), m.fingerprint().metric(), c);
+            TieredIndex t = restore(dir, m, m.fingerprint().dim(), m.fingerprint().metric(), c, env);
             t.hold(claim);
             kept = true;
+            t.maintain();
             return t;
         } catch (SegmentFormat.CorruptException damaged) {
             throw new CorruptStateException(damaged.getMessage(), damaged);
@@ -1792,6 +2060,12 @@ public final class TieredIndex implements VecIndex {
      * to overwrite files of a newer format. {@link #openFallbackCause()} tells which failure it was.
      */
     public static TieredIndex open(Path dir, int dim, Metric metric, Config cfg, Supplier<? extends Iterable<IdVector>> rebuildSource) {
+        return open(dir, dim, metric, cfg, rebuildSource, HostEnv.standalone());
+    }
+
+    /** {@link #open(Path, int, Metric, Config, Supplier)} for a tier that runs on a host environment */
+    public static TieredIndex open(Path dir, int dim, Metric metric, Config cfg, Supplier<? extends Iterable<IdVector>> rebuildSource,
+                                   HostEnv env) {
         Config c = cfg != null ? cfg : Config.defaults();
         DirectoryLock claim = null;
         boolean kept = false;
@@ -1801,16 +2075,17 @@ public final class TieredIndex implements VecIndex {
                 claim = DirectoryLock.acquireIfPresent(dir);
                 Manifest m = Manifest.readLatest(dir);
                 if (m != null) {
-                    TieredIndex t = restore(dir, m, dim, metric, c);
+                    TieredIndex t = restore(dir, m, dim, metric, c, env);
                     t.hold(claim);
                     kept = true;
+                    t.maintain();
                     return t;
                 }
                 cause = new NoSuchFileException(dir.toString(), null, "no manifest in the directory");
             } catch (IOException e) {
                 cause = e;
             }
-            TieredIndex t = new TieredIndex(dim, metric, c);
+            TieredIndex t = new TieredIndex(dim, metric, c, env);
             try {
                 t.rebuildFrom(rebuildSource.get());
             } catch (RuntimeException e) {
@@ -1841,6 +2116,14 @@ public final class TieredIndex implements VecIndex {
      * ready when the call returns.
      */
     public static TieredIndex open(Path dir, int dim, Metric metric, Config cfg, RecordSource host) {
+        return open(dir, dim, metric, cfg, host, HostEnv.standalone());
+    }
+
+    /**
+     * {@link #open(Path, int, Metric, Config, RecordSource)} for a tier that runs on a host environment. A refused permit for the build of a cold
+     * index, or for the rebuild that drops ids above the recovered maximum, makes the call throw {@link BuildRefusedException}.
+     */
+    public static TieredIndex open(Path dir, int dim, Metric metric, Config cfg, RecordSource host, HostEnv env) {
         Config c = cfg != null ? cfg : Config.defaults();
         final long hostEpoch = host.epoch();
         checkEpoch(hostEpoch);
@@ -1857,11 +2140,12 @@ public final class TieredIndex implements VecIndex {
                     cause = new SegmentFormat.MismatchException("the persisted state belongs to epoch " + (m.epoch() == Manifest.NONE ? "none" : Long.toString(m.epoch()))
                             + ", the host is at epoch " + hostEpoch);
                 } else {
-                    TieredIndex t = restore(dir, m, dim, metric, c);
+                    TieredIndex t = restore(dir, m, dim, metric, c, env);
                     try {
                         t.reconcile(dir, host, m.hwm());
                         t.hold(claim);
                         kept = true;
+                        t.maintain();
                         return t;
                     } catch (IOException e) {
                         t.close();
@@ -1874,7 +2158,7 @@ public final class TieredIndex implements VecIndex {
             } catch (IOException e) {
                 cause = e;
             }
-            TieredIndex t = new TieredIndex(dim, metric, c);
+            TieredIndex t = new TieredIndex(dim, metric, c, env);
             try {
                 t.rebuildFrom(host.allLive());
                 t.epoch = hostEpoch;
@@ -1937,7 +2221,7 @@ public final class TieredIndex implements VecIndex {
         if (!chunk.isEmpty()) apply(new Batch(chunk, List.of()));
     }
 
-    private static TieredIndex restore(Path dir, Manifest m, int dim, Metric metric, Config cfg) throws IOException {
+    private static TieredIndex restore(Path dir, Manifest m, int dim, Metric metric, Config cfg, HostEnv env) throws IOException {
         Manifest.Fingerprint fp = m.fingerprint();
         GraphIndex.Params gp = cfg.graph();
         if (fp.dim() != dim || fp.metric() != metric || fp.M() != gp.M() || fp.efConstruction() != gp.efConstruction() || fp.sq8() != gp.sq8()) {
@@ -1975,7 +2259,7 @@ public final class TieredIndex implements VecIndex {
         checkHidden(segs, hidden, floorOf);
         int live = Math.toIntExact(total - hiddenTotal);
         Manifest.gc(dir, m); // orphans: files of a crashed publish, older generations
-        TieredIndex t = new TieredIndex(dim, metric, cfg);
+        TieredIndex t = new TieredIndex(dim, metric, cfg, env);
         t.work.lock();
         t.mu.lock();
         try {
@@ -2072,13 +2356,22 @@ public final class TieredIndex implements VecIndex {
         return r;
     }
 
+    /**
+     * Closes the tier: later calls that read or change vectors or files throw {@link ClosedException}, a build that runs stops, and the lock of
+     * the directory is released. A standalone tier stops its worker thread. A hosted tier waits (up to 30 s) for a build that holds the work
+     * lock, and a task that the executor has not started yet does nothing when it starts. A second call is harmless.
+     */
     @Override
     public void close() {
         closed = true;
-        wake.release();
-        worker.interrupt();
         try {
-            worker.join(30_000L);
+            if (hosted) {
+                if (work.tryLock(30, TimeUnit.SECONDS)) work.unlock();
+            } else {
+                wake.release();
+                worker.interrupt();
+                worker.join(30_000L);
+            }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }

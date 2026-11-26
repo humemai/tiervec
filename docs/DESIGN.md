@@ -104,6 +104,19 @@ A merge builds one graph from the valid vectors of its inputs. With `mergeMode` 
 
 One worker thread runs one task at a time (a seal or a merge). There is a cap on segments. No allocation proportional to `n` happens on the query path. Back pressure: when the active tail holds `hardTailFactor * max(tailLimit, smallLimit)` vectors, `add` waits for the worker, bounded to 10 s. `awaitCapacity(deadline)` is the same wait as a pre-check for `apply`: it waits for room in the tail and returns `false` at the deadline. `apply` never waits for the worker and does not look at the limit, so one batch can take the tail above it. `add` and `delete` take one write lock for a short time, and `apply` takes it once for the whole batch. Searches take no lock.
 
+The paragraph above is the standalone tier. A tier made with a `HostEnv` (`new TieredIndex(dim, metric, config, env)`, and the `open` overloads that take one) creates no thread, pool, or timer:
+
+| What | How it runs with a host environment |
+|---|---|
+| Seals and merges | One task at a time on `env.executor()`, submitted after a write when something is due. A seal by age and a retry need `env.schedule`, or a call of `maintain()` from the host's timer. |
+| Parallel part of a build | `buildThreads` ranges, claimed by the calling thread and by helper tasks, so an executor with one thread is enough. |
+| Permits | Every seal, merge, and rebuild asks `env.acquireBuild(kind, estimatedPeakBytes)` first and closes the permit afterwards. A refused background build waits 50 ms, then twice as long each time, up to 5 s. `sealNow`, `mergeNow`, and `rebuildFrom` throw `BuildRefusedException`. |
+| Memory budget | A background merge waits while `bytesHeld()` plus its estimate is above `env.memoryBudgetBytes()`. The seal threshold becomes the smaller of `tailLimit` and about an eighth of the budget in tail rows, at least 64, and the hard tail limit follows. A call of `mergeNow` asks for a permit only. |
+| `close` | Waits up to 30 s for a build that runs. A task that has not started does nothing. |
+| Health | FAILED while the executor refuses the tasks. |
+
+The estimate is arithmetic: for each row, twice the vector (with its SQ8 code) plus 12 times `M` bytes of links, and 200 bytes. It has not been compared with a measured peak ([#13](https://github.com/humemai/tiervec/issues/13)). The budget cannot shrink what the vectors themselves need, and it does not hold `add` back.
+
 ## Kernels and the scalar twin
 
 `Kernels` holds the flat-tier distance kernels: float dot and L2, int8 dot, and Hamming. Each has a Vector API version in `VKernels` and a scalar twin. The choice is made once, when `Kernels` is initialized: scalar when `-Dai.humem.tiervec.scalar=true`, scalar when `VKernels` cannot load (for example without the `jdk.incubator.vector` module), vector otherwise. `Kernels.VECTOR` says which one is in use. `IvfIndex` uses the same kernels.
@@ -165,6 +178,7 @@ Other controls on the tier: `filterScanBelow(fraction)` (default 0, off) is the 
 | `tiervec.backpressureWaits` | counter | waits of writers for room in the tail |
 | `tiervec.sealedVectors`, `tiervec.mergedVectors` | counter | rows that seals and merges put into graphs |
 | `tiervec.bigMerges`, `tiervec.bigMergedVectors` | counter | the part of the merges that rewrote the largest segment |
+| `tiervec.deferredBuilds` | counter | background builds that waited for a permit or for the memory budget (a refused call that builds on its own thread counts too) |
 | `tiervec.adds` | gauge | calls of `add`, batches included |
 | `tiervec.live`, `tiervec.tailSize`, `tiervec.segments`, `tiervec.bytesHeld`, `tiervec.floorEntries` | gauge | live vectors, vectors in the tails, segments, resident bytes, floor entries |
 | `tiervec.sealMillis`, `tiervec.mergeMillis`, `tiervec.maxSealMillis`, `tiervec.maxMergeMillis` | gauge | time in seals and merges, and the longest one |

@@ -180,6 +180,17 @@ The run fails (exit code 1) when:
 5. Do not compare files from different machines or different JDK builds as if only the library changed.
 6. Compare the tier and JVector only from two runs on the same machine and the same JDK build, one after the other, on the same cores and with the same `--build-threads`, and say which JVector SIMD provider ran. The table in [The JVector arm](#the-jvector-arm) says what the two arms do not have in common.
 
+## Successive merges
+
+`MergeGenerations`, in `src/bench`, runs many merges of one tier in a row, to compare the two merge modes of `Config.withMergeMode` ([issue #16](https://github.com/humemai/tiervec/issues/16)). It needs a [real data set](#real-data). It draws rows in an order that depends on the seed only and builds the first `--base` of them with one `rebuildFrom`. Each of `--generations` generations then deletes `--delete-pct` percent of the rows that are live at its start (at most 25, so that no insert merge falls back to a rebuild because of hidden rows), adds `--add-pct` percent of the base count from unused rows, seals the tail and calls `mergeNow()`. The worker never seals or merges by itself, and the writes are the same in both modes.
+
+```
+java -Xms6g -Xmx6g -Xlog:gc:file=gc.log:uptimemillis,level,tags --add-modules jdk.incubator.vector -cp target/bench/classes \
+  ai.humem.tiervec.MergeGenerations --data DATA_DIR --base 100000 --add-pct 10 --delete-pct 10 --merge-mode insert --queries 1000 --out result.txt
+```
+
+A `GEN` line per generation has the seconds of the seal and of the merge, the uptime of the JVM around the merge and around the collection forced before and after it (to match the lines of the GC log), the rows the merge built, and recall at `--ef` against exact search over the live rows. The exact answers are kept up to date with the harness's own scalar dot product, and the `TRUTH-CHECK` line compares them with a full scan at the end. The `SEARCH-FINAL` line has p50, p99 and the mean of one search thread after the last generation. The vectors are held outside the heap, so the heap holds the tier, the queries and the exact answers. The run fails when a merge did not take the path of its mode (an insert merge builds the added rows only, a rebuild builds every live row), when a count is wrong, when an answer is malformed or holds a deleted id, or when recall is below `--min-recall`. The options and their defaults are the method `MergeGenerations.defaults()`.
+
 ## The cost of polling
 
 `PollCost`, in `src/bench`, compares a search that has a `SearchContext` with the same search without one ([issue #11](https://github.com/humemai/tiervec/issues/11)). The context never expires and does what a host does at each poll: it reads a cancel flag and `System.nanoTime()` against a deadline. One JVM builds a tier of 20,000 vectors of dimension 128 and times 200 queries in three cells: `tail` (the exact scan of a tail), `walk` (the graph walk of one segment) and `scan` (the exact scan of a segment under a filter that passes one id in ten). Each of 40 rounds times both arms, and the arm that goes first alternates. A cell reports the median over the rounds of the time with the context divided by the time without it. The run fails when the two arms answer differently.

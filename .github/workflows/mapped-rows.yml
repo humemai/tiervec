@@ -1,12 +1,15 @@
-# What a row copy costs when the vectors of a sealed segment stay in a mapped file (issue #27; docs/BENCHMARKS.md, "The cost of a row copy"):
-# two segments, each measured in 5 fresh JVMs per JDK. It starts by hand, and on a pull request that changes the harness or this file. It has no
-# speed bar and it is not a required check. A timing from a shared runner is a ratio inside one run, never an absolute speed.
+# What the mapped reader of the vector section costs in time and saves in heap (issue #27; docs/BENCHMARKS.md, "The cost of a row copy"):
+# two segments, each timed in 5 fresh JVMs per JDK, and the heap of an opened segment with each reader, one JVM per reader. It starts by hand,
+# and on a pull request that changes the harness, the reader, or this file. It has no speed bar and it is not a required check. A timing from a
+# shared runner is a ratio inside one run, never an absolute speed.
 name: Mapped row copy
 
 on:
   pull_request:
     paths:
       - src/bench/java/ai/humem/tiervec/MappedRows.java
+      - src/main/java/ai/humem/tiervec/SealedVectors.java
+      - src/main/java/ai/humem/tiervec/SegmentReader.java
       - .github/workflows/mapped-rows.yml
   workflow_dispatch:
 
@@ -40,7 +43,7 @@ jobs:
           mkdir -p target/bench/classes
           find src/main/java src/bench/java -name '*.java' > target/bench/sources.txt
           javac -d target/bench/classes --add-modules jdk.incubator.vector @target/bench/sources.txt
-      - name: Build two segments and run 5 fresh JVMs on each
+      - name: Build two segments, time them in 5 fresh JVMs each, and count the heap of each reader
         env:
           JDK: ${{ matrix.java }}
         run: |
@@ -52,6 +55,11 @@ jobs:
             timeout 900 "${jvm[@]}" build "target/bench/segment-$dim.tvs" "$rows" "$dim"
             for i in $(seq 1 5); do
               timeout 600 "${jvm[@]}" run "target/bench/segment-$dim.tvs" > target/bench/one.txt || { cat target/bench/one.txt; exit 1; }
+              cat target/bench/one.txt
+              cat target/bench/one.txt >> "$out"
+            done
+            for storage in HEAP MAPPED; do
+              timeout 600 "${jvm[@]}" heap "target/bench/segment-$dim.tvs" "$storage" > target/bench/one.txt || { cat target/bench/one.txt; exit 1; }
               cat target/bench/one.txt
               cat target/bench/one.txt >> "$out"
             done

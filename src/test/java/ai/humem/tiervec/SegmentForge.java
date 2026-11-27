@@ -159,7 +159,8 @@ final class SegmentForge {
     }
 
     /**
-     * Loads the file the way a host does ({@link SealedGraph#load}, every section checksummed) and returns the exception that refused it.
+     * Loads the file the way a host does (every section checksummed, with the reader of {@link TestReaders}) and returns the exception that
+     * refused it.
      * Fails the test when a graph comes back, and when anything but a {@link CorruptException} or an {@link UnsupportedException} comes out:
      * a runtime exception, an error or another IOException is an uncontrolled failure.
      */
@@ -169,7 +170,7 @@ final class SegmentForge {
 
     static IOException refused(Path file, boolean verifyAll, String what) {
         try {
-            SealedGraph g = SegmentReader.read(file, verifyAll);
+            SealedGraph g = TestReaders.read(file, verifyAll);
             fail(what + ": a graph with " + g.n + " rows came back from a damaged file");
             return null;
         } catch (CorruptException | UnsupportedException e) {

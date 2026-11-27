@@ -109,7 +109,7 @@ The last 32 bytes: magic `TVSEGEND` (8), footer offset u64, footer length u32, f
 
 ### Sizes
 
-The file holds the arrays of the in-memory graph, with `VERS` and `BYID` in place of the two sorted-id arrays the graph keeps, and no deletion bitmap. So, with `VERS` present, the sum of the section lengths equals `SealedGraph.bytesHeld()` minus `8 * ceil(n / 64)` (the bitmap). The file length is `4096`, plus the sections each rounded up to the alignment, plus `64 + 40 * sections`, plus 32. `SegmentFormatTest` checks both for two dimensions, with and without SQ8.
+The file holds the arrays of the in-memory graph, with `VERS` and `BYID` in place of the two sorted-id arrays the graph keeps, and no deletion bitmap. So, with `VERS` present and the vectors on the heap, the sum of the section lengths equals `SealedGraph.bytesHeld()` minus `8 * ceil(n / 64)` (the bitmap). The file length is `4096`, plus the sections each rounded up to the alignment, plus `64 + 40 * sections`, plus 32. `SegmentFormatTest` checks both for two dimensions, with and without SQ8.
 
 ## Integrity rules
 
@@ -176,7 +176,7 @@ These are the platforms that CI runs. "N or N+1" means that the directory opens 
 | Tested by many seeds and random process kills (slow: `TierHaltLongTest`, `TierKillLongTest`) | slow runs | no | no | slow runs |
 | Flush order tested on a simulated file system (`SimulatedFsCrashTest`) | every change | every change | every change | no, there is no directory flush to order |
 
-"Every change" is the fast tests of a pull request. "Slow runs" is a push to `main`, the daily run, and a pull request with the label `ci:slow`. None of these tests cuts the power. The library has no memory-mapped reader, so no file is mapped while a merge replaces it; what a mapped reader changes on Windows belongs to [#27](https://github.com/humemai/tiervec/issues/27).
+"Every change" is the fast tests of a pull request. "Slow runs" is a push to `main`, the daily run, and a pull request with the label `ci:slow`. None of these tests cuts the power. With the default heap reader no file is mapped while a merge replaces it; what the mapped reader changes, on Windows above all, is in [Mapped vectors](#mapped-vectors).
 
 ### What a crash leaves behind
 
@@ -202,7 +202,7 @@ The claim stays a process kill. The simulated file system is a model: it shows t
 
 1. `Manifest.readLatest`: list the manifests, newest first. For each, check magic, version, CRC, that every named file exists with the recorded length and a valid header, footer and locator, and that the tombstone file matches. The first that passes is current. A candidate that fails is skipped; a segment whose first eight bytes are not the magic fails like one with a bad header CRC. If none passes it throws `CorruptException`; an empty directory throws `NoSuchFileException`; a manifest in a newer format throws `UnsupportedException` at once.
 2. Compare the fingerprint with the configuration (dimension, metric, `M`, `efConstruction`, SQ8). A difference throws `MismatchException`.
-3. Read every segment with every section checksummed, and compare it with its manifest entry.
+3. Read every segment with every section checksummed, and compare it with its manifest entry. With `vectorStorage` set to `MAPPED` the `VEC` section is checksummed and then mapped instead of copied ([Mapped vectors](#mapped-vectors)).
 4. Delete the files that the manifest does not name (orphans of a crashed publish, older generations).
 5. Restore the version counter, the epoch and the floor map (for each id with a marked row, one more than the largest marked version, which hides exactly the marked rows), and start the tier with the segments and an empty tail.
 
@@ -210,9 +210,45 @@ Any failure throws. The overload `open(dir, dim, metric, config, rebuildSource)`
 
 `open(dir, dim, metric, config, recordSource)` adds, after step 5, the epoch comparison (another epoch gives a cold index), the drop of ids above the host's recovered maximum (rebuilt segments and a new generation before it returns), the liveness check, and the replay of the host's live records above the high-water id: see [ID-EPOCH-AND-REPLAY.md](ID-EPOCH-AND-REPLAY.md).
 
+## Mapped vectors
+
+By default `TieredIndex.open` copies every section into heap arrays. With `Config.vectorStorage` set to `MAPPED` it leaves the fp32 vectors (section `VEC`) in the segment file and maps them read-only ([#27](https://github.com/humemai/tiervec/issues/27)). The file format does not change.
+
+```java
+TieredIndex.Config config = TieredIndex.Config.defaults().withVectorStorage(TieredIndex.VectorStorage.MAPPED);
+TieredIndex index = TieredIndex.open(dir, config);
+```
+
+The key of the configuration map is `vectorStorage`. It is not in the fingerprint, and `reconfigure` does not change it.
+
+| | `HEAP` (default) | `MAPPED` |
+|---|---|---|
+| fp32 vectors of a segment that `open` reads | a heap array of `4 * n * dim` bytes | the mapped file |
+| Ids, versions, graph, SQ8 codes and parameters | heap | heap |
+| Checks at `open` | every section CRC32C | the same, `VEC` included |
+| Hits and scores | | the same |
+| A distance to a vector | reads the array | first copies the row into a `float[]` of the searching thread |
+
+**What it costs.** On JDK 21 without preview features the kernels read a `float[]`, so every distance on a mapped row copies it first. A search that walks fp32 vectors was measured slower than on the heap, and a walk of SQ8 codes, which reads fp32 vectors only to rescore, close to it. Heap stays the default for that reason. The times and the heap that each reader uses are in [BENCHMARKS.md](BENCHMARKS.md#the-cost-of-a-row-copy).
+
+**What it covers.** Only the segments that `open` reads. A segment that a seal, a merge, or a rebuild builds in a running tier has its vectors on the heap, also after a `checkpoint` has written it; a later `open` maps it. So a mapped tier saves less heap the longer it seals and merges. `bytesHeld`, which `HostEnv.memoryBudgetBytes` is compared with, leaves the mapped vectors out. The pages in use are in the page cache of the operating system.
+
+**Checks.** `open` reads the `VEC` section once through the file channel to check its CRC32C, so the open still reads every byte. It maps the section only after every check of the segment has passed: a segment that is refused is not mapped. The first searches can have to fault the pages of the mapping in.
+
+**Sections above 2 GiB.** One mapping holds at most 2^31 - 1 bytes. A larger section is mapped in several pieces, each a power of two of whole rows, so no row crosses a piece. The tests lower the limit of a piece to cover this with small files; no test writes a section above 2 GiB. The limit of the format, `n * dim` at most 2^31 - 9, holds for both readers.
+
+**Unmapping.** The library never unmaps. A search can still be reading a segment that a merge has replaced, or one of a tier that was closed meanwhile, and a read of an unmapped page ends the JVM. The JVM unmaps a piece after the garbage collector has found it unreachable, and nothing bounds when that happens. `close` releases the directory lock and not the mappings, so drop the references to a closed tier. Until a mapping is gone:
+
+- Windows does not delete the file. A `checkpoint` or an `open` that retires a mapped segment goes on and leaves the file, and a later one removes it after the mapping is gone. Deleting the whole directory fails in the meantime.
+- Linux and macOS delete the file as usual, and free its disk space only when the mapping is gone.
+
+**The files must not change.** Nothing may modify, truncate, or overwrite a file that is mapped; the library itself never modifies a segment file. The CRC32C is checked at `open` only, so a later change reaches searches unnoticed, and a page that cannot be loaded (a file that was cut short, a read error of the device) can throw an `InternalError` out of a search or end the JVM. A heap tier does not depend on its segment files after `open`. Use `HEAP` for a directory on a network file system.
+
+**Tests.** The round-trip and corruption tests run with both readers: `MappedSegmentFormatTest`, `MappedSegmentCorruptionTest`, `MappedSegmentForgedFileTest`, `MappedManifestCrashTest`, `MappedTierReopenTest`, and `MappedTierCorruptionTest` run the tests of their parent classes with the mapped reader, on Linux and macOS (they delete files that were just mapped, which Windows refuses). `MappedVectorsTest` runs on every platform: rows over several mappings, one scratch array per thread, a mapped tier that goes on writing and merging, a refused file, and a retired file that is still mapped.
+
 ## What the first cut leaves out
 
-- Memory mapping. A segment is read into the heap arrays of `SealedGraph`. The graph, the writer, the merge, and `GraphIndex.fromSealed` reach the vectors (section `VEC`) through one internal interface, `SealedVectors`, whose only implementation is a heap array, so a mapped reader can replace that one section ([#27](https://github.com/humemai/tiervec/issues/27)). The other sections are used as arrays.
+- Memory mapping of anything but the vectors. Only `VEC` can be mapped ([Mapped vectors](#mapped-vectors)); the other sections are read into heap arrays, and so is every segment that a running tier builds.
 - Replay of the tail by the library itself. The host replays what the segments lack through `RecordSource`.
 - The tail. `checkpoint` refuses a tier with a non-empty tail (an `IllegalStateException`).
 - Soft-deleted rows inside a segment file: `SegmentWriter` refuses a graph that has them. The tier does not make such graphs; it records hidden rows in the tombstone file.

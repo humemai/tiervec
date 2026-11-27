@@ -8,8 +8,8 @@ import java.util.concurrent.atomic.AtomicLongArray;
 import java.util.function.LongPredicate;
 
 /**
- * Immutable, compact form of a graph (the settled bulk): the fp32 vectors row after row (behind {@code SealedVectors}; a heap array), CSR
- * neighbor lists (layer 0 in off0/edges0, layers above in upIdx/upOff/upEdges), optional SQ8 codes. Searches are lock-free. The only
+ * Immutable, compact form of a graph (the settled bulk): the fp32 vectors row after row (behind {@code SealedVectors}; a heap array, or the
+ * mapped section of a segment file), CSR neighbor lists (layer 0 in off0/edges0, layers above in upIdx/upOff/upEdges), optional SQ8 codes. Searches are lock-free. The only
  * mutation is a soft delete through a deletion bitset (like a deletion vector); add() is unsupported. Produced by GraphIndex.seal();
  * GraphIndex.fromSealed() re-inflates it.
  */
@@ -61,6 +61,7 @@ public final class SealedGraph implements VecIndex {
     static final class Sc {
         int[] stamp = new int[0]; int gen; final Heap cand = new Heap(), res = new Heap();
         float[] q; float sumq, qq; int[] outN = new int[256]; float[] outD = new float[256]; int outCount; boolean exhausted;
+        float[] row; // the scratch of the vectors for this thread, null when their distances need none
         void prep(int n) { if (stamp.length < n) stamp = new int[n]; if (++gen == 0) { Arrays.fill(stamp, 0); gen = 1; } }
     }
 
@@ -92,15 +93,15 @@ public final class SealedGraph implements VecIndex {
         }
     }
 
-    private float distFp(float[] q, int r) {
+    private float distFp(Sc s, int r) {
         switch (mode) {
-            case GraphIndex.L2: return vectors.l2(q, r);
-            case GraphIndex.COS: return 1f - vectors.dot(q, r);
-            default: return -vectors.dot(q, r);
+            case GraphIndex.L2: return vectors.l2(s.q, r, s.row);
+            case GraphIndex.COS: return 1f - vectors.dot(s.q, r, s.row);
+            default: return -vectors.dot(s.q, r, s.row);
         }
     }
     private float dist(Sc s, int r, boolean q8) {
-        if (!q8) return distFp(s.q, r);
+        if (!q8) return distFp(s, r);
         float dv = qbase[r] * s.sumq + qdelta[r] * Kern.dotQ8(s.q, codes, r * dim, dim);
         return mode == GraphIndex.L2 ? s.qq - 2f * dv + qnorm[r] : mode == GraphIndex.COS ? 1f - dv : -dv;
     }
@@ -163,6 +164,7 @@ public final class SealedGraph implements VecIndex {
         float[] qq = q.clone();
         if (mode == GraphIndex.COS) { double nn = 0; for (float x : qq) nn += (double) x * x; if (nn > 0) { float inv = (float) (1 / Math.sqrt(nn)); for (int i = 0; i < dim; i++) qq[i] *= inv; } }
         s.q = qq; s.sumq = Kern.sum(qq, dim); s.qq = Kern.dot(qq, 0, qq, 0, dim);
+        if (s.row == null) s.row = vectors.newScratch();
         return s;
     }
 
@@ -196,7 +198,7 @@ public final class SealedGraph implements VecIndex {
         int m = s.outCount;
         if (q8) for (int i = 0; i < m; i++) {
             if (poll != null) poll.before(1);
-            int r = s.outN[i]; float d = distFp(s.q, r); int j = i;
+            int r = s.outN[i]; float d = distFp(s, r); int j = i;
             while (j > 0 && s.outD[j - 1] > d) { s.outD[j] = s.outD[j - 1]; s.outN[j] = s.outN[j - 1]; j--; }
             s.outD[j] = d; s.outN[j] = r;
         }
@@ -215,7 +217,7 @@ public final class SealedGraph implements VecIndex {
             if (poll != null) poll.before(to - from);
             for (int r = from; r < to; r++) {
                 if (isDead(r) || !allow.test(ids[r])) continue;
-                float d = distFp(s.q, r);
+                float d = distFp(s, r);
                 if (h.n < k) h.push(-d, r); else if (d < -h.topKey()) { h.pop(); h.push(-d, r); }
             }
         }

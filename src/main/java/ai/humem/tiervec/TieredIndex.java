@@ -143,6 +143,23 @@ public final class TieredIndex implements VecIndex {
     public enum MergeMode { REBUILD, INSERT }
 
     /**
+     * Where a segment that {@code open} reads from a directory keeps its fp32 vectors. HEAP (default): copied into a heap array. MAPPED: left
+     * in the segment file, which is mapped read-only; each distance copies its row into a scratch array of the searching thread first. The
+     * graph, the ids and the SQ8 codes are heap arrays with both, and the checks of {@code open} are the same, the checksum of every section
+     * included. The hits and scores are the same.
+     *
+     * <p>MAPPED saves heap and costs time: a search that walks fp32 vectors was measured slower than on the heap (docs/BENCHMARKS.md, "The
+     * cost of a row copy"). It covers only what {@code open} reads: a segment that a seal, a merge, or a rebuild builds keeps its vectors on
+     * the heap until a later {@code open} reads it from a file. {@code bytesHeld} leaves the mapped vectors out; the operating system's page
+     * cache holds the pages that are in use. A mapping lasts until the garbage collector releases it, also after {@code close}, and the
+     * library never unmaps: until then Windows does not delete a retired segment file (a later checkpoint or open does), and other systems
+     * keep the disk space of a deleted one. Nothing may change the files while they are mapped: damage after the open is not detected, and a
+     * file that is cut short or cannot be read can end a search with an {@code InternalError} or end the JVM. Details:
+     * docs/SEGMENT-FORMAT.md, "Mapped vectors".
+     */
+    public enum VectorStorage { HEAP, MAPPED }
+
+    /**
      * Result of a search with its meta (what the facets report as exact/patched/lag).
      * @param exact true when the answer equals brute force: the tail scan was exact, and no segment was searched or every segment was
      *              scanned because of the count of a {@link SizedIdFilter}
@@ -174,7 +191,8 @@ public final class TieredIndex implements VecIndex {
      * maxSegments: merge when exceeded (default 8). mergeFan: smallest segments merged at once (default 4). deadFraction: compact a
      * segment when this share of it is hidden (default 0.3). mergeRatePerSec: merge builder insert rate cap, 0 = unlimited.
      * hardTailFactor: back pressure threshold. tailQuant: NONE (exact fp32) or SQ8. graph: segment graph parameters (efSearch is the
-     * search beam). buildThreads: threads of one seal or merge build. splitBeam (default false = the
+     * search beam). buildThreads: threads of one seal or merge build. vectorStorage (default HEAP): where a segment that {@code open} reads
+     * from a directory keeps its fp32 vectors, see {@link VectorStorage}. splitBeam (default false = the
      * full beam in every segment): when true and more than one segment is searched, segment s gets the beam max(k, ceil(ef * rows(s) / rows of
      * all searched segments)) instead of ef. tailQuant is the tail kernel: NONE scans fp32, SQ8 scans int8 codes (FlatIndex default kernel
      * F8X4) and reranks the best 5 * k candidates in fp32. mergeTriggerRatio (default 0 = off): the size-ratio merge trigger. When it is above 0 and
@@ -184,7 +202,14 @@ public final class TieredIndex implements VecIndex {
      */
     public record Config(int tailLimit, long tailAgeMs, int smallLimit, int maxSegments, int mergeFan, double deadFraction,
                          int mergeRatePerSec, int hardTailFactor, Quant tailQuant, GraphIndex.Params graph, int buildThreads, boolean splitBeam, double mergeTriggerRatio,
-                         MergeMode mergeMode) {
+                         MergeMode mergeMode, VectorStorage vectorStorage) {
+        /** the 14-component form without vectorStorage: it is HEAP */
+        public Config(int tailLimit, long tailAgeMs, int smallLimit, int maxSegments, int mergeFan, double deadFraction,
+                      int mergeRatePerSec, int hardTailFactor, Quant tailQuant, GraphIndex.Params graph, int buildThreads, boolean splitBeam, double mergeTriggerRatio,
+                      MergeMode mergeMode) {
+            this(tailLimit, tailAgeMs, smallLimit, maxSegments, mergeFan, deadFraction, mergeRatePerSec, hardTailFactor, tailQuant, graph, buildThreads, splitBeam, mergeTriggerRatio, mergeMode, VectorStorage.HEAP);
+        }
+
         /** the 13-component form without mergeMode: it is REBUILD */
         public Config(int tailLimit, long tailAgeMs, int smallLimit, int maxSegments, int mergeFan, double deadFraction,
                       int mergeRatePerSec, int hardTailFactor, Quant tailQuant, GraphIndex.Params graph, int buildThreads, boolean splitBeam, double mergeTriggerRatio) {
@@ -205,6 +230,7 @@ public final class TieredIndex implements VecIndex {
 
         public Config {
             Objects.requireNonNull(mergeMode, "mergeMode");
+            Objects.requireNonNull(vectorStorage, "vectorStorage");
             if (tailLimit < 1 || smallLimit < 0 || maxSegments < 1 || mergeFan < 2 || hardTailFactor < 2 || buildThreads < 1 || !(mergeTriggerRatio >= 0.0) || Double.isInfinite(mergeTriggerRatio))
                 throw new IllegalArgumentException("bad config");
             if (tailQuant == Quant.BINARY) throw new IllegalArgumentException("tail quant must be NONE or SQ8");
@@ -216,44 +242,49 @@ public final class TieredIndex implements VecIndex {
         }
 
         public Config withTail(int tailLimit, int smallLimit) {
-            return new Config(tailLimit, tailAgeMs, smallLimit, maxSegments, mergeFan, deadFraction, mergeRatePerSec, hardTailFactor, tailQuant, graph, buildThreads, splitBeam, mergeTriggerRatio, mergeMode);
+            return new Config(tailLimit, tailAgeMs, smallLimit, maxSegments, mergeFan, deadFraction, mergeRatePerSec, hardTailFactor, tailQuant, graph, buildThreads, splitBeam, mergeTriggerRatio, mergeMode, vectorStorage);
         }
 
         public Config withMaxSegments(int m) {
-            return new Config(tailLimit, tailAgeMs, smallLimit, m, mergeFan, deadFraction, mergeRatePerSec, hardTailFactor, tailQuant, graph, buildThreads, splitBeam, mergeTriggerRatio, mergeMode);
+            return new Config(tailLimit, tailAgeMs, smallLimit, m, mergeFan, deadFraction, mergeRatePerSec, hardTailFactor, tailQuant, graph, buildThreads, splitBeam, mergeTriggerRatio, mergeMode, vectorStorage);
         }
 
         public Config withTailQuant(Quant q) {
-            return new Config(tailLimit, tailAgeMs, smallLimit, maxSegments, mergeFan, deadFraction, mergeRatePerSec, hardTailFactor, q, graph, buildThreads, splitBeam, mergeTriggerRatio, mergeMode);
+            return new Config(tailLimit, tailAgeMs, smallLimit, maxSegments, mergeFan, deadFraction, mergeRatePerSec, hardTailFactor, q, graph, buildThreads, splitBeam, mergeTriggerRatio, mergeMode, vectorStorage);
         }
 
         public Config withGraph(GraphIndex.Params p) {
-            return new Config(tailLimit, tailAgeMs, smallLimit, maxSegments, mergeFan, deadFraction, mergeRatePerSec, hardTailFactor, tailQuant, p, buildThreads, splitBeam, mergeTriggerRatio, mergeMode);
+            return new Config(tailLimit, tailAgeMs, smallLimit, maxSegments, mergeFan, deadFraction, mergeRatePerSec, hardTailFactor, tailQuant, p, buildThreads, splitBeam, mergeTriggerRatio, mergeMode, vectorStorage);
         }
 
         public Config withBuildThreads(int t) {
-            return new Config(tailLimit, tailAgeMs, smallLimit, maxSegments, mergeFan, deadFraction, mergeRatePerSec, hardTailFactor, tailQuant, graph, t, splitBeam, mergeTriggerRatio, mergeMode);
+            return new Config(tailLimit, tailAgeMs, smallLimit, maxSegments, mergeFan, deadFraction, mergeRatePerSec, hardTailFactor, tailQuant, graph, t, splitBeam, mergeTriggerRatio, mergeMode, vectorStorage);
         }
 
         public Config withMergeRate(int perSec) {
-            return new Config(tailLimit, tailAgeMs, smallLimit, maxSegments, mergeFan, deadFraction, perSec, hardTailFactor, tailQuant, graph, buildThreads, splitBeam, mergeTriggerRatio, mergeMode);
+            return new Config(tailLimit, tailAgeMs, smallLimit, maxSegments, mergeFan, deadFraction, perSec, hardTailFactor, tailQuant, graph, buildThreads, splitBeam, mergeTriggerRatio, mergeMode, vectorStorage);
         }
 
         public Config withMergeFan(int f) {
-            return new Config(tailLimit, tailAgeMs, smallLimit, maxSegments, f, deadFraction, mergeRatePerSec, hardTailFactor, tailQuant, graph, buildThreads, splitBeam, mergeTriggerRatio, mergeMode);
+            return new Config(tailLimit, tailAgeMs, smallLimit, maxSegments, f, deadFraction, mergeRatePerSec, hardTailFactor, tailQuant, graph, buildThreads, splitBeam, mergeTriggerRatio, mergeMode, vectorStorage);
         }
 
         public Config withSplitBeam(boolean sb) {
-            return new Config(tailLimit, tailAgeMs, smallLimit, maxSegments, mergeFan, deadFraction, mergeRatePerSec, hardTailFactor, tailQuant, graph, buildThreads, sb, mergeTriggerRatio, mergeMode);
+            return new Config(tailLimit, tailAgeMs, smallLimit, maxSegments, mergeFan, deadFraction, mergeRatePerSec, hardTailFactor, tailQuant, graph, buildThreads, sb, mergeTriggerRatio, mergeMode, vectorStorage);
         }
 
         public Config withMergeTriggerRatio(double r) {
-            return new Config(tailLimit, tailAgeMs, smallLimit, maxSegments, mergeFan, deadFraction, mergeRatePerSec, hardTailFactor, tailQuant, graph, buildThreads, splitBeam, r, mergeMode);
+            return new Config(tailLimit, tailAgeMs, smallLimit, maxSegments, mergeFan, deadFraction, mergeRatePerSec, hardTailFactor, tailQuant, graph, buildThreads, splitBeam, r, mergeMode, vectorStorage);
         }
 
         /** this configuration with another way to build a merge that takes the largest segment (see {@link MergeMode}) */
         public Config withMergeMode(MergeMode mode) {
-            return new Config(tailLimit, tailAgeMs, smallLimit, maxSegments, mergeFan, deadFraction, mergeRatePerSec, hardTailFactor, tailQuant, graph, buildThreads, splitBeam, mergeTriggerRatio, mode);
+            return new Config(tailLimit, tailAgeMs, smallLimit, maxSegments, mergeFan, deadFraction, mergeRatePerSec, hardTailFactor, tailQuant, graph, buildThreads, splitBeam, mergeTriggerRatio, mode, vectorStorage);
+        }
+
+        /** this configuration with another place for the vectors of the segments that {@code open} reads (see {@link VectorStorage}) */
+        public Config withVectorStorage(VectorStorage storage) {
+            return new Config(tailLimit, tailAgeMs, smallLimit, maxSegments, mergeFan, deadFraction, mergeRatePerSec, hardTailFactor, tailQuant, graph, buildThreads, splitBeam, mergeTriggerRatio, mergeMode, storage);
         }
 
         /**
@@ -2040,6 +2071,7 @@ public final class TieredIndex implements VecIndex {
      * {@link SegmentFormat.CorruptException}), {@link SegmentFormat.UnsupportedException} for a newer format, {@link SegmentFormat.MismatchException} when the files
      * belong to another index definition, {@link NoSuchFileException} when the directory has no manifest. A caller that holds the
      * records falls back to {@link #rebuildFrom}, or uses the overload with a rebuild source that does it. A null config means the defaults.
+     * {@link Config#vectorStorage()} says whether the vectors of the segments are copied into the heap or stay in the mapped files.
      *
      * <p>The directory is locked before it is read ({@link DirectoryLockedException} when another process holds it), and the returned tier keeps
      * the lock until {@link #close}, or until a checkpoint into another directory has succeeded. A failed open releases it. This holds for every
@@ -2252,7 +2284,7 @@ public final class TieredIndex implements VecIndex {
         long hiddenTotal = 0;
         long maxVer = 0;
         for (Manifest.Entry e : m.entries()) {
-            SegmentReader.Loaded l = SegmentReader.readFull(dir.resolve(Manifest.segName(e.segId())), true);
+            SegmentReader.Loaded l = SegmentReader.readFull(dir.resolve(Manifest.segName(e.segId())), true, cfg.vectorStorage());
             SegmentInfo si = l.info();
             if (l.vers() == null) throw new SegmentFormat.CorruptException("segment " + e.segId() + " has no version section", "VERS");
             if (si.n() != e.n() || si.fileLength() != e.fileLength() || si.headerCrc() != e.headerCrc()) {

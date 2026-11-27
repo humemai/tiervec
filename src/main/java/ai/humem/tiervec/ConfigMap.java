@@ -44,6 +44,7 @@ final class ConfigMap {
         m.put(SPLIT_BEAM, Boolean.toString(c.splitBeam()));
         m.put("mergeTriggerRatio", Double.toString(c.mergeTriggerRatio()));
         m.put("mergeMode", c.mergeMode().name());
+        m.put("vectorStorage", c.vectorStorage().name());
         return Collections.unmodifiableMap(m);
     }
 
@@ -75,7 +76,7 @@ final class ConfigMap {
                 (int) whole(m, "mergeRatePerSec", Integer.MIN_VALUE, Integer.MAX_VALUE),
                 (int) whole(m, "hardTailFactor", 2, Integer.MAX_VALUE), tailQuant, graph,
                 (int) whole(m, "buildThreads", 1, Integer.MAX_VALUE), flag(m, SPLIT_BEAM), ratio(m, "mergeTriggerRatio"),
-                constant(m, "mergeMode", TieredIndex.MergeMode.class));
+                constant(m, "mergeMode", TieredIndex.MergeMode.class), constant(m, "vectorStorage", TieredIndex.VectorStorage.class));
     }
 
     /** {@code c} with a new value for a search-time knob; every other key is refused */

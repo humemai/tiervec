@@ -1,12 +1,11 @@
 package ai.humem.tiervec;
 
 import java.io.IOException;
-import java.nio.ByteOrder;
-import java.nio.FloatBuffer;
-import java.nio.channels.FileChannel;
+import java.lang.management.BufferPoolMXBean;
+import java.lang.management.ManagementFactory;
+import java.lang.ref.Reference;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
@@ -18,12 +17,13 @@ import java.util.function.LongPredicate;
 import java.util.stream.IntStream;
 
 /**
- * What a row copy costs when the vectors of a sealed segment stay in a mapped file (issue #27; docs/BENCHMARKS.md, "The cost of a row copy").
+ * What the mapped reader of the vector section costs in time and saves in heap (issue #27; docs/BENCHMARKS.md, "The cost of a row copy").
  * On JDK 21 without preview features the kernels read a {@code float[]}, so a distance on a mapped row copies the row first.
  * {@code build FILE ROWS DIM} writes one segment file of random vectors. {@code run FILE} is one sample in one JVM and prints one
- * {@code MAPPEDROWS} line per case. {@code summary FILE} reads the lines of many JVMs and prints a Markdown table with the median, smallest,
- * and largest ratio of every case. The mapped vectors here exist for this measurement only: the library has no mapped reader. The exit code is
- * 1 when the file and the heap array differ, or when the heap graph and the mapped graph answer differently.
+ * {@code MAPPEDROWS} line per case. {@code heap FILE HEAP} and {@code heap FILE MAPPED} open the file with that reader of the library, in a
+ * JVM that does nothing else, and print one {@code MAPPEDHEAP} line with the heap that stays used. {@code summary FILE} reads the lines of
+ * many JVMs and prints Markdown tables: the median, smallest, and largest ratio of every case, and the heap of every reader. The exit code is
+ * 1 when the mapped rows and the heap array differ, or when the heap graph and the mapped graph answer differently.
  */
 public final class MappedRows {
     private static final int DISTANCES = 200_000, QUERIES = 100, SCANS = 10, ROUNDS = 15, WARMUP = 5, K = 10;
@@ -34,64 +34,30 @@ public final class MappedRows {
     public static void main(String[] args) throws IOException {
         if (args.length == 4 && args[0].equals("build")) build(Path.of(args[1]), Integer.parseInt(args[2]), Integer.parseInt(args[3]));
         else if (args.length == 2 && args[0].equals("run")) run(Path.of(args[1]));
+        else if (args.length == 3 && args[0].equals("heap")) heap(Path.of(args[1]), TieredIndex.VectorStorage.valueOf(args[2]));
         else if (args.length == 2 && args[0].equals("summary")) summary(Path.of(args[1]));
-        else throw new IllegalArgumentException("use: build FILE ROWS DIM, run FILE, or summary FILE");
+        else throw new IllegalArgumentException("use: build FILE ROWS DIM, run FILE, heap FILE HEAP|MAPPED, or summary FILE");
         if (sink == 42) System.out.println();
     }
 
-    /** the VEC section left in the file; every distance copies its row into one scratch array, so this serves one thread only */
-    private static final class Mapped implements SealedVectors {
-        private final FloatBuffer b;
-        private final int dim;
-        private final float[] scratch;
-
-        Mapped(FloatBuffer b, int dim) {
-            this.b = b;
-            this.dim = dim;
-            this.scratch = new float[dim];
+    /** the heap that stays used after the file is opened with one reader, and the bytes that the JVM has mapped */
+    private static void heap(Path file, TieredIndex.VectorStorage storage) throws IOException {
+        SegmentReader.inspect(file); // loads the classes of the reader before the first count
+        final long before = usedHeap();
+        SealedGraph g = SegmentReader.readFull(file, true, storage).graph();
+        final long used = usedHeap() - before;
+        long mapped = 0;
+        for (BufferPoolMXBean pool : ManagementFactory.getPlatformMXBeans(BufferPoolMXBean.class)) {
+            if (pool.getName().equals("mapped")) mapped = pool.getMemoryUsed();
         }
+        System.out.println("MAPPEDHEAP storage=" + storage + " rows=" + g.n + " dim=" + g.dim + " vecBytes=" + 4L * g.n * g.dim + " heapBytes=" + used
+                + " bytesHeld=" + g.bytesHeld() + " mappedBytes=" + mapped + " java=" + Runtime.version());
+        Reference.reachabilityFence(g);
+    }
 
-        private float[] load(int row) {
-            b.get(row * dim, scratch);
-            return scratch;
-        }
-
-        @Override
-        public float l2(float[] q, int row) {
-            return Kern.l2(q, 0, load(row), 0, dim);
-        }
-
-        @Override
-        public float dot(float[] q, int row) {
-            return Kern.dot(q, 0, load(row), 0, dim);
-        }
-
-        @Override
-        public void copy(int row, float[] dst, int dstOff) {
-            b.get(row * dim, dst, dstOff, dim);
-        }
-
-        @Override
-        public float[] row(int row) {
-            float[] r = new float[dim];
-            copy(row, r, 0);
-            return r;
-        }
-
-        @Override
-        public int length() {
-            return b.capacity();
-        }
-
-        @Override
-        public void put(FloatBuffer dst, int from, int count) {
-            dst.put(b.slice(from, count));
-        }
-
-        @Override
-        public long heapBytes() {
-            return 0;
-        }
+    private static long usedHeap() {
+        for (int i = 0; i < 3; i++) System.gc();
+        return ManagementFactory.getMemoryMXBean().getHeapMemoryUsage().getUsed();
     }
 
     private static float[] vector(SplittableRandom r, int dim) {
@@ -129,13 +95,12 @@ public final class MappedRows {
         if (loaded.codes == null) fail("the segment has no SQ8 codes");
         float[] heap = new float[n * dim];
         for (int row = 0; row < n; row++) loaded.copyVector(row, heap, row * dim);
-        SegmentInfo.Section vec = SegmentReader.inspect(file).section(SegmentFormat.S_VEC);
-        FloatBuffer mapped;
-        try (FileChannel ch = FileChannel.open(file, StandardOpenOption.READ)) {
-            mapped = ch.map(FileChannel.MapMode.READ_ONLY, vec.offset(), vec.length()).order(ByteOrder.LITTLE_ENDIAN).asFloatBuffer();
+        SealedVectors inFile = SegmentReader.readFull(file, true, TieredIndex.VectorStorage.MAPPED).graph().vectors;
+        if (inFile.length() != heap.length) fail("the mapped section has " + inFile.length() + " floats, expected " + heap.length);
+        for (int row = 0; row < n; row++) {
+            float[] r = inFile.row(row);
+            if (!Arrays.equals(r, 0, dim, heap, row * dim, (row + 1) * dim)) fail("row " + row + " differs");
         }
-        if (mapped.capacity() != heap.length) fail("the mapped section has " + mapped.capacity() + " floats, expected " + heap.length);
-        for (int i = 0; i < heap.length; i++) if (Float.floatToRawIntBits(mapped.get(i)) != Float.floatToRawIntBits(heap[i])) fail("float " + i + " differs");
         System.out.println("MAPPEDROWS-ENV jdk=" + Runtime.version().feature() + " java=" + Runtime.version() + " processors="
                 + Runtime.getRuntime().availableProcessors() + " vector=" + Kernels.VECTOR + " lanes=" + Kern.lanes());
 
@@ -147,18 +112,17 @@ public final class MappedRows {
             random[i] = r.nextInt(n);
             inOrder[i] = i % n;
         }
-        distanceCase("distance-random", heap, mapped, queries[0], random, n);
-        distanceCase("distance-in-order", heap, mapped, queries[0], inOrder, n);
+        distanceCase("distance-random", heap, inFile, queries[0], random, n);
+        distanceCase("distance-in-order", heap, inFile, queries[0], inOrder, n);
 
         SealedVectors onHeap = new SealedVectors.OnHeap(heap, dim);
-        SealedVectors inFile = new Mapped(mapped, dim);
         searchCase("walk-fp32", view(loaded, onHeap, false), view(loaded, inFile, false), queries, null, QUERIES);
         searchCase("walk-sq8", view(loaded, onHeap, true), view(loaded, inFile, true), queries, null, QUERIES);
         searchCase("exact-scan", view(loaded, onHeap, false), view(loaded, inFile, false), queries, id -> true, SCANS);
     }
 
-    private static void distanceCase(String name, float[] heap, FloatBuffer mapped, float[] q, int[] rows, int n) {
-        float[] scratch = new float[q.length];
+    private static void distanceCase(String name, float[] heap, SealedVectors mapped, float[] q, int[] rows, int n) {
+        float[] scratch = mapped.newScratch();
         for (int row : Arrays.copyOf(rows, 1000)) {
             float want = onHeap(q, heap, new int[] {row});
             if (want != heapCopy(q, heap, new int[] {row}, scratch) || want != mappedCopy(q, mapped, new int[] {row}, scratch)) fail(name + " the arms differ on row " + row);
@@ -193,13 +157,10 @@ public final class MappedRows {
         return s;
     }
 
-    private static float mappedCopy(float[] q, FloatBuffer b, int[] rows, float[] scratch) {
-        final int dim = q.length;
+    /** the distance of the mapped reader of the library, which copies the row into the scratch array */
+    private static float mappedCopy(float[] q, SealedVectors mapped, int[] rows, float[] scratch) {
         float s = 0;
-        for (int row : rows) {
-            b.get(row * dim, scratch);
-            s += Kern.dot(q, 0, scratch, 0, dim);
-        }
+        for (int row : rows) s += mapped.dot(q, row, scratch);
         return s;
     }
 
@@ -241,19 +202,22 @@ public final class MappedRows {
 
     private static void summary(Path file) throws IOException {
         Map<String, List<Map<String, String>>> cases = new LinkedHashMap<>();
+        Map<String, Map<String, Map<String, String>>> heaps = new LinkedHashMap<>(); // rows x dim, then the reader
         String jdk = "?";
         for (String line : Files.readAllLines(file)) {
-            boolean env = line.startsWith("MAPPEDROWS-ENV ");
-            if (!env && !line.startsWith("MAPPEDROWS case=")) continue;
+            boolean env = line.startsWith("MAPPEDROWS-ENV "), heap = line.startsWith("MAPPEDHEAP ");
+            if (!env && !heap && !line.startsWith("MAPPEDROWS case=")) continue;
             Map<String, String> m = new LinkedHashMap<>();
             for (String part : line.substring(line.indexOf(' ') + 1).split(" ")) {
                 int eq = part.indexOf('=');
                 m.put(part.substring(0, eq), part.substring(eq + 1));
             }
             if (env) jdk = m.get("java") + ", " + m.get("lanes") + " float lanes";
+            else if (heap) heaps.computeIfAbsent(m.get("rows") + " x " + m.get("dim"), c -> new LinkedHashMap<>()).put(m.get("storage"), m);
             else cases.computeIfAbsent(m.get("rows") + " x " + m.get("dim") + " " + m.get("case"), c -> new ArrayList<>()).add(m);
         }
         if (cases.isEmpty()) throw new IllegalStateException("no MAPPEDROWS lines in " + file);
+        if (heaps.isEmpty()) throw new IllegalStateException("no MAPPEDHEAP lines in " + file);
         System.out.println("Java " + jdk + ". Ratios are the time divided by the time on the heap: median of the JVMs (smallest to largest).");
         System.out.println();
         System.out.println("| Rows x dim | Case | JVMs | On the heap | Heap, row copied first | Mapped file, row copied first |");
@@ -265,6 +229,21 @@ public final class MappedRows {
                     rows.size(), median(column(rows, "heap")), distance ? "ns per distance" : "ms per query",
                     distance ? spread(column(rows, "heapCopyRatio")) : "not measured", spread(column(rows, "mappedRatio"))));
         }
+        System.out.println();
+        System.out.println("Heap that stays used after the file is opened, one JVM for each reader, in MiB (1,048,576 bytes).");
+        System.out.println();
+        System.out.println("| Rows x dim | Vector section | Used heap, `HEAP` | Used heap, `MAPPED` | `bytesHeld`, `HEAP` | `bytesHeld`, `MAPPED` | Mapped, `MAPPED` |");
+        System.out.println("| --- | --- | --- | --- | --- | --- | --- |");
+        for (Map.Entry<String, Map<String, Map<String, String>>> e : heaps.entrySet()) {
+            Map<String, String> heap = e.getValue().get("HEAP"), mapped = e.getValue().get("MAPPED");
+            if (heap == null || mapped == null) throw new IllegalStateException("one reader is missing for " + e.getKey());
+            System.out.println("| " + e.getKey() + " | " + mib(heap, "vecBytes") + " | " + mib(heap, "heapBytes") + " | " + mib(mapped, "heapBytes")
+                    + " | " + mib(heap, "bytesHeld") + " | " + mib(mapped, "bytesHeld") + " | " + mib(mapped, "mappedBytes") + " |");
+        }
+    }
+
+    private static String mib(Map<String, String> m, String key) {
+        return String.format(Locale.ROOT, "%.1f", Long.parseLong(m.get(key)) / 1048576.0);
     }
 
     private static String spread(double[] x) {

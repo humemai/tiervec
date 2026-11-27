@@ -73,7 +73,7 @@ class ManifestCrashTest {
     private void assertServes(Manifest m) throws IOException {
         for (Manifest.Entry e : m.entries()) {
             SealedGraph orig = e.segId() == 1 ? g1 : g2;
-            SealedGraph loaded = SegmentReader.read(dir.resolve(Manifest.segName(e.segId())), true);
+            SealedGraph loaded = TestReaders.read(dir.resolve(Manifest.segName(e.segId())), true);
             for (float[] q : qs) assertArrayEquals(orig.search(q, 10, null), loaded.search(q, 10, null));
         }
     }

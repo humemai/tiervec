@@ -7,8 +7,8 @@ package ai.humem.tiervec;
  *
  * <p>What the tier does not offer, in any version that does not say so here: grouped search (a top {@code k} per group), scores that come
  * from compressed codes without an exact fp32 rescoring pass (returned scores are exact fp32 scores), a retract of an applied write other
- * than the opposite write, transactions or uncommitted rows, a persisted tail ({@code checkpoint} needs an empty one), memory-mapped
- * segment readers, and more than one process on one index directory.
+ * than the opposite write, transactions or uncommitted rows, a persisted tail ({@code checkpoint} needs an empty one), and more than one
+ * process on one index directory.
  */
 public enum Capability {
     /** {@link TieredIndex#apply} makes the adds and deletes of one batch visible to searches as a unit */
@@ -24,5 +24,7 @@ public enum Capability {
     /** the host gives the threads, the build permits and the memory budget ({@link HostEnv}) */
     HOST_ENVIRONMENT,
     /** a filter that says how many ids it allows ({@link SizedIdFilter}) is scanned exactly, without a graph walk, when it allows few */
-    SELECTIVE_PLAN
+    SELECTIVE_PLAN,
+    /** {@link TieredIndex#open} can leave the fp32 vectors of the segments in their mapped files ({@link TieredIndex.VectorStorage#MAPPED}) */
+    MAPPED_VECTORS
 }

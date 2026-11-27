@@ -219,7 +219,7 @@ The workflow `poll-cost.yml` runs it in 10 fresh JVMs on JDK 21 and on JDK 25 an
 
 ## The cost of a row copy
 
-`MappedRows`, in `src/bench`, measures what a memory-mapped reader of the vector section would pay on JDK 21 without preview features, where a distance copies the row from the mapped buffer into a `float[]` first ([issue #27](https://github.com/humemai/tiervec/issues/27)). The library has no mapped reader: the harness holds its own, behind the internal interface `SealedVectors`, for this measurement only. It writes two segments of random vectors with SQ8 codes (200,000 of dimension 128, and 50,000 of dimension 768), and one JVM then times these cases:
+`MappedRows`, in `src/bench`, measures what the mapped reader of the vector section costs in time and saves in heap ([Mapped vectors](SEGMENT-FORMAT.md#mapped-vectors), [issue #27](https://github.com/humemai/tiervec/issues/27)). On JDK 21 without preview features a distance copies the row from the mapped buffer into a `float[]` first. The harness uses the reader of the library. It writes two segments of random vectors with SQ8 codes (200,000 of dimension 128, and 50,000 of dimension 768), and one JVM then times these cases:
 
 | Case | What is timed |
 |---|---|
@@ -229,7 +229,19 @@ The workflow `poll-cost.yml` runs it in 10 fresh JVMs on JDK 21 and on JDK 25 an
 
 Each of 15 rounds times every arm, and the arm that goes first changes from round to round. A ratio is the time of an arm divided by the time on the heap in the same round, and a JVM reports the median over the rounds. The run fails when the mapped section differs from the loaded vectors or when the two graphs answer differently.
 
-The workflow `mapped-rows.yml` runs 5 fresh JVMs per segment on JDK 21 and on JDK 25 and prints the median, the smallest, and the largest ratio of the JVMs. It starts by hand, and on a pull request that changes the harness or the workflow. It has no speed bar. What a run does not measure: the first read of a file from disk (the file is in the page cache), memory pressure, and more than one thread (the harness shares one scratch array, so a lookup of a scratch array per thread is not in the time). The search cases run with both implementations of `SealedVectors` loaded in one JVM, as in a tier that holds sealed and loaded segments.
+The workflow `mapped-rows.yml` runs 5 fresh JVMs per segment on JDK 21 and on JDK 25 and prints the median, the smallest, and the largest ratio of the JVMs. It starts by hand, and on a pull request that changes the harness, the reader, or the workflow. It has no speed bar. What a run does not measure: the first read of a file from disk (the file is in the page cache), memory pressure, and more than one thread. The search cases run with both implementations of `SealedVectors` loaded in one JVM, as in a tier that holds sealed and loaded segments.
+
+The heap of an opened segment is measured in a JVM of its own for each reader: `heap FILE HEAP` and `heap FILE MAPPED` count the used heap after full collections, before and after the file is opened, and keep the graph reachable until the second count. To repeat both measurements on one segment:
+
+```
+mkdir -p target/bench/classes
+javac -d target/bench/classes --add-modules jdk.incubator.vector $(find src/main/java src/bench/java -name '*.java')
+run() { java -Xmx3g --add-modules jdk.incubator.vector -cp target/bench/classes ai.humem.tiervec.MappedRows "$@"; }
+run build target/bench/segment.tvs 200000 128
+run run target/bench/segment.tvs
+run heap target/bench/segment.tvs HEAP
+run heap target/bench/segment.tvs MAPPED
+```
 
 ## The CI smoke
 

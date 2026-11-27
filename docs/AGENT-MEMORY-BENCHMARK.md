@@ -1,0 +1,109 @@
+# Agent-memory benchmark
+
+This page defines the benchmark that would show whether tiervec is a good index, or the best one, for the memory of an agent inside a database engine. **It is a definition. Most of it is not built, and it has no results.** The work is tracked in [#159](https://github.com/humemai/tiervec/issues/159) (the program) and [#160](https://github.com/humemai/tiervec/issues/160) (the other libraries). Why these questions and these baselines: [RELATED-WORK.md](RELATED-WORK.md).
+
+Every size, rate, and bound on this page is a choice made here. A study fixes its own values in its rules before its first run, under the protocol of [ROADMAP.md](ROADMAP.md#how-to-read-measurements).
+
+## The question
+
+On a stream of creates, reads, updates, and deletes, does an index stay correct and keep its recall, how fast are searches while the writes run, what does a write cost, how much memory does a row take, and how soon does it answer after a restart, compared with the other designs a host could embed?
+
+## What exists today
+
+| Program | What it covers | What it lacks |
+|---|---|---|
+| `Bench` ([BENCHMARKS.md](BENCHMARKS.md)) | Static recall and latency, filtered cells with random filters, checks of writes, a concurrent phase of adds and deletes with recall scored once at its end, a JVector arm | Replacements under load, recall during the stream, real data in the concurrent phase, updates in the JVector arm |
+| [`PacedWrites`](BENCHMARKS.md#paced-writes) | Adds at a fixed rate with paced searches, write amplification | Deletes and replacements |
+| [`MergeGenerations`](BENCHMARKS.md#successive-merges) | Recall over successive merges with deletes | Writes during searches, other libraries |
+
+## The workload
+
+A **runbook** is a file of operations that is generated once from a seed and replayed unchanged by every arm. The [NeurIPS 2023 streaming track](https://arxiv.org/abs/2409.17424) uses the same idea.
+
+| Operation | Meaning |
+|---|---|
+| `create` | Add a new id |
+| `update` | Replace the vector of a live id |
+| `delete` | Delete a live id |
+| `reuse` | Delete an id and later add it again with another vector |
+| `batch` | 1 to 50 creates, updates, and deletes that must become visible together |
+| `search` | Top 10, without a filter |
+| `filtered` | Top 10 among an allowed set |
+| `checkpoint`, `restart` | Persist, then stop the process cleanly or kill it, and open again |
+
+**Data.** Real text embeddings at 768 and 1536 dimensions, and a set at 1024 if one with a usable license is prepared. Generated data is for smoke runs only.
+
+**Change over time.** The rows are clustered. Each round adds rows of one cluster, deletes rows of another, replaces rows, and expires the oldest ones, so the distribution moves. A run lasts until the live set has been replaced at least three times.
+
+**Two mixes.** Read-heavy: four searches for each written row. Write-heavy: inserts, deletes, and searches near 4 : 4 : 1, as in the streaming track.
+
+**Shapes.**
+
+| Shape | Collections | Live rows each | Why |
+|---|---|---|---|
+| Personal memories | 100, 1,000, and 10,000 | 20, 200, and 2,000, and one skewed mix | One collection per user, agent, or thread |
+| Large agent | 1 | 10,000 and 100,000 | A long-lived agent |
+| Team memory | 1 | 1,000,000 | The target of [#60](https://github.com/humemai/tiervec/issues/60) |
+
+**Concurrency.** 1 and 8 writer threads with 1 and 8 searcher threads. Writes and searches arrive at fixed offered rates, and a latency is counted from the scheduled start, so a stall is not hidden by the requests it delays.
+
+**Filters.** Allowed shares 0.5, 0.1, 0.01, and 0.001, in three kinds: random, one that matches the cluster of the query, and one that matches a cluster far from the query.
+
+## Ground truth
+
+At every checkpoint of the runbook the program computes the exact top 10 over the rows that are live at that point, with their current vectors, using its own scalar distance and none of the arm's kernels. The ground truth has its own test with known answers that include deletes and replacements. The streaming track had to correct its published recall after the competition: the declared winner went from 0.985 to 0.0921 in the corrected table.
+
+## Metrics
+
+| Metric | Definition | Unit |
+|---|---|---|
+| Violations | A write not seen by a later search, a deleted id returned, an old vector's score returned, part of a batch seen, or fewer than `k` exact-path hits when `k` live rows qualify | count, must be 0 |
+| Filter shortfall | Approximate filtered searches that return fewer than `k` although `k` rows qualify | share of searches |
+| Recall under churn | Recall@10 at each checkpoint, as a curve, with its minimum | share |
+| Search latency under writes | p50 and p99, and searches per second, while the writes run, at matched recall of 0.95 and 0.99 | µs, 1/s |
+| Write latency | p50 and p99 until the write is visible to a search, refreshes included | µs |
+| Write capacity | The highest write rate that is sustained without back pressure or a growing backlog | rows/s |
+| Write cost | Process CPU time per 1,000 operations, rows built or rebuilt per row written, and bytes written to disk per row written | s, ratio, bytes |
+| Memory per vector | Heap after garbage collection, resident bytes, and mapped bytes, divided by live rows, and the peak during background work | bytes |
+| Many collections | Memory and threads per collection, and the first search of a collection that was closed | bytes, µs |
+| Filtered search | Recall and latency per share and filter kind, and filter calls per search | share, µs |
+| Restart | Time from process start to the first correct answer, after a clean checkpoint and after a kill with unpersisted writes | s |
+
+Latencies of two arms are compared only at matched recall, found as `Bench` does it ([Latency at matched recall](BENCHMARKS.md#latency-at-matched-recall)).
+
+## Arms
+
+| Arm | What it is | Fairness notes |
+|---|---|---|
+| Exact | `FlatIndex`, a scan of every live row | The truth for small collections, and the arm to beat there |
+| tiervec tier | Default settings, then each candidate as its own arm: merge policy, `INSERT` merge, SQ8, mapped vectors | Settings are named in the result file |
+| Live graph | One `GraphIndex` with adds, deletes, and scheduled `consolidate()`, at `alpha` 1.0 and 1.2 | In memory and FreshVamana-like. It is not FreshDiskANN |
+| JVector | One graph, concurrent adds, `markNodeDeleted`, `removeDeletedNodes` on a schedule | Writers wait during removal, because it is not thread-safe against them, and the wait counts |
+| Lucene | `IndexWriter` with deletes and updates by id, near-real-time refresh, float32 and quantized HNSW formats | A refresh before a search that must see a write counts in the write latency |
+
+All arms run in the same process shape, on the same JDK, cores, heap limit, data, and runbook, one arm per fresh JVM. Each library is run with its documented settings for this use, and the build parameters are matched where they mean the same thing, as in [#121](https://github.com/humemai/tiervec/issues/121). An arm that lacks a guarantee (for example atomic batches) reports its violations, and the table of results says that it does not give that guarantee.
+
+**Not in the same harness.** hnswlib, DiskANN, FreshDiskANN, and SPFresh are C++ or Rust systems, and the last three are built for data larger than memory. A comparison across processes and languages would measure the bindings too. If one is run, it is reported apart and labelled so. This review found no SPFresh-style index that runs on the JVM, and did not search widely for one. `IvfIndex` with its full retrain is not a substitute and is not claimed as one. Database servers and engine indexes are compared in MMDBBench, not here.
+
+## Verdicts
+
+- A run with a violation in an arm that promises the guarantee fails, and its figures are not read.
+- Every metric gets its own verdict per shape, against the best other arm, with the bounds written before the run. Latency follows the rule form of [#121](https://github.com/humemai/tiervec/issues/121): paired ratios with an interval, and an A/A control.
+- The word "best" is used only for one metric on one shape, when tiervec is ahead of every in-process arm under that rule. It is used without a qualifier only if tiervec is behind no arm on any metric of any shape, which no single study can show.
+
+## What would disprove the design
+
+| If the benchmark shows | Then |
+|---|---|
+| The live graph, JVector, or Lucene keeps recall and latency at least as well at less write cost on the personal and large shapes | Segments are the wrong default there |
+| The exact arm wins at every personal size | No graph is needed for most collections, and the threshold moves up |
+| Recall falls over rounds in `INSERT` mode or the live graph | Graph reuse stays off until the repair of [#161](https://github.com/humemai/tiervec/issues/161) holds |
+| p99 grows with the batch rate | Batch visibility is redesigned ([#163](https://github.com/humemai/tiervec/issues/163)) |
+| Memory per vector is above the other arms | Compressed codes move ahead of new features ([#164](https://github.com/humemai/tiervec/issues/164)) |
+
+## Order of building
+
+1. The runbook, the ground truth, and the violation counters, with the tier, the exact arm, and the live graph, at the smoke size in CI.
+2. Restart and filter operations, then the many-collection shapes.
+3. The JVector and Lucene arms.
+4. The rules of the first timed study, written on its issue before any timed run.

@@ -8,7 +8,7 @@ A tiered vector index for agent-memory databases on the JVM.
 
 A library of vector-index algorithms meant to live inside a database engine, in the same process, with no network between the engine and the index. The first host is [ArcadeDB](https://github.com/ArcadeData/arcadedb).
 
-The design follows the workload of an agent's memory: many small and medium collections, a steady stream of small writes, deletes and updates, and queries that must see a write right away.
+The design aims at the workload of an agent's memory: many small and medium collections, a steady stream of small writes, deletes and updates, and queries that must see a write right away. Whether it is the best choice for that workload is not shown. [docs/RELATED-WORK.md](docs/RELATED-WORK.md) compares each design choice with published research and current systems and says where tiervec is behind or unproven, and [docs/AGENT-MEMORY-BENCHMARK.md](docs/AGENT-MEMORY-BENCHMARK.md) defines the benchmark that would settle it, which is not built yet.
 
 - **Exact tail.** Recent writes sit in a bounded buffer that is scanned exactly, so a write is visible to the next query without waiting for an index build.
 - **Sealed segments.** Older vectors live in immutable HNSW graph segments. Below a size threshold no graph is built and every search is an exact scan. Segments are merged in the background and swapped in atomically.

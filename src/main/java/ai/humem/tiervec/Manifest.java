@@ -36,13 +36,16 @@ import java.util.regex.Pattern;
  * <p>{@code epoch} is the host's id epoch and {@code hwm} the high-water id, the largest id that the segments or the tail of the generation
  * hold; both are {@link #NONE} for a tier that never had an epoch. {@code versionCounter} restores the tier's version counter;
  * {@code nextSegId} is the smallest segment id not used by this generation. {@code tombGeneration}, {@code tombLength} and {@code tombCrc}
- * describe the tombstone file the manifest names. {@code tailRows}, {@code tailLength} and {@code tailCrc} describe the tail file of the
- * same generation ({@code tailCrc} is the CRC32C of its rows); all three are 0 when the tail was empty, and then there is no tail file.
- * {@link #publish} fills in the fields of both files. A manifest of major version 1 has no tail fields.
+ * describe the tombstone file the manifest names: since major 2 {@code tombCrc} is the CRC32C of that file without its last 4 bytes, which
+ * are its own checksum; in major 1 it was the CRC32C of the whole file, which comes out the same for any content (#173). {@code tailRows},
+ * {@code tailLength} and {@code tailCrc} describe the tail file of the same generation ({@code tailCrc} is the CRC32C of its rows); all
+ * three are 0 when the tail was empty, and then there is no tail file. {@link #publish} fills in the fields of both files. {@code major} is
+ * the major version of the manifest, which says what {@code tombCrc} covers; a manifest of major 1 has no tail fields.
  */
 @Internal
 public record Manifest(long generation, long epoch, long hwm, long versionCounter, long nextSegId, Fingerprint fingerprint,
-                       List<Entry> entries, long tombGeneration, long tombLength, int tombCrc, long tailRows, long tailLength, int tailCrc) {
+                       List<Entry> entries, long tombGeneration, long tombLength, int tombCrc, long tailRows, long tailLength, int tailCrc,
+                       int major) {
 
     /** a value that was not set (the epoch and the high-water id of a tier that never had an epoch) */
     public static final long NONE = Long.MIN_VALUE;
@@ -84,7 +87,7 @@ public record Manifest(long generation, long epoch, long hwm, long versionCounte
     public static Manifest of(long generation, Fingerprint fingerprint, List<Entry> entries) {
         long next = 1;
         for (Entry e : entries) next = Math.max(next, e.segId() + 1);
-        return new Manifest(generation, NONE, NONE, 0L, next, fingerprint, entries, 0L, 0L, 0, 0L, 0L, 0);
+        return new Manifest(generation, NONE, NONE, 0L, next, fingerprint, entries, 0L, 0L, 0, 0L, 0L, 0, FORMAT_MAJOR);
     }
 
     public static String manifestName(long generation) {
@@ -143,7 +146,7 @@ public record Manifest(long generation, long epoch, long hwm, long versionCounte
                 : TailFile.write(dir.resolve(tailName(m.generation())), m.generation(), m.fingerprint().dim(), tail);
         hook.at(FaultHook.Step.TAIL_WRITTEN);
         Manifest out = new Manifest(m.generation(), m.epoch(), m.hwm(), m.versionCounter(), m.nextSegId(), m.fingerprint(), m.entries(),
-                m.generation(), tomb.length, SegmentFormat.crc32c(tomb, 0, tomb.length), tail.size(), written.length(), written.crc());
+                m.generation(), tomb.length, tombChecksum(tomb, FORMAT_MAJOR), tail.size(), written.length(), written.crc(), FORMAT_MAJOR);
         SegmentFormat.fsyncDir(dir);
         hook.at(FaultHook.Step.DIR_SYNCED_AFTER_SEGMENTS);
         byte[] body = out.encode(FORMAT_MAJOR, FORMAT_MINOR);
@@ -382,7 +385,7 @@ public record Manifest(long generation, long epoch, long hwm, long versionCounte
                 entries.add(new Entry(segId, n, fileLength, headerCrc, verMin, verMax));
             }
             return new Manifest(gen, epoch, hwm, counter, nextSeg, new Fingerprint(dim, metric, m, efc, sq8), entries, tombGen, tombLen, tombCrc,
-                    tailRows, tailLen, tailCrc);
+                    tailRows, tailLen, tailCrc, major);
         } catch (BufferUnderflowException e) {
             throw new CorruptException("manifest is shorter than its fields", e);
         }
@@ -434,10 +437,19 @@ public record Manifest(long generation, long epoch, long hwm, long versionCounte
         } catch (NoSuchFileException x) {
             throw new CorruptException("tombstone file " + tp.getFileName() + " is missing", "MANIFEST");
         }
-        if (tomb.length != m.tombLength() || SegmentFormat.crc32c(tomb, 0, tomb.length) != m.tombCrc()) {
+        if (tomb.length != m.tombLength() || tomb.length < 4 || tombChecksum(tomb, m.major()) != m.tombCrc()) {
             throw new CorruptException("tombstone file " + tp.getFileName() + " does not match the manifest", "TOMBSTONES");
         }
         return parseTombstones(tomb, m);
+    }
+
+    /**
+     * What a manifest of {@code major} records as the checksum of a tombstone file. Since major 2 it covers every byte before the file's own
+     * CRC32C, so another content gives another value. Major 1 covered the whole file, and a CRC32C over bytes followed by their own CRC32C
+     * is a constant (#173): that check finds damage inside the file and does not tell one consistent file from another.
+     */
+    static int tombChecksum(byte[] tomb, int major) {
+        return SegmentFormat.crc32c(tomb, 0, major == 1 ? tomb.length : tomb.length - 4);
     }
 
     private static long[][] parseTombstones(byte[] raw, Manifest m) throws IOException {

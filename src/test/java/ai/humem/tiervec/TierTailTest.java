@@ -419,8 +419,13 @@ class TierTailTest {
         Manifest m = Manifest.readLatest(dir);
         assertEquals(0, m.tailRows());
         Path file = dir.resolve(Manifest.manifestName(m.generation()));
-        Files.write(file, m.encode(1, 0));
+        // major 1 has no tail fields, and its checksum of the tombstone file covers the whole file
+        byte[] tomb = Files.readAllBytes(dir.resolve(Manifest.tombName(m.tombGeneration())));
+        Manifest first = new Manifest(m.generation(), m.epoch(), m.hwm(), m.versionCounter(), m.nextSegId(), m.fingerprint(), m.entries(),
+                m.tombGeneration(), m.tombLength(), SegmentFormat.crc32c(tomb, 0, tomb.length), 0L, 0L, 0, 1);
+        Files.write(file, first.encode(1, 0));
         assertEquals(m.encode(2, 0).length - 24, (int) Files.size(file), "major 1 has no tail fields");
+        assertEquals(first, Manifest.readLatest(dir));
 
         TieredIndex u = track(TieredIndex.open(dir, cfg()));
         assertNull(u.openFallbackCause());

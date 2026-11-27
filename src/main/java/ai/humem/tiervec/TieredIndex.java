@@ -2036,7 +2036,7 @@ public final class TieredIndex implements VecIndex {
             GraphIndex.Params gp = cfg.graph();
             Manifest.Fingerprint fp = new Manifest.Fingerprint(dim, metric, gp.M(), gp.efConstruction(), gp.sq8());
             long hw = epoch == Manifest.NONE ? Manifest.NONE : highWater(v); // the high-water id means something only inside an epoch
-            Manifest m = new Manifest(gen, epoch, hw, counter, nextSeg, fp, entries, 0L, 0L, 0, 0L, 0L, 0);
+            Manifest m = new Manifest(gen, epoch, hw, counter, nextSeg, fp, entries, 0L, 0L, 0, 0L, 0L, 0, Manifest.FORMAT_MAJOR);
             Manifest done = Manifest.publish(dir, m, hidden, tail, hook);
             for (int i = 0; i < v.segs.length; i++) v.segs[i].fileId = fileIds[i];
             persistedDir = dir;

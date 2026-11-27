@@ -247,7 +247,7 @@ class TierTailCorruptionTest {
     private static byte[] manifestFor(Manifest m, long epoch, long hwm, long rows, byte[] tail) {
         int hl = le(tail).getInt(TailFile.H_LEN);
         return new Manifest(m.generation(), epoch, hwm, m.versionCounter(), m.nextSegId(), m.fingerprint(), m.entries(), m.tombGeneration(),
-                m.tombLength(), m.tombCrc(), rows, tail.length, SegmentFormat.crc32c(tail, hl, tail.length - hl))
+                m.tombLength(), m.tombCrc(), rows, tail.length, SegmentFormat.crc32c(tail, hl, tail.length - hl), m.major())
                 .encode(Manifest.FORMAT_MAJOR, Manifest.FORMAT_MINOR);
     }
 

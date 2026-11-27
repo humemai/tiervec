@@ -59,12 +59,12 @@ A **runbook** is a file of operations that is generated once from a seed and rep
 | 0 | The centre of its cluster plus noise in all dimensions | Near a live row |
 | 1 to the dimension | The centre of its cluster plus noise in the span of that many random directions, so the rows of a cluster use about that many dimensions | Drawn like a new row of the cluster of a random live row, so it is no near copy of a stored row |
 
-For every shape the program says how hard the queries of the checkpoints are, from the live rows alone and before any arm runs: the local intrinsic dimension (the maximum likelihood estimate from the 100 nearest rows, or all rows but one in a smaller collection) and the relative contrast (the mean distance to the live rows over the distance to the 10th nearest). Both use the Euclidean distance between unit vectors. The line is `DATA` in `result.txt`.
-
 - A collection starts with a load of its rows and a checkpoint. Then it runs in rounds. A round retires a tenth of the rows (at least 4): 30 percent expire (the oldest), 30 percent are rows of one cluster that are deleted, 30 percent are updated, and the rest are deleted and added again later under the same id (`reuse`). New rows replace the deleted ones.
 - New and replaced vectors come from the cluster that grows in that round, so the distribution moves. The rounds end when as many row versions have been retired as the chosen turnover asks for.
 - Part of the writes arrive in batches of 1 to 50, and no id appears twice in one batch. Searches are placed between the writes at a chosen number per written row, with the queries of the table above.
 - A checkpoint carries the queries that recall is scored on. In this first version nothing is persisted at a checkpoint: restarts are a later step.
+
+`--clusters` sets the clusters of a collection; by default there is one per 20 rows, at least 4 and at most 16. For every shape the program says how hard the queries of the checkpoints are, from the live rows alone and before any arm runs: the local intrinsic dimension (the maximum likelihood estimate from the 100 nearest rows, or all rows but one in a smaller collection) and the relative contrast (the mean distance to the live rows over the distance to the 10th nearest). Both use the Euclidean distance between unit vectors. The line is `DATA` in `result.txt`.
 
 ## Ground truth
 

@@ -84,7 +84,7 @@ There are three tiers. For tier 1, each row names the CI job that proves it. A j
 | Linux x86-64, Temurin 21 and 25 | slow tests (long concurrency and stress) | `slow tests (JDK 21)`, `slow tests (JDK 25)` | no |
 | Linux arm64, Temurin 21 and 25 | fast tests | `fast tests (arm64 Linux, JDK 21)`, `fast tests (arm64 Linux, JDK 25)` | no |
 | macOS arm64, Temurin 21 | fast tests | `fast tests (arm64 macOS, JDK 21)` | no |
-| Windows x64, Temurin 21 | fast tests | `fast tests (Windows x64, JDK 21)` | no |
+| Windows x64, Temurin 21 | fast tests | `fast tests (Windows x64, JDK 21)` | yes |
 | Windows x64, Temurin 21 | slow crash tests (a process halted or killed during a checkpoint) | `slow crash tests (Windows x64, JDK 21)` | no |
 | Linux x86-64, GraalVM Community 21.0.2 | native image smoke, scalar kernels | `native image smoke` | no |
 | Linux arm64, GraalVM Community 21.0.2 | native image smoke, scalar kernels | `native image smoke (arm64 Linux)` | no |

@@ -9,6 +9,8 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.LongPredicate;
 
 /**
  * The tests of the agent-memory benchmark's own parts (issue #159): the runbook, the exact answers and the violation counters. Maven does not
@@ -31,6 +33,8 @@ public final class AgentMemorySelfCheck {
         runbookFile();
         runbookWorkload();
         violationCounters();
+        replayWithFaultyArms();
+        variants();
         System.out.println("SELFCHECK-SUMMARY checks=" + checks + " failures=" + failures);
         System.exit(failures == 0 && checks > 0 ? 0 : 1);
     }
@@ -288,5 +292,97 @@ public final class AgentMemorySelfCheck {
         check(sum.failing(false) == 2 && sum.count(Violations.Kind.PART_OF_BATCH) == 2 && sum.examples.size() == 4, "the counters add up");
         SizedIdFilter only = Violations.only(new long[] {4, 5, 5});
         check(only.test(4) && !only.test(6) && only.allowedCount() == 2, "the filter of a probe");
+    }
+
+    // ---- the replay, with arms that are wrong on purpose ----
+
+    private enum Fault { NONE, KEEPS_DELETED, KEEPS_OLD_VECTOR, LOSES_A_WRITE, ANSWERS_SHORT, TEARS_A_BATCH }
+
+    /** the exact arm with one fault */
+    private static final class Faulty implements MemoryArm {
+        private final MemoryArm exact = MemoryArm.Variant.parse("exact exact").open(8);
+        private final Fault fault;
+        private final Set<Long> held = new HashSet<>();
+        private final AtomicLong searches = new AtomicLong();
+
+        Faulty(Fault fault) { this.fault = fault; }
+
+        @Override public void put(long id, float[] v) {
+            if (fault == Fault.LOSES_A_WRITE && id % 5 == 0) return;
+            if (fault == Fault.KEEPS_OLD_VECTOR && held.contains(id)) return;
+            held.add(id);
+            exact.put(id, v);
+        }
+
+        @Override public void delete(long id) {
+            if (fault == Fault.KEEPS_DELETED) return;
+            held.remove(id);
+            exact.delete(id);
+        }
+
+        @Override public boolean atomicBatches() { return fault == Fault.TEARS_A_BATCH; }
+
+        /** claims to be atomic, and lets two searches of the watching thread run after the first write */
+        @Override public void applyBatch(List<Runbook.Op> writes) {
+            for (int i = 0; i < writes.size(); i++) {
+                Runbook.Op w = writes.get(i);
+                if (w.kind() == Runbook.Kind.DELETE) delete(w.id());
+                else put(w.id(), w.vec());
+                if (i == 0 && writes.size() > 1) {
+                    long until = searches.get() + 2, deadline = System.nanoTime() + 30_000_000_000L;
+                    while (searches.get() < until) {
+                        if (System.nanoTime() > deadline) throw new IllegalStateException("no search ran beside the batch");
+                        Thread.onSpinWait();
+                    }
+                }
+            }
+        }
+
+        @Override public Hit[] search(float[] q, int k, LongPredicate allow) {
+            Hit[] hits = exact.search(q, k, allow);
+            searches.incrementAndGet();
+            return fault == Fault.ANSWERS_SHORT && allow == null && hits.length > 0 ? Arrays.copyOf(hits, hits.length - 1) : hits;
+        }
+
+        @Override public long bytesHeld() { return exact.bytesHeld(); }
+        @Override public void close() { exact.close(); }
+    }
+
+    private static void replayWithFaultyArms() {
+        Runbook rb = Runbook.generate(new Runbook.Params(11, 8, 100, 2, 2.0, 4, 0.5, 3, 5, 8));
+        MemoryReplay.Answers answers = new MemoryReplay.Answers(rb);
+        for (Fault fault : Fault.values()) {
+            MemoryReplay.Result r = MemoryReplay.run(rb, answers, () -> new Faulty(fault), 1);
+            Violations v = r.violations;
+            String what = "the arm with the fault " + fault + " " + v.examples;
+            check(r.batches > 0 && r.searches > 0 && r.probes > r.batches && r.added > 200 && r.deleted > 0 && r.liveRows == 200, "the replay ran: " + what);
+            switch (fault) {
+                case NONE -> {
+                    check(v.failing(false) == 0, "a right arm has no failing violation: " + what);
+                    check(v.count(Violations.Kind.PART_OF_BATCH) > 0, "a batch applied one write at a time is seen in part: " + what);
+                    check(r.lowestRecall() == 1 && r.finalRecall() == 1, "the exact arm has recall 1: " + r.lowestRecall());
+                }
+                case KEEPS_DELETED -> check(v.count(Violations.Kind.DELETED_RETURNED) > 0, what);
+                case KEEPS_OLD_VECTOR -> check(v.count(Violations.Kind.OLD_SCORE) > 0, what);
+                case LOSES_A_WRITE -> check(v.count(Violations.Kind.WRITE_NOT_SEEN) > 0 && r.lowestRecall() < 1, what);
+                case ANSWERS_SHORT -> check(v.count(Violations.Kind.TOO_FEW_HITS) > 0, what);
+                case TEARS_A_BATCH -> check(v.count(Violations.Kind.PART_OF_BATCH) > 0 && v.failing(true) == v.count(Violations.Kind.PART_OF_BATCH), what);
+            }
+        }
+    }
+
+    private static void variants() {
+        List<MemoryArm.Variant> all = MemoryArm.Variant.parseAll("a exact; b tier tailLimit=50 mergeMode=INSERT\n# c is not read; d neither\ne graph graph.alpha=1.2");
+        check(all.size() == 3 && all.get(1).describe().equals("tailLimit=50,mergeMode=INSERT") && all.get(2).arm().equals("graph"), "variants are read: " + all);
+        for (String bad : List.of("", "a", "a other", "a exact x=1", "a tier nothing=1", "a tier buildThreads=4", "a graph alpha=1", "a graph graph.sq8=yes",
+                "a tier tailLimit", "a exact; a exact", "a b/c exact")) {
+            boolean refused = false;
+            try {
+                MemoryArm.Variant.parseAll(bad);
+            } catch (IllegalArgumentException e) {
+                refused = true;
+            }
+            check(refused, "the variants '" + bad + "' are refused");
+        }
     }
 }

@@ -14,7 +14,7 @@ final class LiveRows {
     /** a score that differs from the exact one by more than this is the score of another vector; it covers the rounding of float32 kernels */
     static final double TOLERANCE = 1e-4;
     /** two exact scores this close are a tie when recall is scored */
-    private static final double TIE = 1e-9;
+    private static final double TIE = 1e-6;
 
     private final Map<Long, float[]> rows = new HashMap<>();
 

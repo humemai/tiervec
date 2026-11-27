@@ -373,7 +373,7 @@ class TierTailTest {
             throw new IllegalStateException("the seal fails before it publishes");
         }, null);
         assertThrows(IllegalStateException.class, t::sealNow);
-        t.setSealHooks(null, null);
+        // the hook stays: the worker tries the frozen tail again, and every try has to fail for the tail to stay frozen until the test ends
         // one more row in the new active tail, and a delete and a replace of rows of the frozen one
         h.commit(t, new long[] {97, 90}, 91);
         assertEquals(2, t.segmentCount());

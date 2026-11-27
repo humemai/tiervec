@@ -245,6 +245,47 @@ jobs:
           run ai.humem.tiervec.MergeGenerations --data target/bench/smoke-data --merge-mode other > target/bench/gen-wrong.log 2>&1 || code=$?
           echo "wrong --merge-mode exit code: $code"
           test "$code" -eq 2
+      # issue #4: a paced write stream with paced searches and the sealed reference (PacedWrites), on the cosine set and on an l2 set
+      - name: Paced writes on a cosine and an l2 set
+        run: |
+          uv run --python 3.12 .github/scripts/make-smoke-hdf5.py target/bench/smoke.hdf5 5100 32 100
+          uv run --python 3.12 scripts/prep_ann_hdf5.py target/bench/smoke.hdf5 target/bench/smoke-l2 --queries 100
+          grep -q '^metric=l2$' target/bench/smoke-l2/meta.properties
+          run() { timeout 300 java -Xmx2g --add-modules jdk.incubator.vector -cp target/bench/classes "$@"; }
+          paced() { run ai.humem.tiervec.PacedWrites --base 3000 --inserts 2000 --rate 500 --search-rate 200 --idle-seconds 2 --queries 100 \
+            --tail-limit 200 --small-limit 100 --max-segments 2 --merge-fan 2 --merge-trigger-ratio 0.05 --targets 0.9,0.99 --reps 1 --min-recall 0.85 \
+            --host-label github-runner "$@"; }
+          for set in smoke-data smoke-l2; do
+            paced --data "target/bench/$set" --out "target/bench/paced-$set.txt"
+            paced --data "target/bench/$set" --sealed true --split-beam false --out "target/bench/sealed-$set.txt"
+            cat "target/bench/paced-$set.txt" "target/bench/sealed-$set.txt"
+            for f in "target/bench/paced-$set.txt" "target/bench/sealed-$set.txt"; do
+              grep -q '^PW-SUMMARY status=OK failures=0' "$f"
+              grep -q '^FINAL live=5000 ' "$f"
+              grep -q '^MATCHED split=false target=0.9 status=' "$f"
+            done
+            f="target/bench/paced-$set.txt"
+            grep -q -E '^WINDOW bigMerges=[1-9]' "$f"
+            grep -q '^STREAM inserts=2000 ' "$f"
+            grep -q '^LAT phase=stream-merge split=true ' "$f"
+            grep -q '^LAT phase=idle-after split=false ' "$f"
+            grep -q '^SEARCH split=true ' "$f"
+            grep -q '^FINAL live=5000 segments=1 ' "target/bench/sealed-$set.txt"
+          done
+          # both programs saw the same rows
+          test "$(grep -h -o 'orderCrc=[0-9a-f]* first1000Crc=[0-9a-f]*' target/bench/paced-smoke-l2.txt target/bench/sealed-smoke-l2.txt | sort -u | wc -l)" -eq 1
+          # an l2 set is refused by the programs that score by the cosine, and a wrong option is refused
+          for main in Bench MergeGenerations; do
+            code=0
+            run ai.humem.tiervec.$main --data target/bench/smoke-l2 > "target/bench/l2-$main.log" 2>&1 || code=$?
+            echo "$main on an l2 set, exit code: $code"
+            test "$code" -eq 2
+            grep -q 'is an l2 set' "target/bench/l2-$main.log"
+          done
+          code=0
+          run ai.humem.tiervec.PacedWrites --data target/bench/smoke-l2 --split-beam maybe > target/bench/paced-wrong.log 2>&1 || code=$?
+          echo "wrong --split-beam exit code: $code"
+          test "$code" -eq 2
       - name: Result file
         if: always()
         run: |

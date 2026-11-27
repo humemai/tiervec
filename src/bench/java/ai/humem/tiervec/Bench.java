@@ -604,6 +604,8 @@ public final class Bench {
                 throw new IllegalArgumentException("cannot read --data " + o.s("data") + ": " + e, e);
             }
             RealData real = plan.real;
+            if (real.metric() != Metric.COSINE)
+                throw new IllegalArgumentException("--data " + o.s("data") + " is an l2 set; this harness scores by the cosine (PacedWrites reads l2 sets)");
             if (o.given.contains("n") && o.i("n") != real.count)
                 throw new IllegalArgumentException("--n " + o.i("n") + " does not match the data file, which holds " + real.count
                         + " vectors (with --data the size comes from the file; prepare a smaller file with --limit)");

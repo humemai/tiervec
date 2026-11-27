@@ -24,9 +24,14 @@ on:
         default: "1"
         type: string
       dim:
-        description: "Dimensions of the generated vectors"
+        description: "Dimensions of the generated vectors. Empty: the default of the screen"
         required: false
-        default: "128"
+        default: ""
+        type: string
+      latent:
+        description: "Dimensions that the noise of the rows spans (docs/SCREEN-IDEAS.md). Empty: the default of the screen"
+        required: false
+        default: ""
         type: string
       mix:
         description: "write: 1 search per 8 written rows; read: 4 searches per written row"
@@ -70,9 +75,12 @@ jobs:
           VARIANTS: ${{ inputs.variants }}
           SEED: ${{ inputs.seed }}
           DIM: ${{ inputs.dim }}
+          LATENT: ${{ inputs.latent }}
           MIX: ${{ inputs.mix }}
         run: |
-          args=(--preset screen --seed "$SEED" --dim "$DIM" --mix "$MIX" --out target/agent-memory/screen)
+          args=(--preset screen --seed "$SEED" --mix "$MIX" --out target/agent-memory/screen)
+          if [ -n "$DIM" ]; then args+=(--dim "$DIM"); fi
+          if [ -n "$LATENT" ]; then args+=(--latent "$LATENT"); fi
           if [ -n "$SHAPES" ]; then args+=(--shapes "$SHAPES"); fi
           if [ -n "$VARIANTS" ]; then args+=(--variants "$VARIANTS"); fi
           java -Xmx10g --add-modules jdk.incubator.vector -cp target/agent-memory/classes ai.humem.tiervec.AgentMemory "${args[@]}"

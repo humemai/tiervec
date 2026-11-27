@@ -34,7 +34,12 @@ import java.util.SplittableRandom;
  * updated, and the rest are deleted and later added again under the same id (reuse). New rows replace the deleted ones. New and replaced
  * vectors are drawn from the cluster that grows in the round, so the distribution moves. The rounds end when {@code turnover * rows} versions
  * have been retired. Some writes arrive in batches of 1 to {@code maxBatch} writes, and no id appears twice in a batch. Searches are placed
- * between the writes at {@code searchesPerWrite} per written row, with a query near a live row.
+ * between the writes at {@code searchesPerWrite} per written row.
+ *
+ * <p>There are two kinds of data. With {@code latent} 0 a row is the centre of its cluster plus noise in all dimensions, and a query is near a
+ * live row. With {@code latent} above 0 the noise of a row lies in the span of {@code latent} random directions, which sets how many
+ * dimensions the rows of a cluster really use (all of them when {@code latent} is the dimension), and a query is drawn as a new row of the
+ * cluster of a random live row, so it is no near copy of a stored row.
  */
 final class Runbook {
     /** the kinds of operation; the ordinal is the byte in the file, so the order is part of the format */
@@ -54,28 +59,40 @@ final class Runbook {
     /**
      * What the generator is asked for. rows: the live rows of a collection. turnover: the retired row versions of a collection, as a
      * multiple of rows. searchesPerWrite: search operations per written row. checkpoints: the checkpoints after the one that follows the
-     * load (fewer when there are fewer rounds). queries: the queries of a checkpoint. maxBatch: the largest batch, 0 for no batches.
+     * load (fewer when there are fewer rounds). queries: the queries of a checkpoint. maxBatch: the largest batch, 0 for no batches. latent:
+     * the kind of data (see the class), from 0 to the dimension.
      */
     record Params(long seed, int dim, int rows, int collections, double turnover, int clusters, double searchesPerWrite, int checkpoints,
-                  int queries, int maxBatch) {
+                  int queries, int maxBatch, int latent) {
         Params {
             if (dim < 2 || rows < 4 || collections < 1 || !(turnover >= 0 && turnover < 1000) || clusters < 2
-                    || !(searchesPerWrite >= 0 && searchesPerWrite < 1000) || checkpoints < 1 || queries < 1 || maxBatch < 0) {
+                    || !(searchesPerWrite >= 0 && searchesPerWrite < 1000) || checkpoints < 1 || queries < 1 || maxBatch < 0
+                    || latent < 0 || latent > dim) {
                 throw new IllegalArgumentException("bad runbook parameters");
             }
         }
 
+        /** the first kind of data: noise in all dimensions, and queries near live rows */
+        Params(long seed, int dim, int rows, int collections, double turnover, int clusters, double searchesPerWrite, int checkpoints,
+               int queries, int maxBatch) {
+            this(seed, dim, rows, collections, turnover, clusters, searchesPerWrite, checkpoints, queries, maxBatch, 0);
+        }
+
         String describe() {
             return "seed=" + seed + " dim=" + dim + " rows=" + rows + " collections=" + collections + " turnover=" + turnover + " clusters=" + clusters
-                    + " searchesPerWrite=" + searchesPerWrite + " checkpoints=" + checkpoints + " queries=" + queries + " maxBatch=" + maxBatch;
+                    + " searchesPerWrite=" + searchesPerWrite + " checkpoints=" + checkpoints + " queries=" + queries + " maxBatch=" + maxBatch
+                    + " latent=" + latent;
         }
     }
 
     private static final int MAGIC = 0x54564D52; // "TVMR"
-    private static final int FORMAT = 1;
+    private static final int FORMAT = 2;
     /** the chance that a batch starts at a write that is not in one; with batches of 25 writes on average about half of the writes are batched */
     private static final double BATCH_START = 0.04;
-    /** the length of the noise that separates a row from the centre of its cluster, and a query from the row it is near (a centre has length 1) */
+    /**
+     * The length of the noise that separates a row from the centre of its cluster (a centre has length 1), and, with latent 0, a query from the
+     * row it is near.
+     */
     private static final double SPREAD = 0.8, QUERY_NOISE = 0.3;
 
     final Params params;
@@ -112,6 +129,7 @@ final class Runbook {
             o.writeInt(params.checkpoints());
             o.writeInt(params.queries());
             o.writeInt(params.maxBatch());
+            o.writeInt(params.latent());
             for (List<Op> ops : collections) {
                 o.writeInt(ops.size());
                 for (Op op : ops) writeOp(o, op, buf);
@@ -155,7 +173,7 @@ final class Runbook {
             int format = in.readInt();
             if (format != FORMAT) throw new IOException(file + " has runbook format " + format + ", this program reads " + FORMAT);
             Params p = new Params(in.readLong(), in.readInt(), in.readInt(), in.readInt(), in.readDouble(), in.readInt(), in.readDouble(), in.readInt(),
-                    in.readInt(), in.readInt());
+                    in.readInt(), in.readInt(), in.readInt());
             List<List<Op>> all = new ArrayList<>();
             byte[] buf = new byte[4 * p.dim()];
             for (int c = 0; c < p.collections(); c++) {
@@ -225,6 +243,8 @@ final class Runbook {
         private final Params p;
         private final SplittableRandom r;
         private final float[][] centres;
+        /** the directions that the noise of the rows spans, or null when it spans every dimension */
+        private final float[][] directions;
         private final List<Op> ops = new ArrayList<>();
         /** the live rows in the order in which their ids were added, so the first ones are the oldest (a reused id moves to the end) */
         private final LinkedHashMap<Long, Row> live = new LinkedHashMap<>();
@@ -237,11 +257,17 @@ final class Runbook {
         Generator(Params p, int collection) {
             this.p = p;
             this.r = new SplittableRandom(Bench.mix(Bench.mix(p.seed()) + collection));
-            this.centres = new float[p.clusters()][p.dim()];
-            for (float[] c : centres) {
-                for (int i = 0; i < c.length; i++) c[i] = (float) Bench.Gen.gauss(r);
-                Bench.Gen.norm(c);
+            this.centres = randomUnit(p.clusters());
+            this.directions = p.latent() > 0 && p.latent() < p.dim() ? randomUnit(p.latent()) : null;
+        }
+
+        private float[][] randomUnit(int n) {
+            float[][] all = new float[n][p.dim()];
+            for (float[] v : all) {
+                for (int i = 0; i < v.length; i++) v[i] = (float) Bench.Gen.gauss(r);
+                Bench.Gen.norm(v);
             }
+            return all;
         }
 
         List<Op> run() {
@@ -331,7 +357,7 @@ final class Runbook {
         }
 
         private Op put(Kind kind, long id, int cluster) {
-            float[] v = near(centres[cluster], SPREAD);
+            float[] v = draw(cluster);
             if (live.put(id, new Row(cluster, v)) == null) {
                 at.put(id, ids.size());
                 ids.add(id);
@@ -364,8 +390,22 @@ final class Runbook {
             return w;
         }
 
+        /** a new vector of a cluster: its centre plus noise of length about SPREAD, in the span of the directions when there are any */
+        private float[] draw(int cluster) {
+            if (directions == null) return near(centres[cluster], SPREAD);
+            float scale = (float) (SPREAD / StrictMath.sqrt(directions.length));
+            float[] w = centres[cluster].clone();
+            for (float[] d : directions) {
+                float g = scale * (float) Bench.Gen.gauss(r);
+                for (int i = 0; i < w.length; i++) w[i] += g * d[i];
+            }
+            Bench.Gen.norm(w);
+            return w;
+        }
+
         private float[] query() {
-            return near(live.get(ids.get(r.nextInt(ids.size()))).vec(), QUERY_NOISE);
+            Row row = live.get(ids.get(r.nextInt(ids.size())));
+            return p.latent() == 0 ? near(row.vec(), QUERY_NOISE) : draw(row.cluster());
         }
 
         private void searches(int written) {

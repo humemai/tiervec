@@ -20,11 +20,39 @@ final class MemoryReplay {
 
     private MemoryReplay() {}
 
-    /** the exact answers of every query of every checkpoint of a runbook, computed once and used for every arm */
+    /** the neighbours that the estimate of the intrinsic dimension takes, or all rows but one when a collection is smaller */
+    static final int DIMENSION_NEIGHBOURS = 100;
+
+    /**
+     * The exact answers of every query of every checkpoint of a runbook, computed once and used for every arm, and how hard those queries are.
+     * Both come from the rows alone, so they say nothing about any arm.
+     */
     static final class Answers {
         /** by collection, checkpoint, and query */
         private final List<List<LiveRows.Top[]>> tops = new ArrayList<>();
         final int checkpoints;
+        /** the queries of all checkpoints, and the mean over them of {@link #intrinsicDimension()} and of {@link #contrast()} */
+        long queries;
+        private double dimensionSum, contrastSum;
+
+        /** the mean estimate of the local intrinsic dimension at the queries ({@link LiveRows#intrinsicDimension}) */
+        double intrinsicDimension() { return dimensionSum / queries; }
+
+        /**
+         * The mean relative contrast of the queries: the mean distance to the live rows over the distance to the 10th nearest. Close to 1: the
+         * neighbours of a query are hardly closer than any other row.
+         */
+        double contrast() { return contrastSum / queries; }
+
+        private void measure(LiveRows live, float[] q) {
+            double[] d = live.distances(q);
+            double mean = 0;
+            for (double x : d) mean += x;
+            mean /= d.length;
+            queries++;
+            dimensionSum += LiveRows.intrinsicDimension(d, Math.min(DIMENSION_NEIGHBOURS, d.length - 1));
+            contrastSum += mean / d[Math.min(K, d.length) - 1];
+        }
 
         Answers(Runbook runbook) {
             for (List<Runbook.Op> ops : runbook.collections) {
@@ -33,7 +61,10 @@ final class MemoryReplay {
                 for (Runbook.Op op : ops) {
                     if (op.kind() == Runbook.Kind.CHECKPOINT) {
                         LiveRows.Top[] t = new LiveRows.Top[op.queries().length];
-                        for (int i = 0; i < t.length; i++) t[i] = live.top(op.queries()[i], K);
+                        for (int i = 0; i < t.length; i++) {
+                            t[i] = live.top(op.queries()[i], K);
+                            measure(live, op.queries()[i]);
+                        }
                         mine.add(t);
                     } else if (op.kind() == Runbook.Kind.BATCH) {
                         op.writes().forEach(live::apply);

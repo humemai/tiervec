@@ -15,6 +15,7 @@ On a stream of creates, reads, updates, and deletes, does an index stay correct 
 | `Bench` ([BENCHMARKS.md](BENCHMARKS.md)) | Static recall and latency, filtered cells with random filters, checks of writes, a concurrent phase of adds and deletes with recall scored once at its end, a JVector arm | Replacements under load, recall during the stream, real data in the concurrent phase, updates in the JVector arm |
 | [`PacedWrites`](BENCHMARKS.md#paced-writes) | Adds at a fixed rate with paced searches, write amplification | Deletes and replacements |
 | [`MergeGenerations`](BENCHMARKS.md#successive-merges) | Recall over successive merges with deletes | Writes during searches, other libraries |
+| The first parts of [#159](https://github.com/humemai/tiervec/issues/159) in `src/bench`: [the runbook](#the-runbook), the exact answers, and the violation counters | Creates, updates, deletes, reuses, batches, searches, and checkpoints from a seed; the exact answers over the live rows; five counters; their own tests (`AgentMemorySelfCheck`, in the CI smoke) | No arm replays it yet, and there are no restarts or filtered searches |
 
 ## The workload
 
@@ -49,9 +50,18 @@ A **runbook** is a file of operations that is generated once from a seed and rep
 
 **Filters.** Allowed shares 0.5, 0.1, 0.01, and 0.001, in three kinds: random, one that matches the cluster of the query, and one that matches a cluster far from the query.
 
+## The runbook
+
+`Runbook`, in `src/bench`, generates a runbook from a seed and writes it to one binary file that holds every vector, so that every arm reads the same bytes; the SHA-256 of the file goes into the results. A runbook has one or more collections of the same size, and each collection is replayed into its own index. Today the data is generated: unit vectors around random cluster centres.
+
+- A collection starts with a load of its rows and a checkpoint. Then it runs in rounds. A round retires a tenth of the rows (at least 4): 30 percent expire (the oldest), 30 percent are rows of one cluster that are deleted, 30 percent are updated, and the rest are deleted and added again later under the same id (`reuse`). New rows replace the deleted ones.
+- New and replaced vectors come from the cluster that grows in that round, so the distribution moves. The rounds end when as many row versions have been retired as the chosen turnover asks for.
+- Part of the writes arrive in batches of 1 to 50, and no id appears twice in one batch. Searches are placed between the writes at a chosen number per written row, each with a query near a live row.
+- A checkpoint carries the queries that recall is scored on. In this first version nothing is persisted at a checkpoint: restarts are a later step.
+
 ## Ground truth
 
-At every checkpoint of the runbook the program computes the exact top 10 over the rows that are live at that point, with their current vectors, using its own scalar distance and none of the arm's kernels. The ground truth has its own test with known answers that include deletes and replacements. The streaming track had to correct its published recall after the competition: the declared winner went from 0.985 to 0.0921 in the corrected table.
+At every checkpoint of the runbook the program computes the exact top 10 over the rows that are live at that point, with their current vectors, using its own scalar distance and none of the arm's kernels. The ground truth has its own test with known answers that include deletes and replacements. A score that differs from the exact one by more than 0.0001 counts as the score of another vector. The streaming track had to correct its published recall after the competition: the declared winner went from 0.985 to 0.0921 in the corrected table.
 
 ## Metrics
 

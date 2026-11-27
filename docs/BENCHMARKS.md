@@ -307,4 +307,6 @@ The same job also runs the two paths of issue #108 on a small data set that it g
 
 It also runs [`MergeGenerations`](#successive-merges) in both merge modes on the same files, and [`PacedWrites`](#paced-writes), with its sealed reference, on those files and on a small Euclidean set that it generates (`.github/scripts/make-smoke-hdf5.py`, converted by `scripts/prep_ann_hdf5.py`), each with controls.
 
+`AgentMemorySelfCheck` runs the tests of the [agent-memory benchmark](AGENT-MEMORY-BENCHMARK.md): the runbook file and its workload, the exact answers on a small case with deletes and replacements, and every violation counter.
+
 The options of issue #118 run on the same files: the tier rebuilt in float32 and in SQ8 (with `--targets`, `--disk` and `--props`), and JVector in float32 and in int8. The job requires `status=OK`, a `MATCHED` line for the lower target, a non-empty index on disk, no written vector missed by the next search, both search modes of the int8 arm, and exit code 2 for `--quant sq8` with JVector. One more int8 run forces the Vector API provider and checks the provider name.

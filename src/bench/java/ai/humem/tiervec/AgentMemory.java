@@ -45,6 +45,7 @@ public final class AgentMemory {
         d.put("variants", screen ? SCREEN_VARIANTS : SMOKE_VARIANTS);  // 'name arm key=value ...' separated by ';', or @file with one per line
         d.put("seed", "1");
         d.put("dim", screen ? "128" : "64");
+        d.put("latent", "0");                    // the kind of data, see Runbook: 0, or the dimensions that the noise of the rows spans
         d.put("mix", screen ? "write" : "read"); // read: 4 searches per written row; write: 1 search per 8 written rows
         d.put("turnover", "3");                  // retired row versions per live row
         d.put("checkpoints", "10");
@@ -103,7 +104,7 @@ public final class AgentMemory {
             for (Shape s : shapes) {
                 params.add(new Runbook.Params(Long.parseLong(o.get("seed")), Integer.parseInt(o.get("dim")), s.rows(), s.collections(),
                         Double.parseDouble(o.get("turnover")), Math.max(4, Math.min(16, s.rows() / 20)), searchesPerWrite,
-                        Integer.parseInt(o.get("checkpoints")), s.queries(), 50));
+                        Integer.parseInt(o.get("checkpoints")), s.queries(), 50, Integer.parseInt(o.get("latent"))));
             }
             floor = Double.parseDouble(o.get("min-recall"));
         } catch (IllegalArgumentException | IOException e) {
@@ -130,7 +131,8 @@ public final class AgentMemory {
         run.curve.add(String.join("\t", "shape", "variant", "checkpoint", "recall"));
         run.summary.add("## Agent-memory benchmark, preset " + o.get("preset"));
         run.summary.add("");
-        run.summary.add("Seed " + o.get("seed") + ", " + o.get("dim") + " dimensions, " + o.get("mix") + " mix, generated data. " + machine.replace(" ", ", ")
+        run.summary.add("Seed " + o.get("seed") + ", " + o.get("dim") + " dimensions, " + o.get("mix") + " mix, generated data with latent "
+                + o.get("latent") + ". " + machine.replace(" ", ", ")
                 + ". No timing. A `*` marks an arm without atomic batches, whose batches in part do not fail the run.");
         for (int i = 0; i < shapes.size(); i++) run.shape(shapes.get(i), params.get(i), variants, floor, out);
         run.line("SUMMARY status=" + (run.failures == 0 ? "OK" : "FAILED") + " failures=" + run.failures);
@@ -152,10 +154,16 @@ public final class AgentMemory {
         summary.add("");
         summary.add("### " + shape.name() + ": " + shape.collections() + " x " + shape.rows() + " rows, runbook `" + written.substring(0, 12) + "`");
         summary.add("");
+        MemoryReplay.Answers answers = new MemoryReplay.Answers(read.runbook());
+        int neighbours = Math.min(MemoryReplay.DIMENSION_NEIGHBOURS, shape.rows() - 1);
+        line(Bench.f("DATA shape=%s queries=%d intrinsicDimension=%.1f dimensionNeighbours=%d contrast10=%.3f", shape.name(), answers.queries,
+                answers.intrinsicDimension(), neighbours, answers.contrast()));
+        summary.add(Bench.f("How hard the queries of the checkpoints are: local intrinsic dimension %.1f (from %d neighbours), relative contrast %.3f"
+                + " (mean distance over the distance of the 10th nearest row).", answers.intrinsicDimension(), neighbours, answers.contrast()));
+        summary.add("");
         summary.add("| Variant | Violations | Batches in part | Recall, lowest | Recall, final | Distances per search | Rows built per row written "
                 + "| Distances per row written | Bytes held per row | Heap bytes per row |");
         summary.add("|---|---|---|---|---|---|---|---|---|---|");
-        MemoryReplay.Answers answers = new MemoryReplay.Answers(read.runbook());
         for (MemoryArm.Variant v : variants) {
             String who = "shape=" + shape.name() + " variant=" + v.name();
             try {

@@ -32,6 +32,7 @@ public final class AgentMemorySelfCheck {
         exactAnswersKnown();
         runbookFile();
         runbookWorkload();
+        difficulty();
         violationCounters();
         replayWithFaultyArms();
         variants();
@@ -114,6 +115,8 @@ public final class AgentMemorySelfCheck {
 
     private static Runbook.Params params(long seed) { return new Runbook.Params(seed, 8, 60, 2, 3.0, 6, 0.5, 4, 5, 10); }
 
+    private static Runbook.Params latent(long seed, int latent) { return new Runbook.Params(seed, 8, 60, 2, 3.0, 6, 0.5, 4, 5, 10, latent); }
+
     private static void runbookFile() throws IOException {
         Path dir = Files.createTempDirectory("runbook");
         Path a = dir.resolve("a.rb"), b = dir.resolve("b.rb"), c = dir.resolve("c.rb");
@@ -126,6 +129,13 @@ public final class AgentMemorySelfCheck {
         check(read.runbook().params.equals(made.params), "the parameters come back");
         check(same(read.runbook(), made), "the operations come back");
         check(read.runbook().write(b).equals(shaA), "the runbook that was read writes the same bytes");
+
+        Runbook latent = Runbook.generate(latent(7, 3));
+        String shaL = latent.write(b);
+        check(!shaL.equals(shaA), "the kind of data changes the file");
+        Runbook.Read readL = Runbook.read(b);
+        check(readL.sha256().equals(shaL) && readL.runbook().params.equals(latent.params) && same(readL.runbook(), latent),
+                "a runbook of latent data comes back");
 
         byte[] bytes = Files.readAllBytes(a);
         Files.write(c, Arrays.copyOf(bytes, bytes.length - 3));
@@ -168,7 +178,7 @@ public final class AgentMemorySelfCheck {
 
     private static void runbookWorkload() {
         for (Runbook.Params p : List.of(params(7), new Runbook.Params(3, 8, 4, 3, 3.0, 4, 4.0, 3, 2, 50), new Runbook.Params(5, 8, 500, 1, 3.0, 16, 0.125, 10, 5, 50),
-                new Runbook.Params(5, 8, 100, 1, 3.0, 16, 0.0, 10, 5, 0))) {
+                new Runbook.Params(5, 8, 100, 1, 3.0, 16, 0.0, 10, 5, 0), latent(7, 3), latent(9, 8))) {
             Runbook rb = Runbook.generate(p);
             check(rb.collections.size() == p.collections(), "collections of " + p.describe());
             for (List<Runbook.Op> ops : rb.collections) workload(p, ops);
@@ -232,6 +242,25 @@ public final class AgentMemorySelfCheck {
         double n = 0;
         for (float x : v) n += (double) x * x;
         return Math.abs(n - 1) < 1e-5;
+    }
+
+    // ---- how hard the data is ----
+
+    private static void difficulty() {
+        // points that fill a ball of 5 dimensions evenly have their i-th of k neighbours at about (i / k)^(1/5) of the distance of the k-th
+        double[] five = new double[1000];
+        for (int i = 0; i < five.length; i++) five[i] = Math.pow((i + 1) / 1000.0, 0.2);
+        double estimate = LiveRows.intrinsicDimension(five, five.length);
+        check(Math.abs(estimate - 5) < 0.05, "the intrinsic dimension of a ball of 5 dimensions: " + estimate);
+        check(LiveRows.intrinsicDimension(new double[] {1, 1, 1}, 3) == 0, "equal distances give no estimate");
+        check(close(LiveRows.intrinsicDimension(new double[] {0, 1, Math.E}, 3), 2), "a distance of 0 is left out");
+
+        // one cluster of 600 rows in 32 dimensions: noise in 2 directions gives rows that use about 2 dimensions, noise in all gives many more
+        MemoryReplay.Answers two = new MemoryReplay.Answers(Runbook.generate(new Runbook.Params(13, 32, 600, 1, 0, 2, 0, 1, 50, 0, 2)));
+        MemoryReplay.Answers all = new MemoryReplay.Answers(Runbook.generate(new Runbook.Params(13, 32, 600, 1, 0, 2, 0, 1, 50, 0, 32)));
+        check(two.queries == 50 && two.intrinsicDimension() > 1.2 && two.intrinsicDimension() < 3.5, "the dimension of latent 2: " + two.intrinsicDimension());
+        check(all.intrinsicDimension() > 3 * two.intrinsicDimension(), "the dimension of latent 32: " + all.intrinsicDimension());
+        check(all.contrast() > 1 && two.contrast() > 2 * all.contrast(), "the contrast of latent 2 and 32: " + two.contrast() + " " + all.contrast());
     }
 
     // ---- the violation counters ----

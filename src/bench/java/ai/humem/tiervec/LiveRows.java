@@ -1,5 +1,6 @@
 package ai.humem.tiervec;
 
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
@@ -49,6 +50,31 @@ final class LiveRows {
             bb += (double) b[i] * b[i];
         }
         return aa > 0 && bb > 0 ? ab / Math.sqrt(aa * bb) : 0;
+    }
+
+    /** the distances of a query to every live row, smallest first, as the Euclidean distance between the two vectors scaled to length 1 */
+    double[] distances(float[] q) {
+        double[] d = new double[rows.size()];
+        int i = 0;
+        for (float[] v : rows.values()) d[i++] = Math.sqrt(Math.max(0, 2 - 2 * cosine(q, v)));
+        Arrays.sort(d);
+        return d;
+    }
+
+    /**
+     * The maximum likelihood estimate of the local intrinsic dimension at a query (Levina and Bickel 2004; Amsaleg and others 2015) from its
+     * {@code k} smallest distances, given smallest first. A distance of 0 is left out. 0 when the distances give no estimate (all equal).
+     */
+    static double intrinsicDimension(double[] sorted, int k) {
+        double sum = 0;
+        int n = 0;
+        for (int i = 0; i < k; i++) {
+            if (sorted[i] > 0) {
+                sum += Math.log(sorted[i] / sorted[k - 1]);
+                n++;
+            }
+        }
+        return sum < 0 ? -n / sum : 0;
     }
 
     /** the exact answer: the best live rows, best first, a tie broken by the smaller id */

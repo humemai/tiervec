@@ -157,10 +157,13 @@ jobs:
           start=$(date +%s)
           run --shapes p20 --out target/agent-memory/default
           v='exact exact; tier-small tier tailLimit=50 smallLimit=20 maxSegments=3; graph-a12 graph graph.alpha=1.2'
-          for i in 1 2; do run --shapes p20,p200 --variants "$v" --out "target/agent-memory/screen$i"; done
+          for i in 1 2; do run --shapes p20,p200 --variants "$v" --dim 64 --latent 16 --out "target/agent-memory/screen$i"; done
           echo "agent-memory screen: $(( $(date +%s) - start )) s"
           cat target/agent-memory/default/summary.md
           r=target/agent-memory/screen1/result.txt
+          # each shape says how hard its queries are, and two runs of one seed make the same runbooks
+          test "$(grep -c '^DATA shape=p[0-9]* queries=[0-9]* intrinsicDimension=' "$r")" -eq 2
+          diff <(grep -E '^(SHAPE|DATA) ' "$r") <(grep -E '^(SHAPE|DATA) ' target/agent-memory/screen2/result.txt)
           # the exact arm computes one distance per live row, so the count is checked where the number is known
           grep -q -E '^RESULT shape=p20 variant=exact .* distancesPerSearch=20\.0 ' "$r"
           grep -q -E '^RESULT shape=p200 variant=exact .* distancesPerSearch=200\.0 ' "$r"

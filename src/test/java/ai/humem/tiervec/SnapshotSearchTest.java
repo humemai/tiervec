@@ -33,6 +33,8 @@ import org.junit.jupiter.api.Timeout;
 class SnapshotSearchTest {
     static final int DIM = 16;
     static final int EF = 1 << 20;
+    /** the rows that the random writes of a test start from */
+    static final int ROWS = 300;
 
     static float[] vec(long id, long write) {
         return TierT.vec(write, id, DIM);
@@ -149,31 +151,75 @@ class SnapshotSearchTest {
             this.r = new SplittableRandom(seed);
         }
 
-        private long someId() {
-            if (model.isEmpty() || r.nextInt(3) == 0) return nextId++;
+        private long held() {
             return model.keySet().stream().skip(r.nextInt(model.size())).findFirst().orElseThrow();
         }
 
-        /** one add, replace, delete, or batch */
+        /** an id to add: a held one (a replace) or a new one; mostly new ones while the tier holds few */
+        private long toAdd() {
+            return model.size() < ROWS / 2 || r.nextInt(4) == 0 ? nextId++ : held();
+        }
+
+        /** an id to delete: a held one while the tier holds enough rows, else one that is not there */
+        private long toDelete() {
+            return model.size() > ROWS / 2 && r.nextInt(16) != 0 ? held() : Long.MAX_VALUE - r.nextInt(8);
+        }
+
+        /** adds {@link #ROWS} new ids one by one */
+        void fill() {
+            for (int i = 0; i < ROWS; i++) add(nextId++);
+        }
+
+        void add(long id) {
+            model.put(id, ++write);
+            ix.add(id, vec(id, write));
+        }
+
+        void delete(long id) {
+            assertEquals(model.remove(id) != null, ix.delete(id));
+        }
+
+        /** deletes every third held id and replaces every third one, half of each by single writes and half in one batch */
+        void everyThird() {
+            List<Long> ids = new ArrayList<>(model.keySet());
+            ids.sort(null);
+            List<TieredIndex.IdVector> adds = new ArrayList<>();
+            List<Long> deletes = new ArrayList<>();
+            for (int i = 0; i < ids.size(); i++) {
+                long id = ids.get(i);
+                boolean batched = (i / 3 & 1) == 0;
+                if (i % 3 == 0 && !batched) {
+                    delete(id);
+                } else if (i % 3 == 0) {
+                    model.remove(id);
+                    deletes.add(id);
+                } else if (i % 3 == 1 && !batched) {
+                    add(id);
+                } else if (i % 3 == 1) {
+                    model.put(id, ++write);
+                    adds.add(new TieredIndex.IdVector(id, vec(id, write)));
+                }
+            }
+            ix.apply(new TieredIndex.Batch(adds, deletes));
+        }
+
+        /** one add or replace, delete, or batch; the tier keeps a few hundred rows */
         void step() {
             int kind = r.nextInt(10);
             if (kind < 4) {
-                long id = someId();
-                model.put(id, ++write);
-                ix.add(id, vec(id, write));
+                add(toAdd());
             } else if (kind < 7) {
-                long id = someId();
-                assertEquals(model.remove(id) != null, ix.delete(id));
+                delete(toDelete());
             } else {
                 List<TieredIndex.IdVector> adds = new ArrayList<>();
                 List<Long> deletes = new ArrayList<>();
                 for (int i = r.nextInt(6); i >= 0; i--) {
-                    long id = someId();
+                    long id = toAdd();
                     model.put(id, ++write);
                     adds.add(new TieredIndex.IdVector(id, vec(id, write)));
                 }
                 for (int i = r.nextInt(6); i > 0; i--) {
-                    long id = someId();
+                    long id = toDelete();
                     model.remove(id);
                     deletes.add(id);
                 }
@@ -211,7 +257,8 @@ class SnapshotSearchTest {
                 inSeal[0]++;
                 for (int i = 0; i < 4; i++) w.step();
             }, null);
-            for (int i = 0; i < 40; i++) w.step();
+            w.fill();
+            ix.sealNow();
             for (int step = 0; step < 220; step++) {
                 String where = "tail " + tail + ", " + mode + ", seed " + seed + ", step " + step;
                 int kind = w.r.nextInt(100);
@@ -235,6 +282,7 @@ class SnapshotSearchTest {
                     assertNull(wrong, () -> where + ": a search of the present: " + wrong);
                 }
             }
+            assertTrue(w.model.size() >= ROWS / 2, "the writes left too few rows: " + w.model.size());
             for (Held h : held) {
                 h.check();
                 checked[0]++;
@@ -243,14 +291,56 @@ class SnapshotSearchTest {
         }
     }
 
+    /**
+     * One search held in each source of a view: the active tail, a frozen tail whose seal is running, and a new and an old segment. Then every third id
+     * of every source is deleted and every third one replaced, the seal publishes, a merge and a rebuild follow, and only then the searches go on.
+     */
+    @Test
+    void aSearchHeldInAnySourceAnswersFromItsStart() {
+        for (Quant tail : new Quant[] {Quant.NONE, Quant.SQ8}) {
+            try (TieredIndex ix = new TieredIndex(DIM, Metric.DOT, manual(tail, TieredIndex.MergeMode.REBUILD))) {
+                Writes w = new Writes(ix, 21);
+                w.fill();
+                ix.sealNow();
+                w.fill();
+                ix.sealNow();
+                for (long id = 0; id < 2 * ROWS; id += 7) w.delete(id); // both segments have hidden rows before the searches start
+                w.fill(); // the tail that the next seal freezes
+                List<Held> held = new ArrayList<>();
+                ix.setSealHooks(() -> {
+                    for (int i = 0; i < 100; i++) w.add(w.nextId++); // the new active tail
+                    int rows = w.model.size();
+                    // the sources are read newest first: 100 rows of the active tail, then the frozen tail, then the two segments
+                    for (int holdAt : new int[] {1, 50, 150, 100 + ROWS + 20, rows - 20}) {
+                        held.add(new Held(ix, w.model, TierT.vec(9, holdAt, DIM), holdAt, "tail " + tail));
+                    }
+                    w.everyThird();
+                }, null);
+                ix.sealNow();
+                ix.setSealHooks(null, null);
+                assertEquals(5, held.size(), "the seal did not run");
+                held.add(new Held(ix, w.model, TierT.vec(9, 1000, DIM), 1, "tail " + tail + ", after the seal"));
+                w.everyThird();
+                ix.mergeNow();
+                held.add(new Held(ix, w.model, TierT.vec(9, 1001, DIM), w.model.size() / 2, "tail " + tail + ", after the merge"));
+                w.everyThird();
+                ix.rebuildFrom(w.records());
+                for (Held h : held) h.check();
+                float[] q = TierT.vec(8, 0, DIM);
+                assertNull(difference(q, everything(ix, q, all(() -> { })), w.model), "a search of the present");
+            }
+        }
+    }
+
     @Test
     void aSearchThatStartsInsideABatchSeesNoneOfItAndDoesNotWait() {
         try (TieredIndex ix = new TieredIndex(DIM, Metric.DOT, manual(Quant.NONE, TieredIndex.MergeMode.REBUILD))) {
             Writes w = new Writes(ix, 4);
-            for (int i = 0; i < 200; i++) w.step();
+            w.fill();
             ix.sealNow();
             for (int i = 0; i < 100; i++) w.step();
             Map<Long, Long> before = new HashMap<>(w.model);
+            assertTrue(before.size() > 100, "too few rows: " + before.size());
             List<TieredIndex.IdVector> adds = new ArrayList<>();
             List<Long> deletes = new ArrayList<>();
             for (long id : before.keySet()) {
@@ -361,7 +451,7 @@ class SnapshotSearchTest {
         for (Quant tail : new Quant[] {Quant.NONE, Quant.SQ8}) {
             try (TieredIndex ix = new TieredIndex(DIM, Metric.DOT, new TieredIndex.Config(40, 0L, 20, 3, 2, 0.3, 0, 4, tail, d.graph(), 1))) {
                 Writes w = new Writes(ix, 11);
-                for (int i = 0; i < 100; i++) w.step();
+                w.fill();
                 AtomicReferenceArray<Map<Long, Long>> states = new AtomicReferenceArray<>(writes + 1);
                 states.set(0, Map.copyOf(w.model));
                 AtomicInteger begun = new AtomicInteger(), done = new AtomicInteger();

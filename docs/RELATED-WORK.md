@@ -128,6 +128,8 @@ Two conclusions follow, both *(inference)*. A conversational memory per user is 
 
 **Verdict.** Read-your-writes **matches**, and is stricter than a bounded-staleness default. Batch visibility is **behind** multiversion reads ([#163](https://github.com/humemai/tiervec/issues/163)). Many concurrent writers are **unproven**.
 
+**Changed since this review** ([#163](https://github.com/humemai/tiervec/issues/163)): a search now reads one version of the tier when it starts, so no search waits for a batch or can be starved ([DESIGN.md](DESIGN.md#batches)). The verdict above, row 13, and the starvation line under [Where tiervec is not best today](#where-tiervec-is-not-best-today) describe `df857c3`. For that change, SingleStore-V and TigerVector were read in full: neither measures searches while writes run, and SingleStore-V does not say how its delete bit vector is versioned.
+
 ### Persistence and restart
 
 **Sources say.** FreshDiskANN rebuilds its in-memory index and delete list after a crash by replaying a redo log since the last snapshot. Cosmos DB stores its index in the database's own index trees, and TigerVector reuses the database's write-ahead log and commit protocol.

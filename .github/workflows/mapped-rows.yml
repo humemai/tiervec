@@ -33,7 +33,7 @@ jobs:
       - name: Machine and toolchain
         run: |
           java -version
-          lscpu | grep -E '^(Model name|CPU\(s\)|Thread|Core|L3)'
+          lscpu | grep -E '^ *(Model name|CPU\(s\)|Thread|Core|L3)'
           free -g
       - name: Compile the library and the harness
         run: |
@@ -58,7 +58,7 @@ jobs:
           done
           "${jvm[@]}" summary "$out" > "$table"
           echo >> "$table"
-          echo "Runner: $(lscpu | grep -E '^Model name' | cut -d: -f2 | xargs), $(nproc) processors." >> "$table"
+          echo "Runner: $(lscpu | grep -E '^ *Model name' | head -1 | cut -d: -f2 | xargs), $(nproc) processors." >> "$table"
           cat "$table" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Upload the result files
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

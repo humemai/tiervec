@@ -24,9 +24,9 @@ import org.junit.jupiter.api.Test;
  * of a new id plus a delete of the old id. A search must see the batch whole: both ids of an update never, and neither id never.
  *
  * <p>The atomicity tests hold a search inside its first call of the allow predicate, apply a batch on the test thread, and let the search go on, the way
- * {@code RebuildSwapRaceTest} does. A search that was running when the batch was applied may answer from the state before the batch or from the state after it, and
- * never from a mixture. The test needs no timing: the held search is stopped at a place that is known, and the batch is applied while it waits. The threaded test
- * of the same property is {@code ApplyStressTest} (slow).
+ * {@code RebuildSwapRaceTest} does. A search that was running when the batch was applied answers from the state before the batch, whole, because it reads one
+ * version (issue #163). The test needs no timing: the held search is stopped at a place that is known, and the batch is applied while it waits. More tests of
+ * the same property are in {@code SnapshotSearchTest}, and the threaded one is {@code ApplyStressTest} (slow).
  */
 class ApplyBatchTest {
     static final int DIM = 32;
@@ -104,12 +104,9 @@ class ApplyBatchTest {
         }
     }
 
-    private static void assertOneOf(Hit[] hits, long before, long after, String where) {
-        Set<Long> ids = idsOf(hits);
-        boolean old = ids.equals(Set.of(before));
-        boolean updated = ids.equals(Set.of(after));
-        assertTrue(old || updated, "a search that was running while a batch (add " + after + ", delete " + before + ") was applied must see the state before the batch"
-                + " or the state after it, and it saw " + ids + " (" + where + ")");
+    private static void assertBefore(Hit[] hits, long before, long after, String where) {
+        assertEquals(Set.of(before), idsOf(hits), "a search that was running while a batch (add " + after + ", delete " + before + ") was applied must answer"
+                + " from the state before the batch (" + where + ")");
     }
 
     @Test
@@ -201,7 +198,7 @@ class ApplyBatchTest {
     }
 
     @Test
-    void aSearchHeldInTheTailSeesTheBatchWholeOrNotAtAll() throws Exception {
+    void aSearchHeldInTheTailAnswersFromBeforeTheBatch() throws Exception {
         final long a = 150, b = 6000; // slot 150 lies in a later word of the live bits than slot 0, where the search is held
         TieredIndex ix = new TieredIndex(DIM, Metric.COSINE, manual());
         try {
@@ -211,7 +208,7 @@ class ApplyBatchTest {
 
             ix.apply(batch(new long[] {b}, a)); // an update: the new id comes, the old id goes
 
-            assertOneOf(held.finish(), a, b, "held in the tail scan");
+            assertBefore(held.finish(), a, b, "held in the tail scan");
             assertEquals(Set.of(b), idsOf(ix.search(vec(a), 50, id -> id == a || id == b, 200)), "a search that starts after apply returned sees the adds and not the deletes");
         } finally {
             ix.close();
@@ -219,7 +216,7 @@ class ApplyBatchTest {
     }
 
     @Test
-    void aSearchHeldInASegmentSeesTheBatchWholeOrNotAtAll() throws Exception {
+    void aSearchHeldInASegmentAnswersFromBeforeTheBatch() throws Exception {
         final long a = 500, b = 6000;
         TieredIndex ix = new TieredIndex(DIM, Metric.COSINE, manual());
         try {
@@ -234,7 +231,7 @@ class ApplyBatchTest {
 
             ix.apply(batch(new long[] {b}, a));
 
-            assertOneOf(held.finish(), a, b, "held in the segment scan, after the tail scan");
+            assertBefore(held.finish(), a, b, "held in the segment scan, after the tail scan");
             assertEquals(Set.of(b), idsOf(ix.search(vec(a), 50, id -> id == a || id == b, 200)), "a search that starts after apply returned sees the adds and not the deletes");
         } finally {
             ix.close();

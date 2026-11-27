@@ -7,7 +7,6 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import java.lang.reflect.Field;
 import java.util.SplittableRandom;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -287,27 +286,6 @@ class SearchContextTest {
     }
 
     @Test
-    void aSearchThatWaitsForABatchStopsToo() throws Exception {
-        try (TieredIndex ix = new TieredIndex(DIM, Metric.COSINE, manual(Quant.NONE))) {
-            addRange(ix, 0, 100);
-            // an odd batch counter is how a search sees a batch in progress; here the batch never ends
-            Field f = TieredIndex.class.getDeclaredField("batchSeq");
-            f.setAccessible(true);
-            long before = f.getLong(ix);
-            f.setLong(ix, before + 1);
-            try {
-                Counting c = new Counting(4);
-                assertThrows(SearchCancelledException.class, () -> ix.search(query(0), 10, c, c));
-                assertEquals(4, c.polls);
-                assertEquals(0, c.calls, "nothing is scanned while the batch is open");
-            } finally {
-                f.setLong(ix, before);
-            }
-            assertEquals(10, ix.search(query(0), 10, null, () -> false).length);
-        }
-    }
-
-    @Test
     void aStoppedSearchLeavesTheIndexAsItWas() {
         try (TieredIndex ix = new TieredIndex(DIM, Metric.COSINE, manual(Quant.NONE))) {
             addRange(ix, 0, 1200);
@@ -327,10 +305,10 @@ class SearchContextTest {
                 return false;
             };
             assertSame(host, assertThrows(IllegalStateException.class, () -> ix.search(query(0), 10, null, broken)));
-            // a search that did not leave its view would keep the floor cleanup of this merge pending for ever
+            // the tier goes on after the stopped searches: a merge leaves the hidden rows out
             for (int id = 0; id < 100; id++) ix.delete(id);
             ix.mergeNow();
-            assertTrue(ix.awaitIdle(30_000), "a stopped search is still counted as a reader");
+            assertTrue(ix.awaitIdle(30_000), "the tier did not settle");
             assertEquals(0, ix.stats().floorEntries());
         }
     }

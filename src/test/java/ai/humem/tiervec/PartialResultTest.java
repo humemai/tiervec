@@ -121,15 +121,19 @@ class PartialResultTest {
     }
 
     @Test
-    void aBatchDuringTheScanEmptiesThePartialResult() {
+    void aBatchDuringTheScanLeavesThePartialResultOfItsVersion() {
         float[][] data = vectors(N + 1, DIM, 35);
         try (TieredIndex t = tier(data)) {
             AtomicBoolean stop = new AtomicBoolean();
             AtomicInteger batches = new AtomicInteger();
+            // the best hits of the tail and the newest segment, which are the two sources that the stopped search reads to their end
+            Hit[] before = t.search(data[N], K, id -> id >= 600);
+            List<Long> gone = new ArrayList<>();
+            for (Hit h : before) gone.add(h.id());
             LongPredicate batchThenStop = id -> {
                 if (id < TAIL_FROM) {
                     if (batches.getAndIncrement() == 0) {
-                        Thread writer = new Thread(() -> t.apply(new TieredIndex.Batch(List.of(), List.of(5L))));
+                        Thread writer = new Thread(() -> t.apply(new TieredIndex.Batch(List.of(), gone))); // while the segment is scanned
                         writer.start();
                         try {
                             writer.join();
@@ -142,8 +146,8 @@ class PartialResultTest {
                 return true;
             };
             SearchCancelledException e = stopped(t, data[N], batchThenStop, context(stop, true));
-            assertEquals(N - 1, t.size(), "the batch was applied");
-            assertEquals(0, e.partialHits().length);
+            assertEquals(N - K, t.size(), "the batch was applied");
+            assertEquals(text(before), text(e.partialHits()), "the partial result answers from the state at the start of the search");
         }
     }
 

@@ -6,9 +6,9 @@ package ai.humem.tiervec;
  * a statement timeout, after a client disconnect, or for any other reason that the host knows and the library does not.
  *
  * <p>The cooperation is by polling. The library calls {@link #expired()} on the thread that runs the search: once when the search starts, before it reads each
- * tail and each segment, at least once every 1024 candidates inside a tail scan or a segment search, and after each pause while it waits for a batch that is
- * being applied. A candidate is a vector that a scan or a graph walk looks at, whether or not the allow predicate accepts it. When the method returns
- * {@code true}, the search throws {@link SearchCancelledException} and returns no result.
+ * tail and each segment, and at least once every 1024 candidates inside a tail scan or a segment search. A candidate is a vector that a scan or a graph
+ * walk looks at, whether or not the allow predicate accepts it. When the method returns {@code true}, the search throws
+ * {@link SearchCancelledException} and returns no result.
  *
  * <p>A caller that prefers some answer over none at a deadline returns {@code true} from {@link #partialWanted()}. The search still throws, and the
  * exception carries the hits of the sources that were read to the end ({@link SearchCancelledException#partialHits()}):
@@ -48,8 +48,8 @@ public interface SearchContext {
      * Asked once, when a search stops because {@link #expired()} returned true: whether the caller wants the hits that the search can still answer
      * for. A source is a tail or a segment. The partial result holds the best hits, at most {@code k}, of the sources that were read to the end,
      * with their exact scores; the source in progress is left out, so a search that stops inside the only large segment often has hits of the tail
-     * alone, or none. It holds no deleted id and no stale vector, as a complete result does. It is empty when a batch was applied while the search
-     * ran, because the search has no time left to run again.
+     * alone, or none. Like a complete result it answers from the state of the index when the search started: no id deleted before then, and no
+     * vector replaced before then.
      *
      * @return false (the default): the exception carries no hits
      */

@@ -23,8 +23,7 @@ public final class SearchCancelledException extends TiervecException {
      * The partial result of the stopped search, see {@link SearchContext#partialWanted()}. It is not complete: a vector of a source that was not read to
      * the end can be better than every hit here.
      *
-     * @return a fresh array of at most {@code k} hits, best first; empty when the context did not ask, when no source had been read to the end, and when a
-     *         batch was applied while the search ran
+     * @return a fresh array of at most {@code k} hits, best first; empty when the context did not ask, and when no source had been read to the end
      */
     public Hit[] partialHits() {
         return partial == null ? new Hit[0] : partial.clone();

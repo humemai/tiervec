@@ -111,6 +111,9 @@ jobs:
           echo "control exit code: $code"
           test "$code" -eq 1
           grep -q '^BENCH-FAILURE .*below the floor' target/bench/control.txt
+      # issue #159: the agent-memory benchmark checks its own parts: the runbook, the exact answers and the violation counters
+      - name: The checks of the agent-memory benchmark
+        run: timeout 300 java -Xmx1g --add-modules jdk.incubator.vector -cp target/bench/classes ai.humem.tiervec.AgentMemorySelfCheck
       - name: Set up uv
         uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
         with:

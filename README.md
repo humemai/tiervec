@@ -72,7 +72,7 @@ The library runs in a GraalVM native image. The CI job `native image smoke` buil
 
 ## Platform support
 
-There are three tiers. For tier 1, each row names the CI job that proves it. A job marked "required" must pass before a pull request can merge into `main`. The other jobs do not block it. They run on every pull request, except the slow tests: those run on every push to `main`, once a day on `main`, and on a pull request that carries the label `ci:slow` ([CONTRIBUTING.md](CONTRIBUTING.md#what-ci-runs-and-when)). All jobs run on GitHub-hosted runners.
+There are three tiers. For tier 1, each row names the CI job that proves it. A job marked "required" must pass before a pull request can merge into `main`. The other jobs do not block it. The arm64 fast tests, the native image jobs and the slow tests do not run on an ordinary pull request: they run on `main` after the merge, and the slow tests also once a day and on a pull request that carries the label `ci:slow` ([CONTRIBUTING.md](CONTRIBUTING.md#what-ci-runs-and-when)). All jobs run on GitHub-hosted runners.
 
 **Tier 1: tested in CI on every change**
 
@@ -94,7 +94,7 @@ There are three tiers. For tier 1, each row names the CI job that proves it. A j
 | macOS arm64, GraalVM Community 25.0.2 | native image smoke, Vector API kernels | `native image smoke (vector, macOS arm64)` | no |
 | Windows x64, GraalVM Community 25.0.2 | native image smoke, Vector API kernels | `native image smoke (vector, Windows x64)` | no |
 
-The full slow tests run on Linux x86-64 only; Windows x64 runs the two slow crash tests. There is no scalar-kernel native image job on Windows. The native image jobs run only when `src/main`, `src/smoke` or their workflow file change.
+The full slow tests run on Linux x86-64 only; Windows x64 runs the two slow crash tests. There is no scalar-kernel native image job on Windows. The native image jobs run on a push to `main` that changes `src/main`, `src/smoke` or their workflow file. On a pull request they run only when it changes `src/smoke`, `META-INF/native-image`, `Kern.java`, `Kernels.java`, `NKernels.java` or their workflow file.
 
 **Tier 2: measured.** None yet. No benchmark numbers are published in this repository. The harness is described in [docs/BENCHMARKS.md](docs/BENCHMARKS.md); a row moves here when a result file with its hardware, JDK and commit is committed under `results/`. The `SPEED` lines that the native image jobs print are informational, and the one measurement in the repository (the graph self-search recall in [docs/STATUS.md](docs/STATUS.md#graph-self-search-recall)) does not record its hardware. The shared GitHub runners are not a benchmark machine: a timing from them is a ratio between two things measured in the same run, not an absolute speed. A row moves here when its numbers and its hardware are published.
 

@@ -6,7 +6,11 @@
 # program fails when Kernels.VECTOR is false in the image, when NKernels was not initialized at image build time, or when the lanes are not the
 # ones of the architecture; then the same index checks and recall bars run. Both variants print one informational speed line.
 #
-# Trigger choice: pull requests and pushes to main that touch src/main, src/smoke or this file (a nightly schedule is not needed).
+# Trigger choice (issue #150: seven jobs on every pull request that changed the library filled the queue of the organization, which runs 20 jobs
+# at a time). The jobs run on a push to main that touches src/main, src/smoke or this file, by hand on any branch (gh workflow run
+# native-image.yml --ref <branch>), and on a pull request only when it touches what is specific to the image: the smoke program, the properties
+# file of the image, the kernel choice and the kernels of an image (Kern.java, Kernels.java, NKernels.java), or this file. Another change under
+# src/main can break the image too; the run on main shows it, and a red run there opens an issue (job `report`). A nightly schedule is not needed.
 # Run time, read from the first green run (run 42411834063): the whole job took 58 s, of which the image build took 37 s and the image run 2 s.
 #
 # The same smoke program also runs on Linux arm64 (job `native image smoke (arm64 Linux)`, runner ubuntu-24.04-arm, GraalVM Community 21.0.2 for
@@ -32,8 +36,11 @@ on:
       - ".github/workflows/native-image.yml"
   pull_request:
     paths:
-      - "src/main/**"
       - "src/smoke/**"
+      - "src/main/resources/META-INF/native-image/**"
+      - "src/main/java/ai/humem/tiervec/Kern.java"
+      - "src/main/java/ai/humem/tiervec/Kernels.java"
+      - "src/main/java/ai/humem/tiervec/NKernels.java"
       - ".github/workflows/native-image.yml"
   workflow_dispatch:
 
@@ -288,3 +295,42 @@ jobs:
       - name: Speed lines (informational)
         if: always()
         run: grep -h '^SPEED' target/smoke/jvm-vector.log target/smoke/native-vector.log || true
+
+  # A push to main on which a native image job failed or timed out opens the issue "Native image jobs are red on main", or comments on it when
+  # it is already open: an ordinary pull request does not run these jobs, so the run on main can be the first to show the failure. A person
+  # closes the issue when main is green again. A run that a later push cancelled reports nothing (the later run does). The job has its own
+  # permissions so that `issues: write` is not granted to the jobs that build and run the code.
+  report:
+    name: report a red native image run on main
+    needs: [smoke-vector, smoke, smoke-arm64, smoke-macos, smoke-windows-vector]
+    if: >-
+      !cancelled() && github.event_name == 'push' &&
+      (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - name: Open the issue, or comment on the open one
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          title="Native image jobs are red on main"
+          body="$RUNNER_TEMP/native-red.md"
+          {
+            echo "A job did not pass on \`main\` at \`${SHA:0:7}\`: [$RUN_URL]($RUN_URL)."
+            echo
+            echo "An ordinary pull request does not run these jobs, so this run can be the first one that shows the failure. Close this issue when a later run on \`main\` is green."
+          } > "$body"
+          number="$(gh api --method GET "repos/$REPO/issues" -f state=open -f labels=area:ci -F per_page=100 \
+            --jq "map(select(.pull_request == null and .title == \"$title\")) | .[0].number // empty")"
+          if [ -n "$number" ]; then
+            gh api --method POST "repos/$REPO/issues/$number/comments" -F body=@"$body" --jq .html_url
+          else
+            gh api --method POST "repos/$REPO/issues" -f title="$title" -F body=@"$body" \
+              -f "labels[]=bug" -f "labels[]=area:ci" -f "labels[]=now" -f "assignees[]=tae898" --jq .html_url
+          fi

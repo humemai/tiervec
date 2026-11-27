@@ -1,5 +1,7 @@
-# Build and test on JDK 21 (the ArcadeDB baseline) and JDK 25. The fast tests run on every push to main and every pull request; the slow tests
-# (tag "slow": the long concurrency and stress programs) are in slow-tests.yml and do not run on an ordinary pull request (issue #112).
+# Build and test on JDK 21 (the ArcadeDB baseline) and JDK 25. The fast tests on x86-64 Linux and on Windows x64, and the benchmark smoke, run
+# on every push to main and every pull request. The fast tests on arm64 run on every push to main, by hand, and on a pull request from a
+# release/ branch (issue #150). The slow tests (tag "slow": the long concurrency and stress programs) are in slow-tests.yml and do not run on an
+# ordinary pull request (issue #112).
 # Actions are pinned to full commit SHAs (see lint-workflows.yml).
 name: CI
 
@@ -262,8 +264,14 @@ jobs:
   # "fast tests (JDK 21)" and "fast tests (JDK 25)". Runner labels: ubuntu-24.04-arm is Linux arm64 and macos-15 is macOS arm64 (M1), both
   # standard GitHub-hosted runners, free on public repositories (https://docs.github.com/en/actions/reference/runners/github-hosted-runners).
   # The command and the test selection are the ones of the fast job above, including the scalar-twin execution.
+  # These jobs do not run on an ordinary pull request (issue #150: the organization runs 20 jobs at a time, and the extra platform jobs filled
+  # the queue). They run on every push to main, by hand on any branch (gh workflow run ci.yml --ref <branch>, which runs every job of this
+  # file), and on a pull request whose branch starts with release/, so that a release passes them before its merge (docs/RELEASING.md). A pull
+  # request that skips them shows one skipped check, under the job name as it is written below. A red run on main opens an issue (job
+  # report-arm64).
   fast-arm64:
     name: fast tests (arm64 ${{ matrix.os_name }}, JDK ${{ matrix.java }})
+    if: github.event_name != 'pull_request' || startsWith(github.head_ref, 'release/')
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     strategy:
@@ -337,3 +345,42 @@ jobs:
           path: target/surefire-reports
           retention-days: 7
           if-no-files-found: ignore
+
+  # A push to main on which an arm64 job failed or timed out opens the issue "arm64 tests are red on main", or comments on it when it is
+  # already open: an ordinary pull request does not run these jobs, so the run on main can be the first to show the failure. A person closes
+  # the issue when main is green again. A run that a later push cancelled reports nothing (the later run does). The job has its own
+  # permissions so that `issues: write` is not granted to the jobs that build and run the code.
+  report-arm64:
+    name: report a red arm64 run on main
+    needs: fast-arm64
+    if: >-
+      !cancelled() && github.event_name == 'push' &&
+      (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - name: Open the issue, or comment on the open one
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          title="arm64 tests are red on main"
+          body="$RUNNER_TEMP/arm64-red.md"
+          {
+            echo "A job did not pass on \`main\` at \`${SHA:0:7}\`: [$RUN_URL]($RUN_URL)."
+            echo
+            echo "An ordinary pull request does not run these jobs, so this run can be the first one that shows the failure. Close this issue when a later run on \`main\` is green."
+          } > "$body"
+          number="$(gh api --method GET "repos/$REPO/issues" -f state=open -f labels=area:ci -F per_page=100 \
+            --jq "map(select(.pull_request == null and .title == \"$title\")) | .[0].number // empty")"
+          if [ -n "$number" ]; then
+            gh api --method POST "repos/$REPO/issues/$number/comments" -F body=@"$body" --jq .html_url
+          else
+            gh api --method POST "repos/$REPO/issues" -f title="$title" -F body=@"$body" \
+              -f "labels[]=bug" -f "labels[]=area:ci" -f "labels[]=now" -f "assignees[]=tae898" --jq .html_url
+          fi

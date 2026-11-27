@@ -33,6 +33,11 @@ on:
         required: false
         default: ""
         type: string
+      clusters:
+        description: "Clusters of a collection, at least 2. Empty: the default of the screen"
+        required: false
+        default: ""
+        type: string
       mix:
         description: "write: 1 search per 8 written rows; read: 4 searches per written row"
         required: false
@@ -76,11 +81,13 @@ jobs:
           SEED: ${{ inputs.seed }}
           DIM: ${{ inputs.dim }}
           LATENT: ${{ inputs.latent }}
+          CLUSTERS: ${{ inputs.clusters }}
           MIX: ${{ inputs.mix }}
         run: |
           args=(--preset screen --seed "$SEED" --mix "$MIX" --out target/agent-memory/screen)
           if [ -n "$DIM" ]; then args+=(--dim "$DIM"); fi
           if [ -n "$LATENT" ]; then args+=(--latent "$LATENT"); fi
+          if [ -n "$CLUSTERS" ]; then args+=(--clusters "$CLUSTERS"); fi
           if [ -n "$SHAPES" ]; then args+=(--shapes "$SHAPES"); fi
           if [ -n "$VARIANTS" ]; then args+=(--variants "$VARIANTS"); fi
           java -Xmx10g --add-modules jdk.incubator.vector -cp target/agent-memory/classes ai.humem.tiervec.AgentMemory "${args[@]}"

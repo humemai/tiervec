@@ -46,6 +46,7 @@ public final class AgentMemory {
         d.put("seed", "1");
         d.put("dim", screen ? "128" : "64");
         d.put("latent", "0");                    // the kind of data, see Runbook: 0, or the dimensions that the noise of the rows spans
+        d.put("clusters", "0");                  // the clusters of a collection; 0: one per 20 rows, at least 4 and at most 16
         d.put("mix", screen ? "write" : "read"); // read: 4 searches per written row; write: 1 search per 8 written rows
         d.put("turnover", "3");                  // retired row versions per live row
         d.put("checkpoints", "10");
@@ -101,9 +102,10 @@ public final class AgentMemory {
                 case "write" -> 0.125;
                 default -> throw new IllegalArgumentException("--mix is read or write");
             };
+            int clusters = Integer.parseInt(o.get("clusters"));
             for (Shape s : shapes) {
                 params.add(new Runbook.Params(Long.parseLong(o.get("seed")), Integer.parseInt(o.get("dim")), s.rows(), s.collections(),
-                        Double.parseDouble(o.get("turnover")), Math.max(4, Math.min(16, s.rows() / 20)), searchesPerWrite,
+                        Double.parseDouble(o.get("turnover")), clusters == 0 ? Math.max(4, Math.min(16, s.rows() / 20)) : clusters, searchesPerWrite,
                         Integer.parseInt(o.get("checkpoints")), s.queries(), 50, Integer.parseInt(o.get("latent"))));
             }
             floor = Double.parseDouble(o.get("min-recall"));

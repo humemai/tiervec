@@ -699,6 +699,8 @@ final class RidReuseProbe {
     /** the old copies sit in sealed segments */
     static void caseSealed(Ctx x) {
         threeSegments(x);
+        x.addAll(slice(x.liveShuffled(), 0, x.cfg.n / 10));
+        x.checkpoint("b/10 percent replaced, the new vectors in the tail and the old ones in the segments");
         int[] lv = x.liveShuffled();
         int nd = (int) (0.30 * lv.length);
         int[] dead = slice(lv, 0, nd);

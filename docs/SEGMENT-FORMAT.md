@@ -239,7 +239,7 @@ The claim stays a process kill. The simulated file system is a model: it shows t
 2. Compare the fingerprint with the configuration (dimension, metric, `M`, `efConstruction`, SQ8). A difference throws `MismatchException`.
 3. Read the tail file and compare its row checksum with the manifest, then read every segment with every section checksummed and compare it with its manifest entry. With `vectorStorage` set to `MAPPED` the `VEC` section is checksummed and then mapped instead of copied ([Mapped vectors](#mapped-vectors)).
 4. Delete the files that the manifest does not name (orphans of a crashed publish, older generations).
-5. Restore the version counter, the epoch and the floor map (for each id with a marked row, one more than the largest marked version, which hides exactly the marked rows), and start the tier with the segments and with the tail rows back in the tail.
+5. Restore the version counter and the epoch, mark the rows of the tombstone file as hidden, and start the tier with the segments and with the tail rows back in the tail.
 
 A damaged row of the tail is found in step 3, like a damaged section of a segment: `open` throws and does not fall back to an older generation. A tail file that is missing, of another length, or with a damaged header is found in step 1.
 

@@ -1,6 +1,7 @@
 package ai.humem.tiervec;
 
 import java.io.IOException;
+import java.lang.invoke.MethodHandles;
 import java.lang.invoke.VarHandle;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
@@ -30,6 +31,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.LockSupport;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
+import java.util.function.IntPredicate;
 import java.util.function.LongConsumer;
 import java.util.function.LongPredicate;
 import java.util.function.LongSupplier;
@@ -40,12 +42,12 @@ import java.util.stream.LongStream;
  * Tiered vector index for agent memory: a bounded exact TAIL in front of immutable graph SEGMENTS (an LSM-style layout: writes go to
  * the tail, a seal turns the tail into a segment, merges keep the number of segments small).
  *
- * <p>Source of truth. The vectors in the records are the truth; the segments (graphs) and the floor map are DERIVED data. After a crash
- * the engine would re-read its records and call {@link #rebuildFrom(Iterable)}: everything (tail, segments, floor) is reconstructed
- * from raw vectors and nothing else. In the same way a segment or the whole tier can always be thrown away and rebuilt from the tail
- * plus the records, so the code never has to make the derived state durable. Porting to LSM_VECTOR: the tail is the engine's delta
- * list (its exact scan stays), a segment is one sealed graph file written beside the records, the floor map is rebuilt from the
- * record versions, and the seal/merge worker is the engine's background rebuild with a bounded queue.
+ * <p>Source of truth. The vectors in the records are the truth; the segments (graphs) and the marks on their hidden rows are DERIVED
+ * data. After a crash the engine would re-read its records and call {@link #rebuildFrom(Iterable)}: everything (tail, segments, marks)
+ * is reconstructed from raw vectors and nothing else. In the same way a segment or the whole tier can always be thrown away and rebuilt
+ * from the tail plus the records, so the code never has to make the derived state durable. Porting to LSM_VECTOR: the tail is the
+ * engine's delta list (its exact scan stays), a segment is one sealed graph file written beside the records, the hidden rows follow
+ * from the record versions, and the seal/merge worker is the engine's background rebuild with a bounded queue.
  *
  * <p>Writes. {@link #add} puts the vector into the active tail (a {@link FlatIndex}, exact fp32 or SQ8) and a raw copy next to it
  * (the raw copy is what a seal and a rebuild read). It is visible to the next search by any thread before add returns.
@@ -69,18 +71,16 @@ import java.util.stream.LongStream;
  * instant, and the dedupe resolves the overlap, so it is never missing. A search that started before the swap finishes on the old
  * view, which still holds everything it needs.
  *
- * <p>Delete and replace. Versions come from one counter under the write lock. The floor map says "a segment copy of id is valid only
- * when its version is at least floor[id]"; replace and delete raise the floor (only when a segment or the frozen tail holds a copy of
- * the id, so the map stays small). Searches filter segments through it inside the beam, so a deleted vector never appears, with no
- * wait for a merge. Each segment counts its hidden copies ({@code dead}); a segment with no hidden copy is searched with the plain
- * allow-list.
+ * <p>Delete and replace. Versions come from one counter under the write lock. A replace or a delete marks every visible copy of the id
+ * in the segments as hidden, with the version at which it was hidden; a mark is set once and never removed. A copy in the frozen tail
+ * that a seal is building into a segment gets its mark when the seal publishes the segment. Searches pass over marked rows inside the
+ * beam, so a deleted vector never appears, with no wait for a merge. Each segment counts its marked rows ({@code dead}); a segment with
+ * none is searched with the plain allow-list.
  *
  * <p>Merge. When the segment count exceeds {@code maxSegments}, or one segment is {@code deadFraction} dead, the worker rebuilds the
  * smallest segments (or the dead one) into ONE segment from their valid vectors only, throttled to {@code mergeRatePerSec} inserts
- * per second so the cores that serve queries are not starved, and swaps it in atomically. Floor entries whose stale copies are gone
- * are dropped at the swap, except those that a search still running on an older view can need: a search counts itself on the view it
- * reads, a replaced view with readers is held, and the remaining entries are dropped once those searches are done (by the worker, or by
- * awaitIdle, mergeNow, sealNow or checkpoint on the calling thread).
+ * per second so the cores that serve queries are not starved, copies the marks that were set while it ran onto the new segment, and
+ * swaps it in atomically. A search that still runs on an older view keeps the segments that view names, with their marks.
  *
  * <p>Size-ratio trigger ({@code mergeTriggerRatio} X, default 0 = off: merges are then picked by the count rule alone). The segment with the most live rows is the BIG one. When the live rows of all the other
  * segments together exceed X times the live rows of the big one, ALL segments are merged into one (the small ones go into the big one). Otherwise, when the count exceeds {@code maxSegments} and
@@ -97,8 +97,8 @@ import java.util.stream.LongStream;
  * separate back pressure pre-check: {@code apply} never waits for the worker.
  *
  * <p>Thread safety: add and delete take the write lock {@code mu} (short: one flat add, a few binary searches), and apply takes it once
- * for the whole batch; searches take no lock (each does one atomic add and one atomic subtract on the reader count of the view it
- * reads, and one volatile read of the batch counter before and after the scan). {@link #rebuildFrom} and {@link #sealNow} and {@link #mergeNow} take the work lock.
+ * for the whole batch; searches take no lock and write nothing that other searches read (each does one volatile read of the batch
+ * counter before and after the scan, and one of the view). {@link #rebuildFrom} and {@link #sealNow} and {@link #mergeNow} take the work lock.
  *
  * <p>Persistence (first cut). A tier can be written to a directory with {@link #checkpoint} and read back with {@link #open}: segment files,
  * a tombstone file (the rows that a delete or a replace has hidden), a tail file (the rows that no segment holds yet) and a manifest per
@@ -342,7 +342,8 @@ public final class TieredIndex implements VecIndex {
         }
     }
 
-    /** counters for the report. mergedVectors counts the rows that merges put into a graph: with {@link MergeMode#INSERT} the inserted rows only, not those of a copied graph.
+    /** counters for the report. floorEntries counts the rows of the segments that a delete or a replace has hidden and that no merge has
+     *  left out yet. mergedVectors counts the rows that merges put into a graph: with {@link MergeMode#INSERT} the inserted rows only, not those of a copied graph.
      *  segmentSizes: rows of each segment, oldest first, hidden copies included; its length is segments. adds (calls of add), mergeWriteAmp (mergedVectors / adds, 0 when adds is 0),
      *  totalWriteAmp ((sealedVectors + mergedVectors) / adds), maxSealMillis and maxMergeMillis (the longest single seal or merge).
      *  The task log, one slot per finished seal or merge in finish order: taskKinds (1 seal, 2 merge), taskStartNs and taskEndNs (System.nanoTime() values; end is the instant after the swap),
@@ -371,11 +372,16 @@ public final class TieredIndex implements VecIndex {
         }
     }
 
+    /** an id whose copies below the version {@code ver} are hidden */
+    private record Mark(long id, long ver) {}
+
     /** a bounded tail: the flat index scanned by searches and the raw copies a seal reads. Mutated only under mu. */
     private static final class Tail {
         final FlatIndex flat;
         final ConcurrentHashMap<Long, Rec> raw = new ConcurrentHashMap<>();
         volatile long firstNs;
+        /** the rows that were hidden while this tail was frozen, which a seal marks on the segment it built from the tail; guarded by mu */
+        final List<Mark> late = new ArrayList<>();
 
         Tail(int dim, Metric metric, Quant q) {
             flat = new FlatIndex(dim, metric, q);
@@ -391,14 +397,25 @@ public final class TieredIndex implements VecIndex {
             raw.remove(id);
             flat.delete(id);
         }
+
+        /** removes a row of a frozen tail, and remembers it for the seal that is building a segment from this tail */
+        void hide(long id, long ver) {
+            remove(id);
+            late.add(new Mark(id, ver));
+        }
     }
 
     private static final class Segment {
+        private static final VarHandle HIDDEN_AT = MethodHandles.arrayElementVarHandle(long[].class);
+
         final SealedGraph g;
         final int n;
         final long[] ids;  // sorted
         final long[] vers; // aligned with ids
-        volatile int dead; // copies hidden by the floor map; written under mu
+        volatile int dead; // rows that are hidden; written under mu, after the mark of the row
+        /** hiddenAt[row]: the version at which the row was hidden, 0 while it is visible; null until the first row is hidden. A mark is set once. */
+        private volatile long[] hiddenAt;
+        private int[] order; // the hidden rows in the order in which they were hidden, the first dead of them; guarded by mu
         volatile long fileId = -1; // id of the segment file this segment was written to or loaded from (seg-<id>.tvs), -1 when it has none; written under the work lock
 
         Segment(SealedGraph g, long[] idsIn, long[] versIn) {
@@ -436,18 +453,67 @@ public final class TieredIndex implements VecIndex {
             return i >= 0 ? i : -1;
         }
 
+        /** the row of an id in the graph, or -1 */
+        int rowOf(long id) {
+            int i = indexOf(id);
+            return i >= 0 ? g.sortedRows[i] : -1;
+        }
+
+        boolean isHidden(int row) {
+            long[] h = hiddenAt;
+            return h != null && (long) HIDDEN_AT.getOpaque(h, row) != 0L;
+        }
+
+        /** the rows that a search may return, or null when no row is hidden */
+        IntPredicate visibleRows() {
+            if (dead == 0) return null;
+            long[] h = hiddenAt;
+            return row -> (long) HIDDEN_AT.getOpaque(h, row) == 0L;
+        }
+
+        /** under mu, or before the segment is shared: hides a row at a version, which is not 0; a row that is hidden already keeps its mark */
+        void hide(int row, long ver) {
+            long[] h = hiddenAt;
+            if (h == null) hiddenAt = h = new long[n];
+            if (h[row] != 0L) return;
+            HIDDEN_AT.setOpaque(h, row, ver);
+            int d = dead;
+            if (order == null) order = new int[Math.min(n, 8)];
+            else if (d == order.length) order = Arrays.copyOf(order, (int) Math.min(n, 2L * d));
+            order[d] = row;
+            dead = d + 1;
+        }
+
+        /** under mu: hides the copy of an id that is older than {@code ver}, when this segment holds one */
+        void hideOlder(long id, long ver) {
+            int i = indexOf(id);
+            if (i >= 0 && vers[i] < ver) hide(g.sortedRows[i], ver);
+        }
+
+        /** under mu: the row that was hidden as number {@code i}, 0 &lt;= i &lt; dead */
+        int hiddenRow(int i) {
+            return order[i];
+        }
+
+        /** under mu: the version at which a hidden row was hidden */
+        long hiddenVersion(int row) {
+            return hiddenAt[row];
+        }
+
         long bytes() {
-            return g.bytesHeld() + 16L * n + 64;
+            long b = g.bytesHeld() + 16L * n + 64;
+            if (hiddenAt != null) b += 16 + 8L * n;
+            int[] o = order; // read without the lock: a number for a report
+            if (o != null) b += 16 + 4L * o.length;
+            return b;
         }
     }
 
-    /** immutable: replaced as a whole by one volatile write; only the reader count changes */
+    /** immutable: replaced as a whole by one volatile write */
     private static final class View {
         final Segment[] segs;
         final Tail frozen; // being sealed, or null
         final Tail active;
-        /** searches that are running on this view (see {@code enter}); a floor entry that a segment of the view needs outlives them */
-        final AtomicInteger readers = new AtomicInteger();
 
         View(Segment[] segs, Tail frozen, Tail active) {
             this.segs = segs;
@@ -515,13 +581,8 @@ public final class TieredIndex implements VecIndex {
      */
     public void filterScanBelow(double fraction) { FilterPlan.check(fraction); filterScanBelow = fraction; }
     public double filterScanBelow() { return filterScanBelow; }
-    /** odd while apply is changing the tail and the floor map, even otherwise; written only under mu (see {@link #apply}) */
+    /** odd while apply is changing the tail and the marks, even otherwise; written only under mu (see {@link #apply}) */
     private volatile long batchSeq;
-    /** replaced views that a search may still be scanning (their reader count was not zero at the swap); guarded by mu */
-    private final List<View> held = new ArrayList<>();
-    /** a merge swap could not clean the floor map completely (a search holds an old view, or a seal is running): the worker finishes it */
-    private volatile boolean floorDue;
-    private final ConcurrentHashMap<Long, Long> floor = new ConcurrentHashMap<>();
     private long counter; // guarded by mu
     private final AtomicInteger live = new AtomicInteger();
     private final Semaphore wake = new Semaphore(0);
@@ -701,7 +762,7 @@ public final class TieredIndex implements VecIndex {
         g.put("tiervec.tailSize", this::pendingTail);
         g.put("tiervec.segments", () -> view.segs.length);
         g.put("tiervec.bytesHeld", this::bytesHeld);
-        g.put("tiervec.floorEntries", floor::size);
+        g.put("tiervec.floorEntries", () -> hiddenRows(view.segs));
         g.put("tiervec.sealMillis", () -> sealNanos.get() / 1_000_000L);
         g.put("tiervec.mergeMillis", () -> mergeNanos.get() / 1_000_000L);
         g.put("tiervec.maxSealMillis", () -> maxSealNanos.get() / 1_000_000L);
@@ -745,13 +806,12 @@ public final class TieredIndex implements VecIndex {
     // ---- the host environment ----
 
     /**
-     * For a tier with a host environment: drops floor entries that no search needs any more, and submits a maintenance task to the executor
-     * when a seal or a merge is due (a seal by age included) and no refused or failed build is still waiting for its retry. The tier calls it
-     * itself after every write; a host calls it from its timer when {@link HostEnv#schedule} has none. A standalone tier ignores the call.
+     * For a tier with a host environment: submits a maintenance task to the executor when a seal or a merge is due (a seal by age included)
+     * and no refused or failed build is still waiting for its retry. The tier calls it itself after every write; a host calls it from its
+     * timer when {@link HostEnv#schedule} has none. A standalone tier ignores the call.
      */
     public void maintain() {
         if (!hosted || closed) return;
-        settleFloorIfDue();
         askForAgeSeal();
         if (due()) submit();
     }
@@ -789,7 +849,6 @@ public final class TieredIndex implements VecIndex {
     private void maintenanceTask() {
         try {
             while (!closed) {
-                settleFloorIfDue();
                 boolean did;
                 work.lock();
                 try {
@@ -918,26 +977,32 @@ public final class TieredIndex implements VecIndex {
 
     // ---- writes ----
 
-    private record Probe(boolean inActive, boolean inFrozen, Segment valid, boolean phys) {}
+    /** under mu: whether a segment of the view holds a visible copy of id */
+    private static boolean visibleInSegments(View v, long id) {
+        for (Segment s : v.segs) {
+            int row = s.rowOf(id);
+            if (row >= 0 && !s.isHidden(row)) return true;
+        }
+        return false;
+    }
 
-    /** where id lives right now; call under mu */
-    private Probe probe(View v, long id) {
-        boolean a = v.active.raw.containsKey(id);
-        boolean f = v.frozen != null && v.frozen.raw.containsKey(id);
-        Segment valid = null;
-        boolean phys = false;
-        if (v.segs.length > 0) {
-            Long fl = floor.get(id);
-            long floorV = fl == null ? Long.MIN_VALUE : fl;
-            for (Segment s : v.segs) {
-                int ix = s.indexOf(id);
-                if (ix >= 0) {
-                    phys = true;
-                    if (s.vers[ix] >= floorV) valid = s;
-                }
+    /** under mu: hides every visible copy of id in the segments of the view, at the version {@code ver}; true when there was one */
+    private static boolean hideInSegments(View v, long id, long ver) {
+        boolean was = false;
+        for (Segment s : v.segs) {
+            int row = s.rowOf(id);
+            if (row >= 0 && !s.isHidden(row)) {
+                s.hide(row, ver);
+                was = true;
             }
         }
-        return new Probe(a, f, valid, phys);
+        return was;
+    }
+
+    private static int hiddenRows(Segment[] segs) {
+        int d = 0;
+        for (Segment s : segs) d += s.dead;
+        return d;
     }
 
     @Override
@@ -962,12 +1027,12 @@ public final class TieredIndex implements VecIndex {
         long ver = ++counter;
         addsCount++;
         View vw = view;
-        Probe p = probe(vw, id);
+        boolean inActive = vw.active.raw.containsKey(id);
+        boolean inFrozen = vw.frozen != null && vw.frozen.raw.containsKey(id);
         vw.active.put(id, new Rec(copy, ver));            // 1. the new version becomes visible
-        if (p.phys() || p.inFrozen()) floor.put(id, ver); // 2. older copies in segments (or in a frozen tail that is being sealed) stop counting
-        if (p.valid() != null) p.valid().dead = p.valid().dead + 1;
-        if (p.inFrozen()) vw.frozen.remove(id);           // 3. the old frozen copy goes
-        if (!(p.inActive() || p.inFrozen() || p.valid() != null)) live.incrementAndGet();
+        boolean inSegment = hideInSegments(vw, id, ver);  // 2. an add hides every older copy in the segments
+        if (inFrozen) vw.frozen.hide(id, ver);            // 3. the old frozen copy goes
+        if (!(inActive || inFrozen || inSegment)) live.incrementAndGet();
         return vw.active.raw.size() >= effectiveTailLimit();
     }
 
@@ -989,12 +1054,13 @@ public final class TieredIndex implements VecIndex {
     /** under mu: the body of delete; true when the id was live */
     private boolean deleteLocked(long id) {
         View vw = view;
-        Probe p = probe(vw, id);
-        if (!(p.inActive() || p.inFrozen() || p.valid() != null)) return false;
-        if (p.inActive()) vw.active.remove(id);
-        if (p.inFrozen()) vw.frozen.remove(id);
-        if (p.phys() || p.inFrozen()) floor.put(id, ++counter);
-        if (p.valid() != null) p.valid().dead = p.valid().dead + 1;
+        boolean inActive = vw.active.raw.containsKey(id);
+        boolean inFrozen = vw.frozen != null && vw.frozen.raw.containsKey(id);
+        if (!(inActive || inFrozen || visibleInSegments(vw, id))) return false;
+        long ver = ++counter;
+        if (inActive) vw.active.remove(id);
+        if (inFrozen) vw.frozen.hide(id, ver);
+        hideInSegments(vw, id, ver); // a delete hides every copy in the segments
         live.decrementAndGet();
         return true;
     }
@@ -1008,7 +1074,7 @@ public final class TieredIndex implements VecIndex {
      * the hard tail limit: a batch may take the tail above it, and the host asks {@link #awaitCapacity} before the call when it wants back pressure. A vector
      * of a wrong dimension throws {@link IllegalArgumentException} before anything is applied.
      *
-     * <p>How it is atomic. The tail and the floor map change in place, so one volatile write of a new view cannot cover a batch. A batch counter does:
+     * <p>How it is atomic. The tail and the marks change in place, so one volatile write of a new view cannot cover a batch. A batch counter does:
      * {@code batchSeq} is odd while a batch is being applied and even otherwise (it changes only under the write lock). A search reads it before it scans,
      * waits while it is odd, and reads it again after the scan; when it changed, a batch was applied while the search scanned, the answer may mix the state
      * before the batch with the state after it, and the search is discarded and run again. A search that returns therefore ran with no batch in progress
@@ -1151,7 +1217,7 @@ public final class TieredIndex implements VecIndex {
                 }
                 continue;
             }
-            View vw = enter();
+            View vw = view;
             SearchResult r;
             try {
                 r = searchView(vw, q, k, allow, freshness, efSearch, poll);
@@ -1162,25 +1228,9 @@ public final class TieredIndex implements VecIndex {
                     if (batchSeq == seq) stopped.keep(mergeTopK(poll.lists, poll.done, k)); // a batch overlapped the scan: no hits
                 }
                 throw stopped;
-            } finally {
-                vw.readers.decrementAndGet();
             }
             VarHandle.acquireFence(); // the reads of the scan stay before the second read of the counter
             if (batchSeq == seq) return r; // no batch began or ended during the scan
-        }
-    }
-
-    /**
-     * The view a search scans, counted as read until the search leaves it. The count is raised first and the view is read again: when
-     * the view is still current, a swap has not happened yet, so the swap sees the count (it reads it after its volatile write); when
-     * it is not, the count is dropped and the search tries the new view. No lock, no thread, one atomic add each way.
-     */
-    private View enter() {
-        for (;;) {
-            View vw = view;
-            vw.readers.incrementAndGet();
-            if (view == vw) return vw;
-            vw.readers.decrementAndGet();
         }
     }
 
@@ -1217,7 +1267,7 @@ public final class TieredIndex implements VecIndex {
         int searched = 0;
         double scanBelow = filterScanBelow;
         int ef = Math.max(k, efSearch);
-        boolean small = FilterPlan.smallByHint(allow, ef); // asked here: the filter of a segment with hidden rows is wrapped and loses the hint
+        boolean small = FilterPlan.smallByHint(allow, ef);
         long sizeSum = 0; // splitBeam only: rows of the segments that will be searched; 0 (the default) keeps the full beam ef in every segment
         if (cfg.splitBeam() && segs.length > 1) {
             for (Segment t : segs) if (t.n > 0 && t.dead < t.n) sizeSum += t.n;
@@ -1225,26 +1275,16 @@ public final class TieredIndex implements VecIndex {
         for (int i = segs.length - 1; i >= 0; i--) { // newest segment first
             Segment s = segs[i];
             if (s.n == 0 || s.dead >= s.n) continue;
-            LongPredicate p = s.dead > 0 ? segFilter(s, allow) : allow;
+            IntPredicate rows = s.visibleRows();
             int efS = sizeSum > 0 ? Math.max(k, (int) ((ef * (long) s.n + sizeSum - 1) / sizeSum)) : ef; // ceil(ef * rows(s) / sizeSum), at least k
             if (poll != null) poll.now();
-            Hit[] h = small ? s.g.scan(q, k, p, poll) : s.g.search(q, k, p, efS, scanBelow, poll);
+            Hit[] h = small ? s.g.scan(q, k, allow, rows, poll) : s.g.search(q, k, allow, rows, efS, scanBelow, poll);
             if (h.length > 0) lists[li++] = h;
             if (poll != null) poll.done = li;
             searched++;
         }
         boolean exact = (searched == 0 || small) && (cfg.tailQuant() == Quant.NONE || (long) FLAT_RERANK * k >= tailScanned);
         return new SearchResult(mergeTopK(lists, li, k), exact, tailScanned, searched);
-    }
-
-    private LongPredicate segFilter(Segment s, LongPredicate allow) {
-        return id -> {
-            if (allow != null && !allow.test(id)) return false;
-            Long f = floor.get(id);
-            if (f == null) return true;
-            int ix = s.indexOf(id);
-            return ix >= 0 && s.vers[ix] >= f;
-        };
     }
 
     private static final Comparator<Hit> BEST_FIRST = (a, b) -> {
@@ -1283,48 +1323,13 @@ public final class TieredIndex implements VecIndex {
         return Arrays.copyOf(out, Math.min(k, n));
     }
 
-    /**
-     * under mu: the one place a new view replaces the current one. A search that holds the replaced view may still scan its segments, so
-     * the view is kept in {@code held} while its reader count is not zero. The count is read after the volatile write: a search that
-     * entered the view before the write is counted, one that comes later reads the new view (see {@link #enter}).
-     */
-    private void publish(View nv) {
-        View old = view;
-        view = nv;
-        if (old.readers.get() != 0) held.add(old);
-    }
-
-    /**
-     * under mu: a merge swap, or the worker later, removes what no search can need. A hidden copy in a segment of the current view or of
-     * a held view keeps its floor entry; the others go. While a seal is running (a frozen tail) or a held view still has readers, the
-     * work is not complete and {@code floorDue} stays set for the worker.
-     */
-    private void settleFloor() {
-        held.removeIf(h -> h.readers.get() == 0); // no search is in it, and none can enter it again
-        View v = view;
-        if (v.frozen == null) cleanupFloor(v.segs);
-        floorDue = v.frozen != null || !held.isEmpty();
-    }
-
-    /** finish a deferred floor cleanup on the calling thread (a no-op when none is pending): the calls that promise a settled tier use it */
-    private void settleFloorIfDue() {
-        if (!floorDue) return;
-        mu.lock();
-        try {
-            settleFloor();
-        } finally {
-            mu.unlock();
-        }
-    }
-
     // ---- worker: seal and merge, one at a time ----
 
     private void workerLoop() {
         while (!closed) {
             try {
-                wake.tryAcquire(floorDue ? 5 : 50, TimeUnit.MILLISECONDS); // a pending floor cleanup waits for a search to leave an old view: look again soon
+                wake.tryAcquire(50, TimeUnit.MILLISECONDS);
                 wake.drainPermits();
-                settleFloorIfDue();
                 while (!closed) {
                     boolean did = false;
                     work.lock();
@@ -1438,7 +1443,7 @@ public final class TieredIndex implements VecIndex {
                 if (v.frozen == null) {
                     if (v.active.raw.isEmpty()) return false;
                     if (!ignoreSmall && live.get() < cfg.smallLimit()) return false;
-                    publish(new View(v.segs, v.active, new Tail(dim, metric, cfg.tailQuant())));
+                    view = new View(v.segs, v.active, new Tail(dim, metric, cfg.tailQuant()));
                     frozen = v.active;
                 } else {
                     frozen = v.frozen;
@@ -1461,7 +1466,7 @@ public final class TieredIndex implements VecIndex {
                 mu.lock();
                 try {
                     View v = view;
-                    publish(new View(v.segs, null, v.active));
+                    view = new View(v.segs, null, v.active);
                 } finally {
                     mu.unlock();
                 }
@@ -1485,10 +1490,10 @@ public final class TieredIndex implements VecIndex {
             mu.lock();
             try {
                 View v = view;
-                countDead(seg);
+                for (Mark m : frozen.late) seg.hideOlder(m.id(), m.ver()); // the rows that were hidden while the build ran
                 Segment[] ns = Arrays.copyOf(v.segs, v.segs.length + 1);
                 ns[ns.length - 1] = seg;
-                publish(new View(ns, null, v.active)); // the atomic swap
+                view = new View(ns, null, v.active); // the atomic swap
             } finally {
                 mu.unlock();
             }
@@ -1554,13 +1559,19 @@ public final class TieredIndex implements VecIndex {
             int[] srcRow = new int[total];
             int m = 0;
             final boolean[] kept = insert ? new boolean[largest.g.n] : null; // the rows of the copied graph that stay in it
+            // how many rows each input had hidden when the reading began: those are seen below, the later ones are carried over at the swap
+            final int[] seenDead = new int[picked.size()];
+            mu.lock();
+            try {
+                for (int i = 0; i < seenDead.length; i++) seenDead[i] = picked.get(i).dead;
+            } finally {
+                mu.unlock();
+            }
             for (Segment s : picked) {
                 for (int r = 0; r < s.g.n; r++) {
+                    if (s.isHidden(r)) continue; // hidden copy: dropped here
                     long id = s.g.ids[r];
-                    int ix = s.indexOf(id);
-                    long ver = s.vers[ix];
-                    Long f = floor.get(id);
-                    if (f != null && ver < f) continue; // hidden copy: dropped here
+                    long ver = s.vers[s.indexOf(id)];
                     ids[m] = id;
                     vers[m] = ver;
                     srcSeg[m] = s;
@@ -1612,12 +1623,11 @@ public final class TieredIndex implements VecIndex {
                 List<Segment> keep = new ArrayList<>();
                 for (Segment s : v.segs) if (!picked.contains(s)) keep.add(s);
                 if (merged != null) {
-                    countDead(merged);
+                    carryOver(picked, seenDead, merged); // the rows that were hidden while the merge ran
                     keep.add(merged);
                 }
                 Segment[] ns = keep.toArray(new Segment[0]);
-                publish(new View(ns, v.frozen, v.active)); // the atomic swap
-                settleFloor();
+                view = new View(ns, v.frozen, v.active); // the atomic swap
             } finally {
                 mu.unlock();
             }
@@ -1636,31 +1646,18 @@ public final class TieredIndex implements VecIndex {
         }
     }
 
-    /** under mu: hidden copies of s are the rows whose version is below the floor of their id */
-    private void countDead(Segment s) {
-        int d = 0;
-        for (Map.Entry<Long, Long> e : floor.entrySet()) {
-            int ix = s.indexOf(e.getKey());
-            if (ix >= 0 && s.vers[ix] < e.getValue()) d++;
+    /**
+     * under mu: hides in the merged segment the copies of the rows that were hidden in an input after the merge counted them, because the
+     * merge may have read them as visible. Marks never go away, so input {@code i} has them from position {@code seenDead[i]} on.
+     */
+    private static void carryOver(List<Segment> inputs, int[] seenDead, Segment merged) {
+        for (int i = 0; i < seenDead.length; i++) {
+            Segment s = inputs.get(i);
+            for (int j = seenDead[i]; j < s.dead; j++) {
+                int row = s.hiddenRow(j);
+                merged.hideOlder(s.g.ids[row], s.hiddenVersion(row));
+            }
         }
-        s.dead = d;
-    }
-
-    /** under mu, with no frozen tail and no seal running: a floor entry is needed only while some segment of the current view, or of a view a search still holds, has a copy below it */
-    private void cleanupFloor(Segment[] segs) {
-        for (Map.Entry<Long, Long> e : floor.entrySet()) {
-            boolean needed = holdsBelow(segs, e);
-            for (int h = 0; !needed && h < held.size(); h++) needed = holdsBelow(held.get(h).segs, e);
-            if (!needed) floor.remove(e.getKey());
-        }
-    }
-
-    private static boolean holdsBelow(Segment[] segs, Map.Entry<Long, Long> e) {
-        for (Segment s : segs) {
-            int ix = s.indexOf(e.getKey());
-            if (ix >= 0 && s.vers[ix] < e.getValue()) return true;
-        }
-        return false;
     }
 
     /** build and seal a graph over n rows (ids[i], src.vec(i)); throttle: apply the merge rate cap */
@@ -1755,41 +1752,35 @@ public final class TieredIndex implements VecIndex {
 
     // ---- control for tests and reports ----
 
-    /** seal the active tail now, on the calling thread, even below smallLimit; waits for a running worker task first; finishes a pending floor cleanup */
+    /** seal the active tail now, on the calling thread, even below smallLimit; waits for a running worker task first */
     public void sealNow() {
         work.lock();
         try {
             checkOpen();
             doSeal(true);
-            settleFloorIfDue();
         } finally {
             work.unlock();
         }
     }
 
-    /** merge every segment into one (or compact the lone one when it has hidden copies), on the calling thread; finishes a pending floor cleanup */
+    /** merge every segment into one (or compact the lone one when it has hidden copies), on the calling thread */
     public void mergeNow() {
         work.lock();
         try {
             checkOpen();
             doMerge(true);
-            settleFloorIfDue();
         } finally {
             work.unlock();
         }
     }
 
-    /**
-     * waits until no seal or merge is due or running and no floor cleanup is pending (for a quiet writer); false on timeout. The floor
-     * cleanup waits for the searches that still run on a replaced view, so a search that outlasts the timeout makes this return false.
-     */
+    /** waits until no seal or merge is due or running (for a quiet writer); false on timeout. Searches that are running do not delay it. */
     public boolean awaitIdle(long timeoutMs) {
         long end = System.nanoTime() + timeoutMs * 1_000_000L;
         while (System.nanoTime() < end) {
-            settleFloorIfDue(); // on this thread: no wait for the worker's next wake
-            if (!floorDue && !sealDue() && pickMerge(view.segs, false) == null && work.tryLock()) {
+            if (!sealDue() && pickMerge(view.segs, false) == null && work.tryLock()) {
                 work.unlock();
-                if (!floorDue && !sealDue() && pickMerge(view.segs, false) == null) return true;
+                if (!sealDue() && pickMerge(view.segs, false) == null) return true;
             }
             if (hosted ? closed : !worker.isAlive()) return false;
             maintain(); // a standalone tier ignores it
@@ -1799,12 +1790,11 @@ public final class TieredIndex implements VecIndex {
     }
 
     /**
-     * Rebuild everything from raw vectors, as the engine would after a crash (records are the truth): tail, segments and floor map are
+     * Rebuild everything from raw vectors, as the engine would after a crash (records are the truth): tail, segments and marks are
      * replaced. n below smallLimit: the vectors go to the exact tail; otherwise one segment is built from all of them. Writers wait for
-     * the duration; searches keep using the old state until the swap. The swap is the one a merge uses: a search that is still running on the old view
-     * after it keeps the floor entries that its segments need, and they are dropped when those searches are done (by the worker, or by awaitIdle,
-     * mergeNow, sealNow or checkpoint on the calling thread). With no such search the floor map is empty when this method returns. A later duplicate id
-     * replaces an earlier one. This form keeps the epoch as it is; a host that writes while the rebuild runs uses {@link #rebuildFrom(Supplier, long)}.
+     * the duration; searches keep using the old state until the swap. The swap is the one a merge uses: a search that is still running on
+     * the old view after it keeps that view's segments with their marks. A later duplicate id replaces an earlier one. This form keeps
+     * the epoch as it is; a host that writes while the rebuild runs uses {@link #rebuildFrom(Supplier, long)}.
      */
     public void rebuildFrom(Iterable<IdVector> src) {
         work.lock();
@@ -1929,7 +1919,7 @@ public final class TieredIndex implements VecIndex {
         return new Built(ids, vecs, sg);
     }
 
-    /** under mu and the work lock: the swap of a rebuild, through the same publish call as a merge; the rebuilt copies are newer than every floor entry */
+    /** under mu and the work lock: the swap of a rebuild */
     private void install(Built b) {
         int n = b.ids().length;
         Tail nt = new Tail(dim, metric, cfg.tailQuant());
@@ -1941,8 +1931,7 @@ public final class TieredIndex implements VecIndex {
         } else {
             for (int j = 0; j < n; j++) nt.put(b.ids()[j], new Rec(b.vecs()[j].clone(), ++counter));
         }
-        publish(new View(segs, null, nt)); // the one swap: a search that still reads the old view makes it held
-        settleFloor(); // the entries go now, or when the searches of the old view end
+        view = new View(segs, null, nt); // the one swap
         live.set(n);
     }
 
@@ -1983,8 +1972,7 @@ public final class TieredIndex implements VecIndex {
         try {
             checkOpen();
             View v = view;
-            if (floorDue) settleFloor(); // a merge that overlapped searches may have left entries that no search needs any more
-            long[][] hidden = hiddenRows(v.segs);
+            long[][] hidden = hiddenBitmaps(v.segs);
             TailFile.Rows tail = tailRows(v);
             if (!Manifest.hasManifest(dir)) SegmentFormat.createDirectoriesDurably(dir); // a first generation is not lost with its directory
             publishGeneration(dir, v, hidden, tail, hook);
@@ -2067,7 +2055,7 @@ public final class TieredIndex implements VecIndex {
     /**
      * Opens the tier that {@link #checkpoint} wrote. Takes the newest manifest that validates, checks its fingerprint against the
      * configuration, reads every segment with every section checksummed, the tombstone file and the tail file, deletes files that the manifest
-     * does not name, and restores the version counter, the floor map, and the tail, so that the rows that were hidden at the checkpoint stay
+     * does not name, and restores the version counter, the marks of the hidden rows, and the tail, so that the rows that were hidden at the checkpoint stay
      * hidden and the rows that were in the tail are in the tail again. The dimension and the metric come from the manifest. A restored tail is
      * on the heap, and the seal rules apply to it from this call on (the age of the tail counts from the open). A directory written before the
      * tail was persisted (manifest major 1) opens too. Any failure throws: {@link CorruptStateException} for damage (its cause is the
@@ -2300,7 +2288,7 @@ public final class TieredIndex implements VecIndex {
                     if (id > recovered) { // a hidden row counts too: it must not stay in a segment under an id that the host may mint again
                         delete(id);
                         dropped = true;
-                    } else if (!isHidden(s, i) && !host.isLive(id)) {
+                    } else if (!s.isHidden(s.g.sortedRows[i]) && !host.isLive(id)) {
                         delete(id);
                     }
                 }
@@ -2337,10 +2325,11 @@ public final class TieredIndex implements VecIndex {
         long[][] hidden = Manifest.readTombstones(dir, m);
         // the rows of the tail, with their checksum compared before any of them is used
         TailFile.Rows tail = m.tailRows() == 0 ? TailFile.Rows.NONE : TailFile.read(dir.resolve(Manifest.tailName(m.generation())), m);
-        Map<Long, Long> floorOf = new HashMap<>();
+        Map<Long, Long> hiddenBelow = new HashMap<>(); // per id with a marked row: the smallest version above every marked copy
         long total = 0;
         long hiddenTotal = 0;
         long maxVer = 0;
+        long markVer = Math.max(1L, m.versionCounter()); // a hidden row of a file is hidden at every version of the reopened tier
         for (Manifest.Entry e : m.entries()) {
             SegmentReader.Loaded l = SegmentReader.readFull(dir.resolve(Manifest.segName(e.segId())), true, cfg.vectorStorage());
             SegmentInfo si = l.info();
@@ -2353,8 +2342,8 @@ public final class TieredIndex implements VecIndex {
             long[] bits = hidden[segs.size()];
             for (int row = 0; row < s.n; row++) {
                 if ((bits[row >>> 6] & (1L << row)) != 0L) {
-                    floorOf.merge(s.g.ids[row], l.vers()[row] + 1, Math::max); // the smallest floor that hides every marked copy of the id
-                    s.dead = s.dead + 1;
+                    hiddenBelow.merge(s.g.ids[row], l.vers()[row] + 1, Math::max);
+                    s.hide(row, markVer);
                 }
             }
             hiddenTotal += s.dead;
@@ -2363,7 +2352,7 @@ public final class TieredIndex implements VecIndex {
             maxVer = Math.max(maxVer, si.verMax());
         }
         if (maxVer > m.versionCounter()) throw new SegmentFormat.CorruptException("a segment holds version " + maxVer + " above the manifest's counter " + m.versionCounter(), "MANIFEST");
-        checkHidden(segs, hidden, floorOf);
+        checkHidden(segs, hidden, hiddenBelow);
         checkTail(segs, hidden, tail, m);
         int live = Math.toIntExact(total - hiddenTotal + tail.size());
         Manifest.gc(dir, m); // orphans: files of a crashed publish, older generations
@@ -2371,7 +2360,6 @@ public final class TieredIndex implements VecIndex {
         t.work.lock();
         t.mu.lock();
         try {
-            t.floor.putAll(floorOf); // before the view: a segment with hidden copies is searched through the floor map
             // the rows of the tail go back into the tail, in the order in which they arrived and with their versions
             for (int i = 0; i < tail.size(); i++) t.view.active.put(tail.ids()[i], new Rec(tail.vecs()[i], tail.vers()[i]));
             t.view = new View(segs.toArray(new Segment[0]), null, t.view.active);
@@ -2387,34 +2375,26 @@ public final class TieredIndex implements VecIndex {
         return t;
     }
 
-    /** under mu: for each segment the bitmap of its hidden rows (a row whose version is below the floor of its id), in the layout of a tombstone file */
-    private long[][] hiddenRows(Segment[] segs) {
+    /** under mu: for each segment the bitmap of its hidden rows, in the layout of a tombstone file */
+    private static long[][] hiddenBitmaps(Segment[] segs) {
         long[][] bits = new long[segs.length][];
-        for (int i = 0; i < segs.length; i++) bits[i] = new long[(segs[i].n + 63) >>> 6];
-        for (Map.Entry<Long, Long> e : floor.entrySet()) {
-            for (int i = 0; i < segs.length; i++) {
-                int ix = segs[i].indexOf(e.getKey());
-                if (ix >= 0 && segs[i].vers[ix] < e.getValue()) {
-                    int row = segs[i].g.sortedRows[ix];
-                    bits[i][row >>> 6] |= 1L << row;
-                }
+        for (int i = 0; i < segs.length; i++) {
+            Segment s = segs[i];
+            bits[i] = new long[(s.n + 63) >>> 6];
+            for (int j = 0; j < s.dead; j++) {
+                int row = s.hiddenRow(j);
+                bits[i][row >>> 6] |= 1L << row;
             }
         }
         return bits;
     }
 
-    /** whether the copy at position {@code ix} of the id order of a segment is hidden by the floor map */
-    private boolean isHidden(Segment s, int ix) {
-        Long f = floor.get(s.ids[ix]);
-        return f != null && s.vers[ix] < f;
-    }
-
     /**
      * A tier hides only older copies of an id: a row that the tombstone file leaves visible is newer than every marked row of its id. A file
-     * that says otherwise was not written by a tier and is refused, because the floor map could not express it.
+     * that says otherwise was not written by a tier and is refused.
      */
-    private static void checkHidden(List<Segment> segs, long[][] hidden, Map<Long, Long> floorOf) throws SegmentFormat.CorruptException {
-        for (Map.Entry<Long, Long> e : floorOf.entrySet()) {
+    private static void checkHidden(List<Segment> segs, long[][] hidden, Map<Long, Long> hiddenBelow) throws SegmentFormat.CorruptException {
+        for (Map.Entry<Long, Long> e : hiddenBelow.entrySet()) {
             for (int i = 0; i < segs.size(); i++) {
                 Segment s = segs.get(i);
                 int ix = s.indexOf(e.getKey());
@@ -2461,7 +2441,6 @@ public final class TieredIndex implements VecIndex {
         b += tailBytes(v.active);
         if (v.frozen != null) b += tailBytes(v.frozen);
         for (Segment s : v.segs) b += s.bytes();
-        b += floor.size() * 80L;
         return b;
     }
 
@@ -2474,7 +2453,7 @@ public final class TieredIndex implements VecIndex {
         final long a = addsCount, sv = sealedVectors.get(), mv = mergedVectors.get();
         final int tc = taskCount; // published task slots only
         return new Stats(seals.get(), merges.get(), pendingTail(), v.segs.length, bytesHeld(), sealNanos.get() / 1_000_000L,
-                mergeNanos.get() / 1_000_000L, floor.size(), failures.get(), live.get(), backpressure.get(), sealedVectors.get(),
+                mergeNanos.get() / 1_000_000L, hiddenRows(v.segs), failures.get(), live.get(), backpressure.get(), sealedVectors.get(),
                 mergedVectors.get(), sizesOf(v), a, a > 0 ? (double) mv / a : 0.0, a > 0 ? (double) (sv + mv) / a : 0.0,
                 maxSealNanos.get() / 1_000_000L, maxMergeNanos.get() / 1_000_000L, Arrays.copyOf(taskKind, tc), Arrays.copyOf(taskStart, tc),
                 Arrays.copyOf(taskEnd, tc), Arrays.copyOf(taskRows, tc), taskDropped.get(), bigMerges.get(), bigMergedVectors.get());

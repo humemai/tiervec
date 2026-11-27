@@ -11,9 +11,10 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 
 /**
- * The full probe (every case, n = 3000, cosine, dimension 32) on the unchanged copy X0 and on the mutants M1, M2 and M3 of {@link RidReuseMutantTest}, with three
+ * The full probe (every case, n = 3000, cosine, dimension 32) on the unchanged copy X0 and on the mutants M1 to M4 of {@link RidReuseMutantTest}, with three
  * seeds each. X0 must pass. M1 must give {@code staleHits} above 0 and a violation in case b_sealed, M2 {@code lostDeletes} above 0 and a violation in case b_sealed,
- * M3 a wrong answer and a violation in case c2_delete_in_merge, in every seed. A mutant run counts as a catch only when every merge window was reached.
+ * M3 a wrong answer and a violation in case c2_delete_in_merge, M4 a wrong answer and a violation in case s_seal_window, in every seed. A mutant run counts as a
+ * catch only when every merge window was reached.
  */
 @Tag("slow")
 class RidReuseMutantLongTest {
@@ -37,7 +38,8 @@ class RidReuseMutantLongTest {
         "X0, 11", "X0, 12", "X0, 13",
         "M1, 11", "M1, 12", "M1, 13",
         "M2, 11", "M2, 12", "M2, 13",
-        "M3, 11", "M3, 12", "M3, 13"
+        "M3, 11", "M3, 12", "M3, 13",
+        "M4, 11", "M4, 12", "M4, 13"
     })
     void fullProbe(String variant, long seed) throws Exception {
         List<String> cases = RidReuseProbe.FAST_CASES;
@@ -55,6 +57,10 @@ class RidReuseMutantLongTest {
             case "M3" -> {
                 Map<String, Object> r = mutants.run(RidReuseRig.M3, CFG, seed, cases, false);
                 RidReuseRig.assertCaughtM3(what, r, cases, false);
+            }
+            case "M4" -> {
+                Map<String, Object> r = mutants.run(RidReuseRig.M4, CFG, seed, cases, false);
+                RidReuseRig.assertCaughtM4(what, r, cases, false);
             }
             default -> fail("unknown variant " + variant);
         }

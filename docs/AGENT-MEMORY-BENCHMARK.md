@@ -15,7 +15,7 @@ On a stream of creates, reads, updates, and deletes, does an index stay correct 
 | `Bench` ([BENCHMARKS.md](BENCHMARKS.md)) | Static recall and latency, filtered cells with random filters, checks of writes, a concurrent phase of adds and deletes with recall scored once at its end, a JVector arm | Replacements under load, recall during the stream, real data in the concurrent phase, updates in the JVector arm |
 | [`PacedWrites`](BENCHMARKS.md#paced-writes) | Adds at a fixed rate with paced searches, write amplification | Deletes and replacements |
 | [`MergeGenerations`](BENCHMARKS.md#successive-merges) | Recall over successive merges with deletes | Writes during searches, other libraries |
-| The first parts of [#159](https://github.com/humemai/tiervec/issues/159) in `src/bench`: [the runbook](#the-runbook), the exact answers, and the violation counters | Creates, updates, deletes, reuses, batches, searches, and checkpoints from a seed; the exact answers over the live rows; five counters; their own tests (`AgentMemorySelfCheck`, in the CI smoke) | No arm replays it yet, and there are no restarts or filtered searches |
+| `AgentMemory`, the first step of [#159](https://github.com/humemai/tiervec/issues/159): [the runbook](#the-runbook) replayed into the exact, tier, and live graph arms ([how](#how-the-program-replays-a-runbook)) | Creates, updates, deletes, reuses, batches, searches, and checkpoints from a seed; violation counts; recall at every checkpoint; rows built per row written; bytes held per row | Restarts, filtered searches, many collections as its own study, the JVector and Lucene arms, real embeddings, every timing |
 
 ## The workload
 
@@ -62,6 +62,23 @@ A **runbook** is a file of operations that is generated once from a seed and rep
 ## Ground truth
 
 At every checkpoint of the runbook the program computes the exact top 10 over the rows that are live at that point, with their current vectors, using its own scalar distance and none of the arm's kernels. The ground truth has its own test with known answers that include deletes and replacements. A score that differs from the exact one by more than 0.0001 counts as the score of another vector. The streaming track had to correct its published recall after the competition: the declared winner went from 0.985 to 0.0921 in the corrected table.
+
+## How the program replays a runbook
+
+```text
+mkdir -p target/bench/classes
+javac -d target/bench/classes --add-modules jdk.incubator.vector $(find src/main/java src/bench/java -name '*.java')
+java -Xmx2g --add-modules jdk.incubator.vector -cp target/bench/classes ai.humem.tiervec.AgentMemory \
+  --shapes smoke,p20 --variants 'exact exact; tier tier; graph-a12 graph graph.alpha=1.2' --mix read --out target/agent-memory/out
+```
+
+The program writes one runbook per shape into `--out`, reads it back, replays it into each variant, and writes `result.txt` there. A variant is `name arm key=value ...`. The arm `tier` takes every key of `TieredIndex.Config` (see `Config.toMap`) except `buildThreads`, `tailAgeMs`, and `mergeRatePerSec`; the arm `graph` takes `graph.M`, `graph.efConstruction`, `graph.efSearch`, `graph.alpha`, `graph.sq8`, and `consolidateAt` (default 0.2: `consolidate()` runs when the deleted nodes are more than that share of the live ones); the arm `exact` takes none. The shapes are `smoke` (3,000 rows), `p20`, `p200`, and `p2000` (50, 20, and 5 collections of that many rows), and `a10k` and `a100k`.
+
+- **Nothing depends on timing.** The tier runs with one build thread, no seal by age, and no merge throttle, and with a host environment that runs each seal and merge inside the write that made it due. So one runbook gives the same segments on every run.
+- **Every search is checked** against the live rows: a deleted or never-added id, a score of another vector, and fewer than `k` ids when `k` rows are live.
+- **Writes are probed.** After a write, a search that allows only the written ids must see all of them. A filter of that size takes the exact path of every arm. The large shapes probe every 10th or 100th single write, and every batch.
+- **Batches are watched.** On the tier a second thread searches while the batch is applied. On the arms without atomic batches the replay applies one write at a time and searches in between, so their `partOfBatch` count is expected and does not fail the run.
+- **Rows built per row written** counts the rows put into a graph (for the tier by seals and merges, for the live graph once per added row) over the rows created, updated, or reused. **Bytes held per row** is what `bytesHeld()` reports, over the live rows at the end.
 
 ## Metrics
 

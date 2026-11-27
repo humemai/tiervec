@@ -114,6 +114,33 @@ jobs:
       # issue #159: the agent-memory benchmark checks its own parts: the runbook, the exact answers and the violation counters
       - name: The checks of the agent-memory benchmark
         run: timeout 300 java -Xmx1g --add-modules jdk.incubator.vector -cp target/bench/classes ai.humem.tiervec.AgentMemorySelfCheck
+      # issue #159: runbooks of a few thousand rows replayed into the exact arm, the tier, and the live graph. The step fails on a violation or on
+      # recall below the floor. It also requires that a batch applied one write at a time is seen in part, and that the failure path works.
+      - name: The agent-memory benchmark at a smoke size
+        run: |
+          run() { timeout 600 java -Xmx2g --add-modules jdk.incubator.vector -cp target/bench/classes ai.humem.tiervec.AgentMemory "$@"; }
+          start=$(date +%s)
+          run --min-recall 0.9 --out target/bench/agent-memory
+          echo "agent-memory smoke: $(( $(date +%s) - start )) s"
+          r=target/bench/agent-memory/result.txt
+          grep -q '^SUMMARY status=OK failures=0' "$r"
+          # 2 shapes and 6 variants, none with a violation that fails a run
+          test "$(grep -c '^RESULT .* violations=0 ' "$r")" -eq 12
+          # the exact arm answers exactly; the arms without atomic batches are seen in the middle of a batch, the tier never
+          test "$(grep -c '^RESULT .* variant=exact .* recallFinal=1.0000 recallLowest=1.0000 ' "$r")" -eq 2
+          test "$(grep -c -E '^RESULT .* variant=(exact|graph-a10|graph-a12) .* partOfBatch=[1-9]' "$r")" -eq 6
+          test "$(grep -c -E '^RESULT .* variant=tier[a-z-]* .* partOfBatch=0 ' "$r")" -eq 6
+          # the tier with small limits sealed and merged
+          grep -E '^RESULT shape=smoke variant=tier-small ' "$r" | grep -q -v ' rowsRebuiltPerWrite=0.000 '
+          code=0
+          run --shapes p20 --variants 'exact exact' --min-recall 1.5 --out target/bench/agent-memory-control > target/bench/agent-memory-control.log || code=$?
+          echo "control exit code: $code"
+          test "$code" -eq 1
+          grep -q '^FAILURE .*below the floor' target/bench/agent-memory-control/result.txt
+          code=0
+          run --variants 'a tier nothing=1' > target/bench/agent-memory-wrong.log 2>&1 || code=$?
+          echo "wrong variant exit code: $code"
+          test "$code" -eq 2
       - name: Set up uv
         uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
         with:

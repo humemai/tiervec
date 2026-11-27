@@ -160,6 +160,10 @@
                     <trimStackTrace>false</trimStackTrace>
                     <groups>${test.groups}</groups>
                     <excludedGroups>${test.excludedGroups}</excludedGroups>
+                    <!-- A test that hits its @Timeout prints the stack of every thread before it is interrupted. -->
+                    <properties>
+                        <configurationParameters>junit.jupiter.execution.timeout.threaddump.enabled = true</configurationParameters>
+                    </properties>
                 </configuration>
                 <executions>
                     <execution>

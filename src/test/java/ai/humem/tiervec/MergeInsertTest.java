@@ -13,10 +13,12 @@ import java.util.List;
 import java.util.Map;
 import java.util.Random;
 import java.util.TreeMap;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
@@ -28,7 +30,11 @@ import org.junit.jupiter.params.provider.CsvSource;
  * and replacements in the large segment, the recall at 10 of the inserting tier at a beam of {@link #EF} is at most {@link #BOUND} below the
  * recall of a tier that rebuilds at every merge, at every generation, on the same writes. This is a check of the graph at a small size; it
  * says nothing about large collections, and nothing here is a measurement of time or memory.
+ *
+ * <p>The class normally takes about a minute. A test that runs for five minutes is stuck (issue #144): it fails, and the log gets a thread
+ * dump (pom.xml, {@code junit.jupiter.execution.timeout.threaddump.enabled}).
  */
+@Timeout(value = 5, unit = TimeUnit.MINUTES, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
 class MergeInsertTest {
     private static final int DIM = 32;
     private static final int BASE = 3000;
@@ -39,6 +45,8 @@ class MergeInsertTest {
     private static final int EF = 40;
     private static final double BOUND = 0.02;
     private static final long SEED = 16;
+    /** a bound on the rows of the concurrent test: its check searches once per id, so its cost grows with the square of the rows */
+    private static final int WRITES = 40_000;
 
     @TempDir
     Path dir;
@@ -213,7 +221,7 @@ class MergeInsertTest {
                 Random r = new Random(1);
                 long next = 1000;
                 long serial = 1000;
-                while (!stop.get()) {
+                while (!stop.get() && serial < WRITES) {
                     int what = r.nextInt(10);
                     long old = r.nextInt((int) next);
                     if (what < 2) {
@@ -228,7 +236,7 @@ class MergeInsertTest {
                         gone.remove(id);
                         t.add(id, v);
                     }
-                    if ((serial & 63) == 0) Thread.sleep(1);
+                    if ((serial & 7) == 0) Thread.sleep(1); // spreads the writes over the five seconds
                 }
             } catch (Throwable e) {
                 failed.set(e);

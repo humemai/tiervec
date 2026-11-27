@@ -98,7 +98,7 @@ gh workflow run screen.yml --ref <branch>
 gh workflow run screen.yml --ref <branch> -f shapes=p20,a10k -f variants='tier tier; mine tier tailLimit=500' -f seed=2
 ```
 
-`--preset screen` runs `p20`, `p200`, `p2000`, and `a10k` (add `a100k` with `--shapes`), 128 dimensions, the write-heavy mix, and the variants of `src/bench/agent-memory-screen.variants`. It reports violations, recall at every checkpoint, distance computations per search and per written row, rows built per row written, and memory per row.
+`--preset screen` runs `p20`, `p200`, `p2000`, and `a10k` (add `a100k` with `--shapes`), 768 dimensions with `--latent` 768 and `--clusters` 8 ([how that data was chosen](SCREEN-IDEAS.md#the-data-of-the-screen)), the write-heavy mix, and the variants of `src/bench/agent-memory-screen.variants`. It reports violations, recall at every checkpoint and its mean over the checkpoints after the load (`recallChurnMean`), distance computations per search and per written row, rows built per row written, and memory per row.
 
 - **Distance computations** are counted by a copy of the library in which `scripts/instrument_distances.py` adds one line to every distance kernel; the library that ships is unchanged, and the screen refuses a build that does not count. Compile `target/agent-memory/src` (the copy) instead of `src/main/java`. A computation on quantized codes counts as one, and `quantizedPerSearch` says how many of them there were. Per search they are counted over the queries of the checkpoints, the same queries that recall is scored on; per written row over the writes and their maintenance. Probes are in neither.
 - **The same numbers again.** On one machine, two runs of one seed on one commit give the same results apart from the heap column, and the CI smoke checks that. Another CPU can have other vector lanes, which can move a float32 score in its last digits.
@@ -110,7 +110,7 @@ gh workflow run screen.yml --ref <branch> -f shapes=p20,a10k -f variants='tier t
 |---|---|---|
 | Violations | A write not seen by a later search, a deleted id returned, an old vector's score returned, part of a batch seen, or fewer than `k` exact-path hits when `k` live rows qualify | count, must be 0 |
 | Filter shortfall | Approximate filtered searches that return fewer than `k` although `k` rows qualify | share of searches |
-| Recall under churn | Recall@10 at each checkpoint, as a curve, with its minimum | share |
+| Recall under churn | Recall@10 at each checkpoint, as a curve, with its minimum, and its mean over the checkpoints after the load | share |
 | Search latency under writes | p50 and p99, and searches per second, while the writes run, at matched recall of 0.95 and 0.99 | µs, 1/s |
 | Write latency | p50 and p99 until the write is visible to a search, refreshes included | µs |
 | Write capacity | The highest write rate that is sustained without back pressure or a growing backlog | rows/s |

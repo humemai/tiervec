@@ -108,6 +108,14 @@ final class MemoryReplay {
             for (int i = 0; i < recallSum.length; i++) min = Math.min(min, recall(i));
             return min;
         }
+
+        /** the mean recall of the checkpoints after the one that follows the load, so under churn; the first one's when there is no other */
+        double churnMeanRecall() {
+            if (recallSum.length == 1) return recall(0);
+            double sum = 0;
+            for (int i = 1; i < recallSum.length; i++) sum += recall(i);
+            return sum / (recallSum.length - 1);
+        }
     }
 
     /**

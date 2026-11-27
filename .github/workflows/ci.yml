@@ -173,7 +173,7 @@ jobs:
           # this tier sealed and merged
           grep -E '^RESULT shape=p200 variant=tier-small ' "$r" | grep -q -v ' rowsRebuiltPerWrite=0.000 '
           # no column but the last one, the heap, depends on the run
-          for i in 1 2; do cut -f1-19 "target/agent-memory/screen$i/results.tsv" > "target/agent-memory/screen$i.rows"; done
+          for i in 1 2; do cut -f1-20 "target/agent-memory/screen$i/results.tsv" > "target/agent-memory/screen$i.rows"; done
           test "$(wc -l < target/agent-memory/screen1.rows)" -eq 7
           diff target/agent-memory/screen1.rows target/agent-memory/screen2.rows
           diff target/agent-memory/screen1/curve.tsv target/agent-memory/screen2/curve.tsv

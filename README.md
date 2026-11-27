@@ -72,7 +72,7 @@ The library runs in a GraalVM native image. The CI job `native image smoke` buil
 
 ## Platform support
 
-There are three tiers. For tier 1, each row names the CI job that proves it. A job marked "required" must pass before a pull request can merge into `main`. The other jobs do not block it. The arm64 fast tests, the native image jobs and the slow tests do not run on an ordinary pull request: they run on `main` after the merge, and the slow tests also once a day and on a pull request that carries the label `ci:slow` ([CONTRIBUTING.md](CONTRIBUTING.md#what-ci-runs-and-when)). All jobs run on GitHub-hosted runners.
+There are three tiers. For tier 1, each row names the CI job that proves it. A job marked "required" must pass before a pull request can merge into `main`. The other jobs do not block it. The arm64 fast tests, the native image jobs and the slow tests do not run on an ordinary pull request: they run on `main` after the merge, and the slow tests also once a day and on a pull request that carries the label `ci:slow`. The fast tests of an ordinary pull request also leave out the tests tagged `postmerge`, which run on `main` after the merge ([CONTRIBUTING.md](CONTRIBUTING.md#what-ci-runs-and-when)). All jobs run on GitHub-hosted runners.
 
 **Tier 1: tested in CI on every change**
 

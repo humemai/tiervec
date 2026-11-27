@@ -2,6 +2,7 @@ package ai.humem.tiervec;
 
 import java.util.List;
 import java.util.Map;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 
@@ -14,11 +15,25 @@ import org.junit.jupiter.params.provider.CsvSource;
  * {@code Freshness.SEALED_ONLY}, with the id's current vector and with an older one as the query, and {@code size()} and {@code stats().live()} are compared with
  * a model next to the id checks. A window that is not reached fails the run. The larger matrix and the background case are in {@link RidReuseLongTest} and
  * {@link RidReuseBigLongTest}, the check that the probe fails on a broken tier is in {@link RidReuseMutantTest}.
+ *
+ * <p>One run takes about a minute on a CI runner. An ordinary pull request has only the first one: the other three carry the tag {@code postmerge}, which the
+ * Maven profile {@code pr} leaves out (issue #154). {@code mvn verify} without a profile runs all four.
  */
 class RidReuseTest {
     @ParameterizedTest(name = "{0} seed {1}")
-    @CsvSource({"n3000d32, 11", "n3000d32, 12", "n3000d128, 11", "n3000d128, 12"})
+    @CsvSource({"n3000d32, 11"})
     void reuseAndSurvival(String cfg, long seed) {
+        check(cfg, seed);
+    }
+
+    @Tag("postmerge")
+    @ParameterizedTest(name = "{0} seed {1}")
+    @CsvSource({"n3000d32, 12", "n3000d128, 11", "n3000d128, 12"})
+    void reuseAndSurvivalOtherRuns(String cfg, long seed) {
+        check(cfg, seed);
+    }
+
+    private static void check(String cfg, long seed) {
         List<String> cases = RidReuseProbe.FAST_CASES;
         Map<String, Object> r = RidReuseProbe.runOneMap(cfg, seed, cases, false);
         RidReuseRig.assertClean(cfg + " seed " + seed, r, cases);

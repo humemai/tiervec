@@ -28,7 +28,8 @@ final class Violations {
         Kind(String key) { this.key = key; }
     }
 
-    private static final int EXAMPLES = 10;
+    /** the examples kept per kind, so that the many batches in part of an arm without atomic batches cannot hide another kind */
+    private static final int EXAMPLES_PER_KIND = 3;
 
     private final long[] counts = new long[Kind.values().length];
     final List<String> examples = new ArrayList<>();
@@ -36,8 +37,7 @@ final class Violations {
     long count(Kind kind) { return counts[kind.ordinal()]; }
 
     void add(Kind kind, String what) {
-        counts[kind.ordinal()]++;
-        if (examples.size() < EXAMPLES) examples.add(kind.key + ": " + what);
+        if (counts[kind.ordinal()]++ < EXAMPLES_PER_KIND) examples.add(kind.key + ": " + what);
     }
 
     /** the violations that fail a run of an arm */
@@ -45,11 +45,6 @@ final class Violations {
         long n = 0;
         for (Kind k : Kind.values()) if (k != Kind.PART_OF_BATCH || atomicBatches) n += counts[k.ordinal()];
         return n;
-    }
-
-    void add(Violations other) {
-        for (int i = 0; i < counts.length; i++) counts[i] += other.counts[i];
-        for (String x : other.examples) if (examples.size() < EXAMPLES) examples.add(x);
     }
 
     /** the answer of an unfiltered search for the {@code k} best */

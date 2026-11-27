@@ -1,6 +1,6 @@
 # Roadmap
 
-The order of work follows one question: what does a database that embeds this index need from it? The list is ordered by that need. It has no dates. Each item is a GitHub issue with a problem statement, an acceptance test, and an explicit out-of-scope list. What exists today is in [STATUS.md](STATUS.md), and the architecture is in [DESIGN.md](DESIGN.md).
+The order of work follows one question: what does a database that embeds this index for agent memory need from it? The list is ordered by that need. It has no dates. Each item is a GitHub issue with a problem statement, an acceptance test, and an explicit out-of-scope list. What exists today is in [STATUS.md](STATUS.md), and the architecture is in [DESIGN.md](DESIGN.md).
 
 ## What a host needs
 
@@ -15,6 +15,19 @@ A host is the database that runs the index in its own process. These are the pro
 - Rebuild and merge cost does not stall queries while writes continue.
 - Small and medium collections work well by default, with few knobs.
 - It runs on the JVM and in a native image.
+
+## What agent memory needs next
+
+The target is to be a good index, and if the measurements allow it the best one, for the memory of an agent inside a database: continuous creates, reads, updates, and deletes. [RELATED-WORK.md](RELATED-WORK.md) (2026-11-28) found that tiervec cannot claim this today, and [AGENT-MEMORY-BENCHMARK.md](AGENT-MEMORY-BENCHMARK.md) defines the measurement that could. The order below follows that review. The new items are in the milestone [agent-memory workload](https://github.com/humemai/tiervec/milestones). A result that favors another design changes the design, breaking changes included.
+
+| Step | Question | Issues |
+|---|---|---|
+| 1 | What happens to recall, freshness, latency, write cost, memory, and restart under churn, and against a live graph, JVector, and Lucene? | [#159](https://github.com/humemai/tiervec/issues/159), [#160](https://github.com/humemai/tiervec/issues/160) |
+| 2 | Do answers and recall hold under a steady stream of changes? Snapshot reads for batches, and the update rules of long-lived graphs | [#163](https://github.com/humemai/tiervec/issues/163), [#161](https://github.com/humemai/tiervec/issues/161), [#16](https://github.com/humemai/tiervec/issues/16) |
+| 3 | Is filtered search good at every share, also for filters that follow the data? | [#162](https://github.com/humemai/tiervec/issues/162), [#12](https://github.com/humemai/tiervec/issues/12) |
+| 4 | Can a host keep thousands of collections, and restart without sealing first? | [#165](https://github.com/humemai/tiervec/issues/165), [#158](https://github.com/humemai/tiervec/issues/158) |
+| 5 | How much memory does a row need? | [#164](https://github.com/humemai/tiervec/issues/164), [#72](https://github.com/humemai/tiervec/issues/72), [#73](https://github.com/humemai/tiervec/issues/73), [#74](https://github.com/humemai/tiervec/issues/74) |
+| 6 | Which merge layout and merge mode cost least at equal recall? | [#4](https://github.com/humemai/tiervec/issues/4), [#16](https://github.com/humemai/tiervec/issues/16) |
 
 ## Now
 
@@ -49,7 +62,7 @@ It covers 1-bit and 4-bit quantization schemes, IVF as a segment format, an on-d
 
 ## How to read measurements
 
-The harness is in the repository ([BENCHMARKS.md](BENCHMARKS.md)), and no measurement is published yet. A single run (n=1) is descriptive: it shows what happened, not what usually happens. A claim of a 1.3x difference or larger needs at least five runs, each in a fresh JVM, and a smaller difference needs more. Every study states its claim, its arms, its number of runs, and the bound it must meet before it runs. Memory figures say which unit and which counter they use, and latency figures say whether the JIT was warm.
+The harness is in the repository ([BENCHMARKS.md](BENCHMARKS.md)), and the result files committed so far are listed in [EVIDENCE.md](EVIDENCE.md). A single run (n=1) is descriptive: it shows what happened, not what usually happens. A claim of a 1.3x difference or larger needs at least five runs, each in a fresh JVM, and a smaller difference needs more. Every study states its claim, its arms, its number of runs, and the bound it must meet before it runs. Memory figures say which unit and which counter they use, and latency figures say whether the JIT was warm.
 
 ## Non-goals
 

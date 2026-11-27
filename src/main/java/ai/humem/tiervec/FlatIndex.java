@@ -53,6 +53,9 @@ import java.util.function.LongPredicate;
  */
 public final class FlatIndex implements VecIndex {
     private static final VarHandle LIVE = MethodHandles.arrayElementVarHandle(long[].class);
+    private static final VarHandle RETIRED = MethodHandles.arrayElementVarHandle(long[].class);
+    /** the version of a search of the index as it is now (see {@link #searchAt}) */
+    private static final long NOW = Long.MAX_VALUE;
     private static final Hit[] EMPTY = new Hit[0];
     static final int STRIPES = 64;
     /** live vectors needed before the binary thresholds are fixed */
@@ -121,6 +124,10 @@ public final class FlatIndex implements VecIndex {
         final float[] nn;
         final long[] bits;
         final long[] liveBits;
+        /** retiredAt[off]: the version of the versioned replace or delete that cleared the live bit of the slot, 0 otherwise; null until the first one */
+        long[] retiredAt;
+        /** the largest version of a versioned replace or delete of a slot of this chunk, 0 when there was none; written after retiredAt and before the live bit */
+        volatile long lastRetired;
 
         Chunk(int start, int cap, int dim, int words, Quant quant, Metric metric) {
             this.start = start;
@@ -140,6 +147,7 @@ public final class FlatIndex implements VecIndex {
             if (q != null) b += 16 + q.length + 16 + sc.length * 4L;
             if (nn != null) b += 16 + nn.length * 4L;
             if (bits != null) b += 16 + bits.length * 8L;
+            if (retiredAt != null) b += 16 + retiredAt.length * 8L;
             return b;
         }
     }
@@ -255,12 +263,21 @@ public final class FlatIndex implements VecIndex {
 
     @Override
     public void add(long id, float[] v) {
+        add(id, v, 0L);
+    }
+
+    /**
+     * {@link #add(long, float[])} for a caller that keeps versions and searches as of one ({@link #searchAt}): a slot that this call
+     * replaces remembers the version {@code ver}. Such a caller makes its versioned calls one at a time, with versions above 0 that never
+     * go down. With 0 nothing is remembered.
+     */
+    void add(long id, float[] v, long ver) {
         if (v.length != dim) throw new IllegalArgumentException("dim " + v.length + " != " + dim);
-        addStored(id, metric == Metric.COSINE ? Kernels.normalized(v) : v);
+        addStored(id, metric == Metric.COSINE ? Kernels.normalized(v) : v, ver);
     }
 
     /** v is already in stored form (normalized for COSINE) */
-    private void addStored(long id, float[] sv) {
+    private void addStored(long id, float[] sv, long ver) {
         int stripe = (Long.hashCode(id) * 0x9E3779B1) >>> 26; // top 6 bits: 64 stripes
         rw.readLock().lock();
         try {
@@ -276,6 +293,7 @@ public final class FlatIndex implements VecIndex {
                 m.put(id, slot);
                 if (old >= 0) {
                     Chunk oc = st.chunks[chunkOf(old)];
+                    if (ver != 0L) retire(oc, old - oc.start, ver);
                     clearLive(oc, old - oc.start);
                 } else {
                     live.incrementAndGet();
@@ -289,6 +307,11 @@ public final class FlatIndex implements VecIndex {
 
     @Override
     public boolean delete(long id) {
+        return delete(id, 0L);
+    }
+
+    /** {@link #delete(long)} at a version, with the rules of {@link #add(long, float[], long)} */
+    boolean delete(long id, long ver) {
         int stripe = (Long.hashCode(id) * 0x9E3779B1) >>> 26;
         rw.readLock().lock();
         try {
@@ -298,6 +321,7 @@ public final class FlatIndex implements VecIndex {
                 int old = m.remove(id);
                 if (old < 0) return false;
                 Chunk oc = st.chunks[chunkOf(old)];
+                if (ver != 0L) retire(oc, old - oc.start, ver);
                 clearLive(oc, old - oc.start);
                 live.decrementAndGet();
                 return true;
@@ -305,6 +329,36 @@ public final class FlatIndex implements VecIndex {
         } finally {
             rw.readLock().unlock();
         }
+    }
+
+    /**
+     * Records the version at which a slot is retired, before its live bit is cleared. A scan reads the live word first, so a scan that
+     * finds the bit cleared also finds this version.
+     */
+    private static void retire(Chunk c, int off, long ver) {
+        long[] r = c.retiredAt;
+        if (r == null) c.retiredAt = r = new long[c.cap];
+        RETIRED.setOpaque(r, off, ver);
+        c.lastRetired = ver; // after the array and the slot: a scan reads this before them
+    }
+
+    /** the slots of live word {@code w} that are retired now and were not at version {@code at}: bits to add to the word */
+    private static long retiredAfter(Chunk c, int w, long liveWord, long at) {
+        long[] r = c.retiredAt;
+        long back = 0;
+        for (long dead = ~liveWord; dead != 0; dead &= dead - 1) {
+            int off = (w << 6) + Long.numberOfTrailingZeros(dead);
+            if (off >= c.cap) break;
+            if ((long) RETIRED.getOpaque(r, off) > at) back |= 1L << off;
+        }
+        return back;
+    }
+
+    /** the slots of word {@code w} that a scan as of {@code at} looks at, before the limit of the scan is applied */
+    private static long word(Chunk c, int w, long at) {
+        long bits = (long) LIVE.getAcquire(c.liveBits, w);
+        if (at != NOW && c.lastRetired > at) bits |= retiredAfter(c, w, bits, at);
+        return bits;
     }
 
     private void calibrate() {
@@ -353,7 +407,8 @@ public final class FlatIndex implements VecIndex {
 
     /**
      * Repacks the live vectors into fresh chunks and swaps them in. Writers pause for the copy; searches never block: one that started
-     * earlier finishes on the old chunks, a later one uses the new ones. Call when deadFraction() is high.
+     * earlier finishes on the old chunks, a later one uses the new ones. Call when deadFraction() is high. It drops the retired slots, so
+     * the tier, which searches as of a version, never compacts a tail.
      */
     public void compact() {
         rw.writeLock().lock();
@@ -546,7 +601,7 @@ public final class FlatIndex implements VecIndex {
             float[] v = new float[dim];
             bb.clear();
             bb.asFloatBuffer().get(v);
-            idx.addStored(id, v);
+            idx.addStored(id, v, 0L);
         }
         if (idx.size() != n) throw new IOException("duplicate ids in file: " + n + " records, " + idx.size() + " distinct");
         long expected = crc.getValue();
@@ -589,22 +644,38 @@ public final class FlatIndex implements VecIndex {
         if (k <= 0) return EMPTY;
         Store st = store;
         int cnt = st.next.get();
+        return search(st, cnt, live.get(), NOW, q, k, allow, poll);
+    }
+
+    /**
+     * The search of the index as it was when its first {@code slots} slots had been written and the version {@code at} had been applied: a
+     * slot below {@code slots} is looked at unless a replace or a delete of version {@code at} or less retired it, whatever has happened
+     * since. {@code rows} is the number of those slots, which picks the plan (exact, or codes and a rerank) as the live count does for a
+     * search of the present. The caller has seen the writes up to {@code at} (through a volatile write that followed them), has made every
+     * replace and delete with a version, and never compacts.
+     */
+    Hit[] searchAt(float[] q, int k, LongPredicate allow, Poll poll, int slots, int rows, long at) {
+        if (q.length != dim) throw new IllegalArgumentException("dim " + q.length + " != " + dim);
+        if (k <= 0) return EMPTY;
+        return search(store, slots, rows, at, q, k, allow, poll);
+    }
+
+    private Hit[] search(Store st, int cnt, int liveN, long at, float[] q, int k, LongPredicate allow, Poll poll) {
         if (cnt == 0) return EMPTY;
         float[] qq = metric == Metric.COSINE ? Kernels.normalized(q) : q;
         boolean coded = quant != Quant.NONE && calibrated;
-        int liveN = live.get();
         int want = Math.min(k, cnt);
         for (int attempt = 0; ; attempt++) {
             TopK h;
             long cand = (long) rerank * want;
             if (coded && cand < liveN) {
                 TopK cs = new TopK((int) cand);
-                scan(st, cnt, qq, allow, cs, quant == Quant.SQ8 ? sq8Mode : 2, poll);
+                scan(st, cnt, at, qq, allow, cs, quant == Quant.SQ8 ? sq8Mode : 2, poll);
                 h = new TopK(want);
-                rerankInto(st, qq, cs, h, poll);
+                rerankInto(st, at, qq, cs, h, poll);
             } else {
                 h = new TopK(want);
-                scan(st, cnt, qq, allow, h, 0, poll);
+                scan(st, cnt, at, qq, allow, h, 0, poll);
             }
             Hit[] res = h.drainSorted();
             Hit[] d = dedupe(res);
@@ -633,21 +704,21 @@ public final class FlatIndex implements VecIndex {
         return Arrays.copyOf(out, n);
     }
 
-    private void rerankInto(Store st, float[] qq, TopK cand, TopK out, Poll poll) {
+    private void rerankInto(Store st, long at, float[] qq, TopK cand, TopK out, Poll poll) {
         Chunk[] cs = st.chunks;
         for (int i = 0; i < cand.n; i++) {
             if (poll != null) poll.before(1);
             int slot = cand.slot[i];
             Chunk c = cs[chunkOf(slot)];
             int off = slot - c.start;
-            if (!isLive(c, off)) continue;
+            if (at == NOW && !isLive(c, off)) continue; // a search as of a version keeps what its scan found: that stays true
             float s = metric == Metric.L2 ? -Kernels.l2sq(qq, 0, c.f, off * dim, dim) : Kernels.dot(qq, 0, c.f, off * dim, dim);
             out.offer(s, c.ids[off], slot);
         }
     }
 
     /** mode 0: exact fp32, 1: SQ8 codes, 2: binary codes. Scores are higher-is-better in every mode. */
-    private void scan(Store st, int cnt, float[] qq, LongPredicate allow, TopK h, int mode, Poll poll) {
+    private void scan(Store st, int cnt, long at, float[] qq, LongPredicate allow, TopK h, int mode, Poll poll) {
         byte[] qc = null;
         float qs = 0f, qn2 = 0f;
         long[] qb = null;
@@ -678,7 +749,7 @@ public final class FlatIndex implements VecIndex {
             int nw = (lim + 63) >>> 6;
             if (mode == 5) {
                 for (int w = 0; w < nw; w++) {
-                    long bits = (long) LIVE.getAcquire(c.liveBits, w);
+                    long bits = word(c, w, at);
                     int rem = lim - (w << 6);
                     if (rem < 64) bits &= (1L << rem) - 1;
                     if (poll != null) poll.before(Long.bitCount(bits));
@@ -701,10 +772,10 @@ public final class FlatIndex implements VecIndex {
                 continue;
             }
             for (int w = 0; w < nw; w++) {
-                long bits = (long) LIVE.getAcquire(c.liveBits, w);
+                long bits = word(c, w, at);
                 int rem = lim - (w << 6);
                 if (rem < 64) bits &= (1L << rem) - 1;
-                if (poll != null) poll.before(Long.bitCount(bits)); // the live slots of this word, at most 64
+                if (poll != null) poll.before(Long.bitCount(bits)); // the slots of this word that the search looks at, at most 64
                 while (bits != 0) {
                     int off = (w << 6) + Long.numberOfTrailingZeros(bits);
                     bits &= bits - 1;

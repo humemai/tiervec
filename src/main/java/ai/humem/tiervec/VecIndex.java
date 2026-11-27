@@ -19,6 +19,8 @@ public interface VecIndex extends AutoCloseable {
     Hit[] search(float[] q, int k, LongPredicate allow);
     /** number of live vectors */
     int size();
+    /** @return the number of live vectors, as the number that a host compares with {@link SizedIdFilter#allowedCount} */
+    default long liveCount() { return size(); }
     /** approximate bytes held by this index (heap arrays plus off-heap), for the memory report */
     long bytesHeld();
     @Override default void close() {}

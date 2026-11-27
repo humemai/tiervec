@@ -12,6 +12,7 @@ The supported surface is these classes, their public members as listed here, and
 |---|---|---|
 | `VecIndex` | The interface of every index | All |
 | `Hit` | One result: an id and a score, higher is better | All |
+| `SizedIdFilter` | An allowed-id filter that also says how many ids it allows, so that a search can scan a small set exactly | All |
 | `SearchContext` | What a host gives a search so that it can stop it: a deadline, a cancel flag, or both | All |
 | `SearchCancelledException` | What a search throws when its context says stop | All |
 | `TiervecException`, `CorruptStateException`, `ClosedException`, `BuildRefusedException` | The unchecked exceptions for the state of an index, and their base, which `SearchCancelledException` extends too | All |
@@ -20,7 +21,7 @@ The supported surface is these classes, their public members as listed here, and
 | `HostEnv`, `HostEnv.BuildKind`, `HostEnv.Permit` | What a host gives a tier that runs on its threads: the executor, the build permits, the memory budget | All |
 | `Metric` | `COSINE`, `DOT`, `L2` | All |
 | `DirectoryLockedException` | What `TieredIndex.open` and `checkpoint` throw when another process holds the index directory | All |
-| `TieredIndex` | The index a host database uses: exact tail, sealed segments, merges, batches, checkpoint and reopen | The constructors, `add`, `delete`, `search` (all overloads), `apply`, `awaitCapacity`, `filterScanBelow`, `sealNow`, `mergeNow`, `awaitIdle`, `rebuildFrom` (all overloads), `epoch`, `checkpoint`, `open` (all overloads), `openFallbackCause`, `config`, `reconfigure`, `contractVersion`, `capabilities`, `health`, `metrics`, `bindMetrics`, `maintain`, `stats`, `segmentSizes`, `lastError`, `size`, `dim`, `metric`, `bytesHeld`, `close` |
+| `TieredIndex` | The index a host database uses: exact tail, sealed segments, merges, batches, checkpoint and reopen | The constructors, `add`, `delete`, `search` (all overloads), `apply`, `awaitCapacity`, `filterScanBelow`, `sealNow`, `mergeNow`, `awaitIdle`, `rebuildFrom` (all overloads), `epoch`, `checkpoint`, `open` (all overloads), `openFallbackCause`, `config`, `reconfigure`, `contractVersion`, `capabilities`, `health`, `metrics`, `bindMetrics`, `maintain`, `stats`, `segmentSizes`, `lastError`, `size`, `liveCount`, `dim`, `metric`, `bytesHeld`, `close` |
 | `TieredIndex.Config`, `TieredIndex.Stats`, `TieredIndex.Batch`, `TieredIndex.IdVector`, `TieredIndex.Snapshot`, `TieredIndex.SearchResult`, `TieredIndex.Fingerprint`, `TieredIndex.Freshness`, `TieredIndex.MergeMode`, `TieredIndex.Health` | The records and the enums of the tier | All |
 | `RecordSource` | What a host offers so that `TieredIndex.open` can reconcile persisted state with the host's records | All |
 | `FlatIndex`, `GraphIndex`, `IvfIndex` | Standalone indexes: exact and quantized scan, concurrent HNSW, inverted file | The constructors, the methods of `VecIndex`, the nested `Params` of `GraphIndex` and `IvfIndex`, and the maintenance and diagnostic methods that each class documents in its Javadoc |

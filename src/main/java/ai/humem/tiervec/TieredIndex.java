@@ -144,7 +144,8 @@ public final class TieredIndex implements VecIndex {
 
     /**
      * Result of a search with its meta (what the facets report as exact/patched/lag).
-     * @param exact true when no segment was searched and the tail scan was exact (the answer equals brute force)
+     * @param exact true when the answer equals brute force: the tail scan was exact, and no segment was searched or every segment was
+     *              scanned because of the count of a {@link SizedIdFilter}
      * @param tailScanned live tail vectors scanned (0 for SEALED_ONLY)
      * @param segments number of segments searched
      */
@@ -1164,6 +1165,7 @@ public final class TieredIndex implements VecIndex {
         int searched = 0;
         double scanBelow = filterScanBelow;
         int ef = Math.max(k, efSearch);
+        boolean small = FilterPlan.smallByHint(allow, ef); // asked here: the filter of a segment with hidden rows is wrapped and loses the hint
         long sizeSum = 0; // splitBeam only: rows of the segments that will be searched; 0 (the default) keeps the full beam ef in every segment
         if (cfg.splitBeam() && segs.length > 1) {
             for (Segment t : segs) if (t.n > 0 && t.dead < t.n) sizeSum += t.n;
@@ -1174,11 +1176,11 @@ public final class TieredIndex implements VecIndex {
             LongPredicate p = s.dead > 0 ? segFilter(s, allow) : allow;
             int efS = sizeSum > 0 ? Math.max(k, (int) ((ef * (long) s.n + sizeSum - 1) / sizeSum)) : ef; // ceil(ef * rows(s) / sizeSum), at least k
             if (poll != null) poll.now();
-            Hit[] h = s.g.search(q, k, p, efS, scanBelow, poll);
+            Hit[] h = small ? s.g.scan(q, k, p, poll) : s.g.search(q, k, p, efS, scanBelow, poll);
             if (h.length > 0) lists[li++] = h;
             searched++;
         }
-        boolean exact = searched == 0 && (cfg.tailQuant() == Quant.NONE || (long) FLAT_RERANK * k >= tailScanned);
+        boolean exact = (searched == 0 || small) && (cfg.tailQuant() == Quant.NONE || (long) FLAT_RERANK * k >= tailScanned);
         return new SearchResult(mergeTopK(lists, li, k), exact, tailScanned, searched);
     }
 

@@ -59,7 +59,7 @@ Five checks are required before a merge:
 - `Ensure SHA pinned actions`
 - `docs build (strict)`
 
-The other jobs of a pull request (arm64, the benchmark smoke, native image) are not required. A failure there is read like any other failure.
+The other jobs (the benchmark smoke, and the arm64 and native image jobs where they run) are not required. A failure there is read like any other failure.
 
 ### What CI runs, and when
 

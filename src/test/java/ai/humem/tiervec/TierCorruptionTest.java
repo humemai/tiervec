@@ -392,7 +392,7 @@ class TierCorruptionTest {
         SegmentForge.le(t).putInt(t.length - 4, SegmentFormat.crc32c(t, 0, t.length - 4));
         Files.write(tf, t);
         Manifest m2 = new Manifest(m.generation(), m.epoch(), m.hwm(), m.versionCounter(), m.nextSegId(), m.fingerprint(), m.entries(), m.tombGeneration(),
-                t.length, SegmentFormat.crc32c(t, 0, t.length));
+                t.length, SegmentFormat.crc32c(t, 0, t.length), m.tailRows(), m.tailLength(), m.tailCrc());
         Files.write(dir.resolve(Manifest.manifestName(m.generation())), m2.encode(Manifest.FORMAT_MAJOR, Manifest.FORMAT_MINOR));
     }
 
@@ -453,7 +453,7 @@ class TierCorruptionTest {
             entries.add(e.segId() != segId ? e : new Manifest.Entry(e.segId(), e.n(), bytes.length, headerCrc, e.verMin(), e.verMax()));
         }
         Manifest m2 = new Manifest(m.generation(), m.epoch(), m.hwm(), m.versionCounter(), m.nextSegId(), m.fingerprint(), entries, m.tombGeneration(),
-                m.tombLength(), m.tombCrc());
+                m.tombLength(), m.tombCrc(), m.tailRows(), m.tailLength(), m.tailCrc());
         Files.write(dir.resolve(Manifest.manifestName(m.generation())), m2.encode(Manifest.FORMAT_MAJOR, Manifest.FORMAT_MINOR));
     }
 
@@ -681,13 +681,15 @@ class TierCorruptionTest {
         copy(twoGen, dir);
         byte[] m = new byte[20];
         System.arraycopy(Files.readAllBytes(dir.resolve(Manifest.manifestName(2))), 0, m, 0, 8);
-        SegmentForge.le(m).putShort(8, (short) 2).putShort(10, (short) 0).putInt(12, 16);
+        SegmentForge.le(m).putShort(8, (short) (Manifest.FORMAT_MAJOR + 1)).putShort(10, (short) 0).putInt(12, 16);
         Files.write(dir.resolve(Manifest.manifestName(2)), withManifestCrc(m));
-        assertInstanceOf(UnsupportedException.class, latestRefused(dir, "short major 2"));
-        // the same bytes as major 1 are damage: this version's fields do not fit
-        SegmentForge.le(m).putShort(8, (short) 1);
-        Files.write(dir.resolve(Manifest.manifestName(2)), withManifestCrc(m));
-        assertEquals(1, Manifest.readLatest(dir).generation());
+        assertInstanceOf(UnsupportedException.class, latestRefused(dir, "short newer major"));
+        // the same bytes as a major that this version reads are damage: its fields do not fit
+        for (short known = 1; known <= Manifest.FORMAT_MAJOR; known++) {
+            SegmentForge.le(m).putShort(8, known);
+            Files.write(dir.resolve(Manifest.manifestName(2)), withManifestCrc(m));
+            assertEquals(1, Manifest.readLatest(dir).generation(), "major " + known);
+        }
     }
 
     // ---- damage to the newest of two generations ----

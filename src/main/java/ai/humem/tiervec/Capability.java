@@ -7,8 +7,7 @@ package ai.humem.tiervec;
  *
  * <p>What the tier does not offer, in any version that does not say so here: grouped search (a top {@code k} per group), scores that come
  * from compressed codes without an exact fp32 rescoring pass (returned scores are exact fp32 scores), a retract of an applied write other
- * than the opposite write, transactions or uncommitted rows, a persisted tail ({@code checkpoint} needs an empty one), and more than one
- * process on one index directory.
+ * than the opposite write, transactions or uncommitted rows, and more than one process on one index directory.
  */
 public enum Capability {
     /** {@link TieredIndex#apply} makes the adds and deletes of one batch visible to searches as a unit */
@@ -17,7 +16,7 @@ public enum Capability {
     DEFERRED_APPLY,
     /** a search stops at a deadline or a cancel flag that the host supplies ({@link SearchContext}) */
     SEARCH_CONTEXT,
-    /** {@link TieredIndex#checkpoint} and {@link TieredIndex#open}: segments and their hidden rows, not the tail */
+    /** {@link TieredIndex#checkpoint} and {@link TieredIndex#open}: segments and their hidden rows */
     PERSISTENCE,
     /** a rebuild from a snapshot of the records while writes go on ({@link TieredIndex#rebuildFrom(java.util.function.Supplier, long)}) */
     SNAPSHOT_REBUILD,
@@ -26,5 +25,7 @@ public enum Capability {
     /** a filter that says how many ids it allows ({@link SizedIdFilter}) is scanned exactly, without a graph walk, when it allows few */
     SELECTIVE_PLAN,
     /** {@link TieredIndex#open} can leave the fp32 vectors of the segments in their mapped files ({@link TieredIndex.VectorStorage#MAPPED}) */
-    MAPPED_VECTORS
+    MAPPED_VECTORS,
+    /** {@link TieredIndex#checkpoint} accepts a tail that is not empty and {@link TieredIndex#open} brings it back: no seal is needed first */
+    PERSISTED_TAIL
 }

@@ -47,6 +47,8 @@ import org.junit.jupiter.params.provider.MethodSource;
 class TierPowerCutTest {
     static final int DIM = TierReopenTest.DIM;
     static final int ROWS = 400;
+    /** rows in the tail at each checkpoint */
+    static final int TAIL = 30;
 
     /** the directory that the second checkpoint publishes into (generation 1 is there first) */
     @TempDir
@@ -80,6 +82,8 @@ class TierPowerCutTest {
         assertTrue(images.get(FaultHook.Step.SEGMENTS_WRITTEN).containsKey(Manifest.segName(3)));
         assertTrue(images.get(FaultHook.Step.MANIFEST_TMP_WRITTEN).containsKey(Manifest.manifestName(2) + ".tmp"));
         assertTrue(images.get(FaultHook.Step.MANIFEST_RENAMED).containsKey(Manifest.manifestName(2)));
+        assertTrue(images.get(FaultHook.Step.TAIL_WRITTEN).containsKey(Manifest.tailName(2)));
+        assertEquals(TAIL, Manifest.readLatest(live).tailRows());
     }
 
     @AfterAll
@@ -87,10 +91,12 @@ class TierPowerCutTest {
         tier.close();
     }
 
+    /** one segment, then rows that are in the tail at the next checkpoint; the next batch seals them with its own rows */
     private static void batch(int b) {
         for (int i = b * ROWS; i < (b + 1) * ROWS; i++) tier.add(SegmentTestSupport.idOf(i), data[i]);
         tier.sealNow();
         assertTrue(tier.awaitIdle(60_000));
+        for (int i = 0; i < TAIL; i++) tier.add(SegmentTestSupport.idOf(60_000 + b * 100 + i), data[b * ROWS + i]);
     }
 
     private static Hit[][] results(TieredIndex t) {
@@ -118,6 +124,7 @@ class TierPowerCutTest {
         Set<String> s = new TreeSet<>();
         s.add(Manifest.manifestName(m.generation()));
         s.add(Manifest.tombName(m.tombGeneration()));
+        if (m.tailRows() > 0) s.add(Manifest.tailName(m.generation()));
         for (Manifest.Entry e : m.entries()) s.add(Manifest.segName(e.segId()));
         return s;
     }
@@ -175,6 +182,7 @@ class TierPowerCutTest {
         }
         // the names are not flushed before the directory flush of step 3: the new segment may be gone
         l.add(new Cut("power cut after SEGMENTS_WRITTEN, the new segment's name is lost", FaultHook.Step.SEGMENTS_WRITTEN, lose(seg3), 1));
+        l.add(new Cut("power cut after TAIL_WRITTEN, the new tail file's name is lost", FaultHook.Step.TAIL_WRITTEN, lose(Manifest.tailName(2)), 1));
         // the bytes of the temporary manifest are not flushed before step 5, and its name is not flushed at all before the rename
         l.add(new Cut("power cut after MANIFEST_TMP_WRITTEN, the temporary manifest is lost", FaultHook.Step.MANIFEST_TMP_WRITTEN, lose(tmp), 1));
         l.add(new Cut("power cut after MANIFEST_TMP_WRITTEN, the temporary manifest is empty", FaultHook.Step.MANIFEST_TMP_WRITTEN, change(tmp, EMPTY), 1));
@@ -193,6 +201,11 @@ class TierPowerCutTest {
             l.add(new Cut("broken order" + at + "half of the new segment is left", s, change(seg3, HALF), 1));
             l.add(new Cut("broken order" + at + "the tombstone file is lost", s, lose(tomb2), 1));
             l.add(new Cut("broken order" + at + "half of the tombstone file is left", s, change(tomb2, HALF), 1));
+            final String tail2 = Manifest.tailName(2);
+            l.add(new Cut("broken order" + at + "the tail file is lost", s, lose(tail2), 1));
+            l.add(new Cut("broken order" + at + "the tail file is empty", s, change(tail2, EMPTY), 1));
+            l.add(new Cut("broken order" + at + "half of the tail file is left", s, change(tail2, HALF), 1));
+            l.add(new Cut("broken order" + at + "the tail file is zeros", s, change(tail2, ZEROS), 1));
         }
         return l.stream();
     }
@@ -211,7 +224,7 @@ class TierPowerCutTest {
         assertEquals(gen, latest.generation(), cut.name());
         try (TieredIndex u = TieredIndex.open(dir, TierReopenTest.cfg())) {
             assertNull(u.openFallbackCause(), cut.name());
-            assertEquals((int) (gen + 1) * ROWS, u.size(), cut.name());
+            assertEquals((int) (gen + 1) * (ROWS + TAIL), u.size(), cut.name());
             assertServes(u, want, cut.name());
             assertEquals(expected(latest), names(dir), cut.name() + ": open removed every file of the other generation and every temporary file");
             // the work goes on from here: the next checkpoint is the next generation, and it opens

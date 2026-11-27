@@ -17,6 +17,7 @@ import java.util.List;
 public final class TierKillChild {
     static final int ROWS = 150;
     static final int KEPT = 4;
+    static final int TAIL = 12;
     static final int QUERIES = 15;
     /** a child that nobody kills stops by itself */
     private static final long LIFE_NANOS = 60_000_000_000L;
@@ -50,6 +51,10 @@ public final class TierKillChild {
                 t.mergeNow();
             }
             if (!t.awaitIdle(60_000)) throw new IllegalStateException("generation " + g + " did not settle");
+            // some rows stay in the tail at the checkpoint (the next batch, or the next child, seals them), one of them over a sealed id
+            float[][] extra = SegmentTestSupport.vectors(TAIL, TierHaltTest.DIM, 2000 + g);
+            for (int i = 0; i < TAIL - 1; i++) t.add(id(g, ROWS + i), extra[i]);
+            t.add(id(g, 0), extra[TAIL - 1]);
             List<String> lines = TierHaltTest.digest(t, qs);
             lines.add(0, Integer.toString(t.size()));
             Path tmp = expect.resolve("gen-" + g + ".tmp");

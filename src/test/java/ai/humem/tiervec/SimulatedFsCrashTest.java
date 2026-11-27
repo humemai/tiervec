@@ -223,6 +223,7 @@ class SimulatedFsCrashTest {
         Set<String> s = new TreeSet<>();
         s.add(Manifest.manifestName(m.generation()));
         s.add(Manifest.tombName(m.tombGeneration()));
+        if (m.tailRows() > 0) s.add(Manifest.tailName(m.generation()));
         for (Manifest.Entry e : m.entries()) s.add(Manifest.segName(e.segId()));
         return s;
     }
@@ -309,10 +310,66 @@ class SimulatedFsCrashTest {
         assertTrue(tally.broken.isEmpty(), report(tally));
     }
 
+    /**
+     * Three checkpoints of a tier with rows in its tail (#158): a segment and a tail, then only the tail and the tombstones change (deletes and
+     * a replace of sealed ids, more tail rows), then the tail is sealed and a new one begins.
+     */
+    static Recording publishThreeGenerationsWithTails(CrashFs fs, Path index) throws IOException {
+        Map<Long, Generation> generations = new HashMap<>();
+        try (TieredIndex t = new TieredIndex(DIM, Metric.L2, TierReopenTest.cfg())) {
+            for (int i = 0; i < ROWS; i++) t.add(idOf(i), data[i]);
+            t.sealNow();
+            assertTrue(t.awaitIdle(60_000));
+            for (int i = ROWS; i < ROWS + 20; i++) t.add(idOf(i), data[i]);
+            generations.put(1L, generation(t));
+            t.checkpoint(index);
+            for (int i = 0; i < ROWS; i += 11) t.delete(idOf(i));
+            t.add(idOf(1), data[ROWS + 60]);
+            for (int i = ROWS + 20; i < ROWS + 30; i++) t.add(idOf(i), data[i]);
+            generations.put(2L, generation(t));
+            t.checkpoint(index);
+            t.sealNow();
+            assertTrue(t.awaitIdle(60_000));
+            for (int i = ROWS + 30; i < ROWS + 40; i++) t.add(idOf(i), data[i]);
+            generations.put(3L, generation(t));
+            t.checkpoint(index);
+        }
+        assertTrue(Manifest.readLatest(index).tailRows() > 0);
+        return new Recording(fs.root().relativize(index).toString(), List.copyOf(fs.log), generations);
+    }
+
+    @Test
+    void aCrashDuringAPublishWithATailLeavesTheGenerationBeforeOrTheOneBeingPublished() throws IOException {
+        CrashFs fs = new CrashFs(Files.createTempDirectory(scratch, "tails"));
+        Path index = fs.root().resolve(INDEX);
+        Files.createDirectory(index);
+        Recording rec = publishThreeGenerationsWithTails(fs, index);
+        Tally tally = new Tally();
+        crashEverywhere(rec, rec.log(), rec.log(), 0, rec.log().size(), tally);
+        assertTrue(tally.broken.isEmpty(), report(tally));
+        assertEquals(Set.of(0L, 1L, 2L, 3L), tally.served, "every state of the run was reached");
+
+        // the flush of every tail file is needed, as the flushes of the other files are; only a directory flush before a later rename is not
+        List<String> needed = new ArrayList<>(), notNeeded = new ArrayList<>();
+        removeEachFlush(rec, needed, notNeeded);
+        for (long g = 1; g <= 3; g++) assertTrue(needed.contains("flush of " + Manifest.tailName(g)), "needed: " + needed);
+        assertTrue(notNeeded.stream().allMatch(n -> n.startsWith("directory flush before the rename of generation ")), "not needed: " + notNeeded);
+    }
+
     @Test
     void takingAFlushOutOfThePublishOrderLeavesABrokenDirectory() throws IOException {
-        List<CrashFs.Op> log = published.log();
         List<String> needed = new ArrayList<>(), notNeeded = new ArrayList<>();
+        removeEachFlush(published, needed, notNeeded);
+        // Every flush of a file, of the new directory's name (checkpoint's), and of the directory after each rename (step 7) is needed, and so is
+        // the directory flush before the first rename (step 3): without it a first manifest can name files that are not there. In a later publish
+        // step 3 alone can go: an N+1 that lost a name is skipped, and generation N is whole until the flush of step 7 has returned.
+        assertEquals(List.of("directory flush before the rename of generation 2", "directory flush before the rename of generation 3"), notNeeded);
+        assertEquals(14, needed.size(), "needed: " + needed);
+    }
+
+    /** takes each flush of a recording out in turn and sorts it into the ones whose absence leaves a broken directory and the others */
+    private static void removeEachFlush(Recording rec, List<String> needed, List<String> notNeeded) throws IOException {
+        List<CrashFs.Op> log = rec.log();
         for (int i = 0; i < log.size(); i++) {
             CrashFs.Op op = log.get(i);
             if (op.kind() != CrashFs.Kind.SYNC_FILE && op.kind() != CrashFs.Kind.SYNC_DIR) continue;
@@ -326,14 +383,9 @@ class SimulatedFsCrashTest {
                 if (log.get(j).kind() == CrashFs.Kind.SYNC_DIR && log.get(j).node() == op.node()) last = j;
             }
             Tally tally = new Tally();
-            for (int k = i + 1; k <= last && tally.broken.isEmpty(); k++) crashEverywhere(published, log, without, k, k, tally);
+            for (int k = i + 1; k <= last && tally.broken.isEmpty(); k++) crashEverywhere(rec, log, without, k, k, tally);
             (tally.broken.isEmpty() ? notNeeded : needed).add(flushName(log, i));
         }
-        // Every flush of a file, of the new directory's name (checkpoint's), and of the directory after each rename (step 7) is needed, and so is
-        // the directory flush before the first rename (step 3): without it a first manifest can name files that are not there. In a later publish
-        // step 3 alone can go: an N+1 that lost a name is skipped, and generation N is whole until the flush of step 7 has returned.
-        assertEquals(List.of("directory flush before the rename of generation 2", "directory flush before the rename of generation 3"), notNeeded);
-        assertEquals(14, needed.size(), "needed: " + needed);
     }
 
     /** the flush at {@code i} of the recorded log, in the words of the publish order */

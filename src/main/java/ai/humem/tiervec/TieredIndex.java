@@ -11,6 +11,7 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.EnumSet;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -33,6 +34,7 @@ import java.util.function.LongConsumer;
 import java.util.function.LongPredicate;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
+import java.util.stream.LongStream;
 
 /**
  * Tiered vector index for agent memory: a bounded exact TAIL in front of immutable graph SEGMENTS (an LSM-style layout: writes go to
@@ -98,14 +100,14 @@ import java.util.function.Supplier;
  * for the whole batch; searches take no lock (each does one atomic add and one atomic subtract on the reader count of the view it
  * reads, and one volatile read of the batch counter before and after the scan). {@link #rebuildFrom} and {@link #sealNow} and {@link #mergeNow} take the work lock.
  *
- * <p>Persistence (first cut). A tier with an empty tail can be written to a directory with {@link #checkpoint} and read back with
- * {@link #open}: segment files, a tombstone file (the rows that a delete or a replace has hidden) and a manifest per generation, see
- * docs/SEGMENT-FORMAT.md. The records stay the truth; when {@code open} cannot read the directory, the host rebuilds from its records
- * as above.
+ * <p>Persistence (first cut). A tier can be written to a directory with {@link #checkpoint} and read back with {@link #open}: segment files,
+ * a tombstone file (the rows that a delete or a replace has hidden), a tail file (the rows that no segment holds yet) and a manifest per
+ * generation, see docs/SEGMENT-FORMAT.md. Only a checkpoint writes: a write between two checkpoints is in memory only. The records stay the
+ * truth; when {@code open} cannot read the directory, the host rebuilds from its records as above.
  *
  * <p>Epoch and replay (docs/ID-EPOCH-AND-REPLAY.md). The host names its numbering of ids with an epoch. A rebuild with an epoch
  * ({@link #rebuildFrom(Supplier, long)}) keeps the writes that arrive during the build and applies them after the swap, skipping adds at or below the
- * snapshot position. A checkpoint stores the epoch and the largest id that the segments hold (the high-water id) in the manifest. {@link #open(Path, int,
+ * snapshot position. A checkpoint stores the epoch and the largest id that the segments or the tail hold (the high-water id) in the manifest. {@link #open(Path, int,
  * Metric, Config, RecordSource)} discards persisted state of another epoch, drops held ids above the id the host recovered (durably), hides ids that
  * the host no longer holds, and replays the host's live records above the high-water id.
  *
@@ -326,7 +328,8 @@ public final class TieredIndex implements VecIndex {
         /**
          * The fingerprint of an index with this configuration. It covers what decides the data of the graphs and their files: the dimension, the
          * metric, the id width, {@code graph.M}, {@code graph.efConstruction}, {@code graph.alpha}, {@code graph.sq8} and the layer 0 layout. It
-         * does not cover the search-time knobs, the tail settings (the tail is not persisted), the seal and merge policy, or {@code graph.seed}.
+         * does not cover the search-time knobs, the tail settings (a persisted tail holds the vectors as the host passed them, so they change
+         * nothing in a directory), the seal and merge policy, or {@code graph.seed}.
          * A host stores it with its index definition and compares it before it opens the persisted state: {@link TieredIndex#open} itself checks
          * the dimension, the metric, {@code M}, {@code efConstruction} and {@code sq8}, and the files do not record {@code alpha}.
          *
@@ -1951,19 +1954,19 @@ public final class TieredIndex implements VecIndex {
         for (long id : c.deletes()) deleteLocked(id);
     }
 
-    // ---- persistence (first cut: segments and their hidden rows, no tail) ----
+    // ---- persistence: segments, their hidden rows, and the tail ----
 
     /**
-     * Writes the segments of the tier into a directory as a new generation: one file per segment (a segment that an earlier checkpoint or open
-     * already put in this directory is not written again), a tombstone file that marks the rows that a delete or a replace has hidden, and a
-     * manifest, in the publish order of {@link Manifest#publish}. A process kill at any point leaves the previous generation or this one, never
-     * a mixture. Files that the new generation no longer names are deleted afterwards. Hidden rows stay in their segment files until a merge
-     * rewrites the segment.
+     * Writes the tier into a directory as a new generation: one file per segment (a segment that an earlier checkpoint or open already put in
+     * this directory is not written again), a tombstone file that marks the rows that a delete or a replace has hidden, a tail file with the
+     * rows that no segment holds yet (none when the tail is empty), and a manifest, in the publish order of {@link Manifest#publish}. A process
+     * kill at any point leaves the previous generation or this one, never a mixture. Files that the new generation no longer names are deleted
+     * afterwards. Hidden rows stay in their segment files until a merge rewrites the segment.
      *
-     * <p>This first cut does not persist the tail, so it refuses a tier with a non-empty tail with an {@link IllegalStateException} (call
-     * {@link #sealNow} first). It also refuses a directory
-     * that holds files of a newer format, with a {@link SegmentFormat.UnsupportedException}, and changes nothing there. Writers and the seal and
-     * merge worker wait while it runs. The manifest records the epoch of the tier and, inside an epoch, the largest id that the segments hold.
+     * <p>No segment is built: the tail is written as it is, every checkpoint writes the whole tail again, and the next {@link #open} puts it
+     * back into the tail. It refuses a directory that holds files of a newer format, with a {@link SegmentFormat.UnsupportedException}, and
+     * changes nothing there. Writers and the seal and merge worker wait while it runs; searches do not. The manifest records the epoch of the
+     * tier and, inside an epoch, the largest id that the segments or the tail hold.
      *
      * <p>One process owns a directory at a time. The call locks the file {@code LOCK} in it and throws {@link DirectoryLockedException}, having
      * changed nothing, when another process holds that lock. The tier keeps the lock until {@link #close}, or until a checkpoint into another
@@ -1980,13 +1983,11 @@ public final class TieredIndex implements VecIndex {
         try {
             checkOpen();
             View v = view;
-            if (v.frozen != null || !v.active.raw.isEmpty()) {
-                throw new IllegalStateException("checkpoint needs an empty tail: call sealNow() first (this version persists segments only)");
-            }
             if (floorDue) settleFloor(); // a merge that overlapped searches may have left entries that no search needs any more
             long[][] hidden = hiddenRows(v.segs);
+            TailFile.Rows tail = tailRows(v);
             if (!Manifest.hasManifest(dir)) SegmentFormat.createDirectoriesDurably(dir); // a first generation is not lost with its directory
-            publishGeneration(dir, v, hidden, hook);
+            publishGeneration(dir, v, hidden, tail, hook);
         } finally {
             mu.unlock();
             work.unlock();
@@ -1997,7 +1998,7 @@ public final class TieredIndex implements VecIndex {
      * under mu and the work lock: the part of a checkpoint that reads and writes an existing directory, under the lock of that directory, which
      * the tier keeps when the generation was published
      */
-    private void publishGeneration(Path dir, View v, long[][] hidden, FaultHook hook) throws IOException {
+    private void publishGeneration(Path dir, View v, long[][] hidden, TailFile.Rows tail, FaultHook hook) throws IOException {
         DirectoryLock claim = DirectoryLock.acquire(dir);
         boolean kept = false;
         try {
@@ -2034,9 +2035,9 @@ public final class TieredIndex implements VecIndex {
             }
             GraphIndex.Params gp = cfg.graph();
             Manifest.Fingerprint fp = new Manifest.Fingerprint(dim, metric, gp.M(), gp.efConstruction(), gp.sq8());
-            long hw = epoch == Manifest.NONE ? Manifest.NONE : highWater(v.segs); // the high-water id means something only inside an epoch
-            Manifest m = new Manifest(gen, epoch, hw, counter, nextSeg, fp, entries, 0L, 0L, 0);
-            Manifest done = Manifest.publish(dir, m, hidden, hook);
+            long hw = epoch == Manifest.NONE ? Manifest.NONE : highWater(v); // the high-water id means something only inside an epoch
+            Manifest m = new Manifest(gen, epoch, hw, counter, nextSeg, fp, entries, 0L, 0L, 0, 0L, 0L, 0);
+            Manifest done = Manifest.publish(dir, m, hidden, tail, hook);
             for (int i = 0; i < v.segs.length; i++) v.segs[i].fileId = fileIds[i];
             persistedDir = dir;
             persistedManifest = done;
@@ -2065,9 +2066,11 @@ public final class TieredIndex implements VecIndex {
 
     /**
      * Opens the tier that {@link #checkpoint} wrote. Takes the newest manifest that validates, checks its fingerprint against the
-     * configuration, reads every segment with every section checksummed and the tombstone file, deletes files that the manifest does not name,
-     * and restores the version counter and the floor map, so that the rows that were hidden at the checkpoint stay hidden. The dimension and the
-     * metric come from the manifest. Any failure throws: {@link CorruptStateException} for damage (its cause is the
+     * configuration, reads every segment with every section checksummed, the tombstone file and the tail file, deletes files that the manifest
+     * does not name, and restores the version counter, the floor map, and the tail, so that the rows that were hidden at the checkpoint stay
+     * hidden and the rows that were in the tail are in the tail again. The dimension and the metric come from the manifest. A restored tail is
+     * on the heap, and the seal rules apply to it from this call on (the age of the tail counts from the open). A directory written before the
+     * tail was persisted (manifest major 1) opens too. Any failure throws: {@link CorruptStateException} for damage (its cause is the
      * {@link SegmentFormat.CorruptException}), {@link SegmentFormat.UnsupportedException} for a newer format, {@link SegmentFormat.MismatchException} when the files
      * belong to another index definition, {@link NoSuchFileException} when the directory has no manifest. A caller that holds the
      * records falls back to {@link #rebuildFrom}, or uses the overload with a rebuild source that does it. A null config means the defaults.
@@ -2156,13 +2159,14 @@ public final class TieredIndex implements VecIndex {
      * of {@code host}, the persisted state is discarded as a whole and the tier is built from {@code host.allLive()} with {@code host}'s epoch (a cold
      * index); the directory is left as it was, and the next {@link #checkpoint} replaces its contents (except after a
      * {@link SegmentFormat.UnsupportedException}, which it throws again); {@link #openFallbackCause()} tells which case it was.
-     * Otherwise the segments are read and then: (1) every held id above {@code host.recoveredMax()} is dropped (the host forgot the commit that wrote it, and
-     * may mint the id again), and when any row was dropped the segments are rebuilt without it and a new generation with the lowered high-water id is
-     * published before this method returns, so that a dropped row never comes back in a later generation (if that fails, the tier goes cold);
-     * (2) every other held id for which {@code host.isLive} says no is hidden (in memory: the files are not rewritten by this call; an open of
-     * the same generation asks again, and the next {@link #checkpoint} records the row as hidden);
-     * (3) every live record of the host above the high-water id of the segments is added to the tail, in increasing id order, in batches. The tier is
-     * ready when the call returns.
+     * Otherwise the segments and the tail are read and then: (1) every held id above {@code host.recoveredMax()} is dropped (the host forgot the commit that
+     * wrote it, and may mint the id again), and when any row was dropped a new generation with the lowered high-water id is published before this method
+     * returns, so that a dropped row never comes back in a later generation (the segments are rebuilt first when one of them holds a dropped row; if
+     * either step fails, the tier goes cold);
+     * (2) every other held id for which {@code host.isLive} says no is hidden, or removed from the tail (in memory: the files are not rewritten by this
+     * call; an open of the same generation asks again, and the next {@link #checkpoint} records it);
+     * (3) every live record of the host above the high-water id of the generation (of its segments and its tail) is added to the tail, in increasing id
+     * order, in batches. The tier is ready when the call returns.
      */
     public static TieredIndex open(Path dir, int dim, Metric metric, Config cfg, RecordSource host) {
         return open(dir, dim, metric, cfg, host, HostEnv.standalone());
@@ -2238,28 +2242,80 @@ public final class TieredIndex implements VecIndex {
         return hw;
     }
 
+    /** the largest id that the view holds, in a segment (hidden copies included) or in a tail, {@link Manifest#NONE} when it holds no row */
+    private static long highWater(View v) {
+        long hw = highWater(v.segs);
+        for (long id : tailIds(v)) hw = Math.max(hw, id);
+        return hw;
+    }
+
+    /** the ids that the tails of a view hold, the frozen one included */
+    private static long[] tailIds(View v) {
+        LongStream ids = v.active.raw.keySet().stream().mapToLong(Long::longValue);
+        if (v.frozen != null) ids = LongStream.concat(ids, v.frozen.raw.keySet().stream().mapToLong(Long::longValue));
+        return ids.toArray();
+    }
+
+    /**
+     * under mu: the rows of the tails of a view, the active one and a frozen one that a failed seal left behind (an id is in one of them at
+     * most), in the order of their versions, which is the order in which they arrived. The vectors are the tier's own arrays, which nothing
+     * changes.
+     */
+    private static TailFile.Rows tailRows(View v) {
+        long[] ids = tailIds(v);
+        int n = ids.length;
+        if (n == 0) return TailFile.Rows.NONE;
+        Rec[] recs = new Rec[n];
+        long[] vers = new long[n];
+        for (int i = 0; i < n; i++) {
+            Rec r = v.active.raw.get(ids[i]);
+            recs[i] = r != null ? r : v.frozen.raw.get(ids[i]);
+            vers[i] = recs[i].ver;
+        }
+        int[] ord = orderByVersion(vers, n);
+        float[][] vecs = new float[n][];
+        for (int i = 0; i < n; i++) vecs[i] = recs[ord[i]].v;
+        return new TailFile.Rows(permute(ids, ord), permute(vers, ord), vecs);
+    }
+
     /** steps 5 to 7 of the replay protocol on a tier that {@link #restore} just made and that no other thread holds: see {@link #open(Path, int, Metric, Config, RecordSource)} */
     private void reconcile(Path dir, RecordSource host, long persistedHighWater) throws IOException {
         final long recovered = host.recoveredMax();
         boolean dropped = false;
-        for (Segment s : view.segs) {
-            for (int i = 0; i < s.n; i++) {
-                long id = s.ids[i];
-                if (id > recovered) { // a hidden row counts too: it must not stay in a segment under an id that the host may mint again
+        long above = persistedHighWater; // the high-water id of the manifest, not of the rows in memory: the worker may already have compacted hidden rows away
+        work.lock(); // the worker neither seals nor merges while the held ids are looked at and the drop is published
+        try {
+            // the tail first: a row only ever moves from the tail into a segment, so a row that is not seen here is seen in the segments
+            for (long id : tailIds(view)) {
+                if (id > recovered) {
                     delete(id);
                     dropped = true;
-                } else if (!isHidden(s, i) && !host.isLive(id)) {
+                } else if (!host.isLive(id)) {
                     delete(id);
                 }
             }
-        }
-        if (dropped) {
-            mergeNow();     // the dropped rows (and the rows the host deleted) are not copied into the new segment
-            checkpoint(dir); // the drop is durable before the index is ready; the high-water id of the new generation is the largest id that is left
+            for (Segment s : view.segs) {
+                for (int i = 0; i < s.n; i++) {
+                    long id = s.ids[i];
+                    if (id > recovered) { // a hidden row counts too: it must not stay in a segment under an id that the host may mint again
+                        delete(id);
+                        dropped = true;
+                    } else if (!isHidden(s, i) && !host.isLive(id)) {
+                        delete(id);
+                    }
+                }
+            }
+            if (dropped) {
+                // a segment that holds a dropped row is rebuilt: the row (and the rows the host deleted) is not copied into the new segment.
+                // A drop from the tail alone builds nothing
+                if (highWater(view.segs) > recovered) mergeNow();
+                checkpoint(dir); // the drop is durable before the index is ready; the high-water id of the new generation is the largest id that is left
+                above = highWater(view);
+            }
+        } finally {
+            work.unlock();
         }
         List<IdVector> chunk = new ArrayList<>();
-        // the high-water id of the manifest, not of the segments in memory: the worker may already have compacted hidden rows away
-        final long above = dropped ? highWater(view.segs) : persistedHighWater;
         for (IdVector iv : host.liveAbove(above)) {
             chunk.add(iv);
             if (chunk.size() == 1024) {
@@ -2279,6 +2335,8 @@ public final class TieredIndex implements VecIndex {
         }
         List<Segment> segs = new ArrayList<>();
         long[][] hidden = Manifest.readTombstones(dir, m);
+        // the rows of the tail, with their checksum compared before any of them is used
+        TailFile.Rows tail = m.tailRows() == 0 ? TailFile.Rows.NONE : TailFile.read(dir.resolve(Manifest.tailName(m.generation())), m);
         Map<Long, Long> floorOf = new HashMap<>();
         long total = 0;
         long hiddenTotal = 0;
@@ -2306,13 +2364,16 @@ public final class TieredIndex implements VecIndex {
         }
         if (maxVer > m.versionCounter()) throw new SegmentFormat.CorruptException("a segment holds version " + maxVer + " above the manifest's counter " + m.versionCounter(), "MANIFEST");
         checkHidden(segs, hidden, floorOf);
-        int live = Math.toIntExact(total - hiddenTotal);
+        checkTail(segs, hidden, tail, m);
+        int live = Math.toIntExact(total - hiddenTotal + tail.size());
         Manifest.gc(dir, m); // orphans: files of a crashed publish, older generations
         TieredIndex t = new TieredIndex(dim, metric, cfg, env);
         t.work.lock();
         t.mu.lock();
         try {
             t.floor.putAll(floorOf); // before the view: a segment with hidden copies is searched through the floor map
+            // the rows of the tail go back into the tail, in the order in which they arrived and with their versions
+            for (int i = 0; i < tail.size(); i++) t.view.active.put(tail.ids()[i], new Rec(tail.vecs()[i], tail.vers()[i]));
             t.view = new View(segs.toArray(new Segment[0]), null, t.view.active);
             t.counter = m.versionCounter();
             t.epoch = m.epoch();
@@ -2361,6 +2422,31 @@ public final class TieredIndex implements VecIndex {
                 int row = s.g.sortedRows[ix];
                 if ((hidden[i][row >>> 6] & (1L << row)) == 0L) {
                     throw new SegmentFormat.CorruptException("the tombstone file hides a newer copy of id " + e.getKey() + " and leaves an older one visible", "TOMBSTONES");
+                }
+            }
+        }
+    }
+
+    /**
+     * A tail row is the only visible copy of its id and the newest one: the tail holds an id once, every copy of that id in a segment is
+     * older and marked in the tombstone file, and inside an epoch no id is above the high-water id. A tail that says otherwise was not written
+     * by a tier and is refused.
+     */
+    private static void checkTail(List<Segment> segs, long[][] hidden, TailFile.Rows tail, Manifest m) throws SegmentFormat.CorruptException {
+        Set<Long> seen = new HashSet<>();
+        for (int r = 0; r < tail.size(); r++) {
+            long id = tail.ids()[r];
+            if (!seen.add(id)) throw new SegmentFormat.CorruptException("the tail holds id " + id + " twice", "TAIL");
+            if (m.epoch() != Manifest.NONE && id > m.hwm()) {
+                throw new SegmentFormat.CorruptException("the tail holds id " + id + " above the high-water id " + m.hwm(), "TAIL");
+            }
+            for (int i = 0; i < segs.size(); i++) {
+                Segment s = segs.get(i);
+                int ix = s.indexOf(id);
+                if (ix < 0) continue;
+                int row = s.g.sortedRows[ix];
+                if ((hidden[i][row >>> 6] & (1L << row)) == 0L || s.vers[ix] >= tail.vers()[r]) {
+                    throw new SegmentFormat.CorruptException("a segment holds a visible or a newer copy of id " + id + ", which the tail holds", "TAIL");
                 }
             }
         }

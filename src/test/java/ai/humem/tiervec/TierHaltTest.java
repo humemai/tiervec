@@ -42,6 +42,7 @@ class TierHaltTest {
     static final int DIM = TierReopenTest.DIM;
     static final int ROWS = 250;
     static final int DELETE_EVERY = 10; // see TierHaltChild
+    static final int TAIL = 20; // new ids that are in the tail at each checkpoint, see TierHaltChild
     static final int GENS = 3;
     static final int QUERIES = 30;
     static final int HALT_CODE = 42;
@@ -56,15 +57,10 @@ class TierHaltTest {
     static Stream<Arguments> points() {
         List<Arguments> l = new ArrayList<>();
         // the checkpoint that is cut: the first one is cut before and after its rename (no generation, then generation 1), the later ones between two generations
-        final int[] checkpointOf = {1, 2, 3, 2, 1, 3};
+        final int[] checkpointOf = {1, 3, 2, 3, 2, 1, 3};
         assertEquals(FaultHook.Step.values().length, checkpointOf.length, "one checkpoint number for every step");
         for (FaultHook.Step s : FaultHook.Step.values()) l.add(Arguments.of(s, checkpointOf[s.ordinal()], 1000L + s.ordinal()));
         return l.stream();
-    }
-
-    /** the ids that the child deletes from the batch before, in every batch from the second on */
-    static int deletedPerBatch() {
-        return (ROWS + DELETE_EVERY - 1) / DELETE_EVERY;
     }
 
     /** one line per query: the hits as {@code id:bits of the score}, best first */
@@ -104,6 +100,7 @@ class TierHaltTest {
         Set<String> s = new TreeSet<>();
         s.add(Manifest.manifestName(m.generation()));
         s.add(Manifest.tombName(m.tombGeneration()));
+        if (m.tailRows() > 0) s.add(Manifest.tailName(m.generation()));
         for (Manifest.Entry e : m.entries()) s.add(Manifest.segName(e.segId()));
         return s;
     }
@@ -161,10 +158,13 @@ class TierHaltTest {
         Manifest latest = Manifest.readLatest(dir);
         assertNotNull(latest, what);
         assertEquals(live, latest.generation(), what);
-        List<String> want = Files.readAllLines(expect.resolve("gen-" + live + ".txt"));
+        List<String> want = new ArrayList<>(Files.readAllLines(expect.resolve("gen-" + live + ".txt")));
+        final int size = Integer.parseInt(want.remove(0));
+        assertTrue(latest.tailRows() >= TAIL, what + ": the generation holds a tail of " + latest.tailRows() + " rows");
         try (TieredIndex u = TieredIndex.open(dir, TierReopenTest.cfg())) {
             assertNull(u.openFallbackCause(), what);
-            assertEquals(live * ROWS - (live - 1) * deletedPerBatch(), u.size(), what);
+            assertEquals(size, u.size(), what);
+            assertEquals(latest.tailRows(), u.pendingTail(), what);
             assertSameAnswers(want, digest(u, vectors(QUERIES, DIM, seed + 1)), what); // the child's queries: its seed plus one
         }
         assertEquals(expectedNames(latest), names(dir), what + ": open left exactly the files of the live generation");

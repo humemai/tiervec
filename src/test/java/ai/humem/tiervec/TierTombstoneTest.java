@@ -311,7 +311,7 @@ class TierTombstoneTest {
         b.putInt(raw.length - 4, SegmentFormat.crc32c(raw, 0, raw.length - 4));
         Files.write(file, raw);
         Manifest forged = new Manifest(gen.generation(), gen.epoch(), gen.hwm(), gen.versionCounter(), gen.nextSegId(), gen.fingerprint(), gen.entries(),
-                gen.tombGeneration(), raw.length, SegmentFormat.crc32c(raw, 0, raw.length));
+                gen.tombGeneration(), raw.length, SegmentFormat.crc32c(raw, 0, raw.length), gen.tailRows(), gen.tailLength(), gen.tailCrc());
         Files.write(dir.resolve(Manifest.manifestName(gen.generation())), forged.encode(Manifest.FORMAT_MAJOR, Manifest.FORMAT_MINOR));
 
         CorruptStateException refused = assertThrows(CorruptStateException.class, () -> TieredIndex.open(dir, keep()));

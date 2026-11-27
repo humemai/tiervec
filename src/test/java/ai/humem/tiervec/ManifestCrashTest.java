@@ -228,7 +228,7 @@ class ManifestCrashTest {
         Files.write(dir.resolve(Manifest.manifestName(2)), m2.encode(Manifest.FORMAT_MAJOR, Manifest.FORMAT_MINOR + 4));
         assertEquals(m2, Manifest.readLatest(dir));
         // a larger major is refused even though generation 1 is intact: serving it would silently be stale
-        Manifest m3 = new Manifest(3, Manifest.NONE, Manifest.NONE, 0L, 3L, fp, m2.entries(), 2L, m2.tombLength(), m2.tombCrc());
+        Manifest m3 = new Manifest(3, Manifest.NONE, Manifest.NONE, 0L, 3L, fp, m2.entries(), 2L, m2.tombLength(), m2.tombCrc(), 0L, 0L, 0);
         Files.write(dir.resolve(Manifest.manifestName(3)), m3.encode(Manifest.FORMAT_MAJOR + 1, 0));
         assertThrows(UnsupportedException.class, () -> Manifest.readLatest(dir));
     }

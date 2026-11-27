@@ -18,14 +18,14 @@ final class LiveRows {
 
     private final Map<Long, float[]> rows = new HashMap<>();
 
-    /** applies one write that is not a batch; the vector is held, not copied */
+    /** applies one write that is not a batch, or throws and changes nothing; the vector is held, not copied */
     void apply(Runbook.Op write) {
         switch (write.kind()) {
             case CREATE, REUSE -> {
-                if (rows.put(write.id(), write.vec()) != null) throw new IllegalStateException(write.kind() + " of the live id " + write.id());
+                if (rows.putIfAbsent(write.id(), write.vec()) != null) throw new IllegalStateException(write.kind() + " of the live id " + write.id());
             }
             case UPDATE -> {
-                if (rows.put(write.id(), write.vec()) == null) throw new IllegalStateException("UPDATE of the id " + write.id() + ", which is not live");
+                if (rows.replace(write.id(), write.vec()) == null) throw new IllegalStateException("UPDATE of the id " + write.id() + ", which is not live");
             }
             case DELETE -> {
                 if (rows.remove(write.id()) == null) throw new IllegalStateException("DELETE of the id " + write.id() + ", which is not live");

@@ -78,6 +78,7 @@ public final class AgentMemorySelfCheck {
         check(refused(live, create(5, 1)), "a create of a live id is refused");
         check(refused(live, delete(100)), "a delete of an id that is not live is refused");
         check(refused(live, Runbook.Op.write(Runbook.Kind.UPDATE, 100, at(1))), "an update of an id that is not live is refused");
+        expectTop(live, 5, "a refused write changes nothing", new long[] {5, 1, 2, 7, 9}, new double[] {5, 40, 60, 60, 60});
 
         // recall: of the best three (5, 1, 2) an answer holds two, and a deleted id and a repeated id fill no place
         float[] q = at(0);

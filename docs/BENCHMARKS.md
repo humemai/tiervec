@@ -217,6 +217,20 @@ The run fails when a count is wrong, the worker failed, an answer is malformed, 
 
 The workflow `poll-cost.yml` runs it in 10 fresh JVMs on JDK 21 and on JDK 25 and prints the median, the smallest and the largest ratio of the JVMs. It starts by hand, and on a pull request that changes the harness or the workflow. It has no speed bar: a study writes its bound down before the run, as [ROADMAP.md](ROADMAP.md#how-to-read-measurements) asks. The cells compare the two paths of the same build. They do not compare it with a build that has no polling code.
 
+## The cost of a row copy
+
+`MappedRows`, in `src/bench`, measures what a memory-mapped reader of the vector section would pay on JDK 21 without preview features, where a distance copies the row from the mapped buffer into a `float[]` first ([issue #27](https://github.com/humemai/tiervec/issues/27)). The library has no mapped reader: the harness holds its own, behind the internal interface `SealedVectors`, for this measurement only. It writes two segments of random vectors with SQ8 codes (200,000 of dimension 128, and 50,000 of dimension 768), and one JVM then times these cases:
+
+| Case | What is timed |
+|---|---|
+| `distance-random`, `distance-in-order` | one dot product per row, in random order and in row order: on the heap array, on the heap array with a row copy first, and on the mapped file with a row copy first |
+| `walk-fp32`, `walk-sq8` | a graph search of the same graph with its vectors on the heap and mapped; the SQ8 walk reads fp32 vectors only to rescore its candidates |
+| `exact-scan` | the exact scan of every row, on the heap and mapped |
+
+Each of 15 rounds times every arm, and the arm that goes first changes from round to round. A ratio is the time of an arm divided by the time on the heap in the same round, and a JVM reports the median over the rounds. The run fails when the mapped section differs from the loaded vectors or when the two graphs answer differently.
+
+The workflow `mapped-rows.yml` runs 5 fresh JVMs per segment on JDK 21 and on JDK 25 and prints the median, the smallest, and the largest ratio of the JVMs. It starts by hand, and on a pull request that changes the harness or the workflow. It has no speed bar. What a run does not measure: the first read of a file from disk (the file is in the page cache), memory pressure, and more than one thread (the harness shares one scratch array, so a lookup of a scratch array per thread is not in the time). The search cases run with both implementations of `SealedVectors` loaded in one JVM, as in a tier that holds sealed and loaded segments.
+
 ## The CI smoke
 
 The job `bench smoke (JDK 21)` and `(JDK 25)` compiles the harness with the library and runs it at n = 10,000 and dimension 768, with 100 queries, one extra beam width (32), shares 0.1 and 0.01, and 15 seconds of the concurrent phase. It is not a required check, and it runs beside the fast tests. It proves that the harness runs, that its answers agree with its own exact scan, and that the checks above hold on a small tier. It prints timings and has no speed bar: the runner is shared, so a timing is only a ratio inside one run.

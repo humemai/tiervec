@@ -1,0 +1,34 @@
+{"layer":1,"phase":"build","arm":"jv-FP32","dataset":"sift128","n":100000,"dim":128,"build_s":29.81,"graph_bytes":13600612,"codes_bytes":0,"nvq_bytes":0,"fp32_bytes":51200000,"peak_heap_mb":650,"peak_rss_mb":846,"vmhwm_mb":846,"m":32,"beam_width":100,"neighbor_overflow":1.2,"alpha":1.2,"cpus":2}
+{"layer":1,"phase":"info","arm":"jv-FP32","dataset":"sift128","n":100000,"api":"jvector (the jar on the classpath, see the MANIFEST) GraphSearcher.search over OnDiskGraphIndex","vectorization":"NativeVectorizationProvider","m":32,"beam_width":100}
+{"layer":1,"phase":"mem","arm":"jv-FP32","dataset":"sift128","n":100000,"dim":128,"heap_used_gc_mb":65,"rss_mb":229,"rss_anon_mb":146,"rss_file_mb":82,"vmhwm_mb":289,"direct_mb":0,"nonheap_mb":13,"disk_bytes":13600612,"index_bytes":13600612,"files":"{}","fp32_bytes":51200000,"pass_s_info":0.146}
+{"layer":1,"phase":"query","arm":"jv-FP32","dataset":"sift128","n":100000,"dim":128,"ef":0,"rerank":0,"recall10":0.9435,"recall1":0.966,"nq":1000,"search_s_info":0.134}
+{"layer":1,"phase":"query","arm":"jv-FP32","dataset":"sift128","n":100000,"dim":128,"ef":20,"rerank":0,"recall10":0.9435,"recall1":0.966,"nq":1000,"search_s_info":0.128}
+{"layer":1,"phase":"query","arm":"jv-FP32","dataset":"sift128","n":100000,"dim":128,"ef":50,"rerank":0,"recall10":0.99,"recall1":0.996,"nq":1000,"search_s_info":0.322}
+{"layer":1,"phase":"query","arm":"jv-FP32","dataset":"sift128","n":100000,"dim":128,"ef":100,"rerank":0,"recall10":0.9979,"recall1":1.0,"nq":1000,"search_s_info":0.434}
+{"layer":1,"phase":"query","arm":"jv-FP32","dataset":"sift128","n":100000,"dim":128,"ef":200,"rerank":0,"recall10":0.9999,"recall1":1.0,"nq":1000,"search_s_info":0.705}
+{"layer":1,"phase":"query","arm":"jv-FP32","dataset":"sift128","n":100000,"dim":128,"ef":400,"rerank":0,"recall10":1.0,"recall1":1.0,"nq":1000,"search_s_info":1.256}
+{"layer":1,"phase":"calib","arm":"jv-FP32","dataset":"sift128","n":100000,"dim":128,"target":0.95,"reached":true,"ef":50,"rerank":0,"recall10":0.99,"recall1":0.996,"rule":"cheapest tested (ef,rerank) by single-thread search time of the sweep pass with recall@10 >= target; not reached: the highest recall tested"}
+{"layer":1,"phase":"peak","arm":"jv-FP32","dataset":"sift128","n":100000,"peak_heap_mb":87,"peak_rss_mb":287,"peak_rss_anon_mb":204}
+{"layer":1,"phase":"build","arm":"jv-INT8","dataset":"sift128","n":100000,"dim":128,"build_s":18.23,"graph_bytes":26400612,"codes_bytes":0,"nvq_bytes":0,"int8_bytes":12800000,"fp32_bytes":51200000,"peak_heap_mb":669,"peak_rss_mb":863,"vmhwm_mb":863,"m":32,"beam_width":100,"neighbor_overflow":1.2,"alpha":1.2,"cpus":2,"int8_mode":"uint8-shift","int8_scale":1.0,"int8_rel_err_mean_first10k":0.0,"similarity":"EUCLIDEAN"}
+{"layer":1,"phase":"info","arm":"jv-INT8","dataset":"sift128","n":100000,"api":"jvector 4.1.0-rc.1 GraphSearcher.search over OnDiskGraphIndex, InlineByteVectors, view.byteVectorRerankerFor","vectorization":"NativeVectorizationProvider","m":32,"beam_width":100,"int8_mode":"uint8-shift","int8_scale":1.0,"similarity":"EUCLIDEAN","clamped_query_values":0}
+{"layer":1,"phase":"mem","arm":"jv-INT8","dataset":"sift128","n":100000,"dim":128,"heap_used_gc_mb":59,"rss_mb":230,"rss_anon_mb":135,"rss_file_mb":94,"vmhwm_mb":293,"direct_mb":0,"nonheap_mb":13,"disk_bytes":26400612,"index_bytes":26400612,"files":"{}","fp32_bytes":51200000,"pass_s_info":0.096}
+{"layer":1,"phase":"query","arm":"jv-INT8","dataset":"sift128","n":100000,"dim":128,"ef":0,"rerank":0,"recall10":0.9472,"recall1":0.972,"nq":1000,"search_s_info":0.095}
+{"layer":1,"phase":"query","arm":"jv-INT8","dataset":"sift128","n":100000,"dim":128,"ef":0,"rerank":5,"recall10":0.9903,"recall1":0.996,"nq":1000,"search_s_info":0.472}
+{"layer":1,"phase":"query","arm":"jv-INT8","dataset":"sift128","n":100000,"dim":128,"ef":0,"rerank":10,"recall10":0.9984,"recall1":1.0,"nq":1000,"search_s_info":0.491}
+{"layer":1,"phase":"query","arm":"jv-INT8","dataset":"sift128","n":100000,"dim":128,"ef":20,"rerank":0,"recall10":0.9472,"recall1":0.972,"nq":1000,"search_s_info":0.096}
+{"layer":1,"phase":"query","arm":"jv-INT8","dataset":"sift128","n":100000,"dim":128,"ef":20,"rerank":5,"recall10":0.9903,"recall1":0.996,"nq":1000,"search_s_info":0.238}
+{"layer":1,"phase":"query","arm":"jv-INT8","dataset":"sift128","n":100000,"dim":128,"ef":20,"rerank":10,"recall10":0.9984,"recall1":1.0,"nq":1000,"search_s_info":0.393}
+{"layer":1,"phase":"query","arm":"jv-INT8","dataset":"sift128","n":100000,"dim":128,"ef":50,"rerank":0,"recall10":0.9903,"recall1":0.996,"nq":1000,"search_s_info":0.174}
+{"layer":1,"phase":"query","arm":"jv-INT8","dataset":"sift128","n":100000,"dim":128,"ef":50,"rerank":5,"recall10":0.9903,"recall1":0.996,"nq":1000,"search_s_info":0.223}
+{"layer":1,"phase":"query","arm":"jv-INT8","dataset":"sift128","n":100000,"dim":128,"ef":50,"rerank":10,"recall10":0.9984,"recall1":1.0,"nq":1000,"search_s_info":0.389}
+{"layer":1,"phase":"query","arm":"jv-INT8","dataset":"sift128","n":100000,"dim":128,"ef":100,"rerank":0,"recall10":0.9984,"recall1":1.0,"nq":1000,"search_s_info":0.297}
+{"layer":1,"phase":"query","arm":"jv-INT8","dataset":"sift128","n":100000,"dim":128,"ef":100,"rerank":5,"recall10":0.9984,"recall1":1.0,"nq":1000,"search_s_info":0.378}
+{"layer":1,"phase":"query","arm":"jv-INT8","dataset":"sift128","n":100000,"dim":128,"ef":100,"rerank":10,"recall10":0.9984,"recall1":1.0,"nq":1000,"search_s_info":0.347}
+{"layer":1,"phase":"query","arm":"jv-INT8","dataset":"sift128","n":100000,"dim":128,"ef":200,"rerank":0,"recall10":0.9998,"recall1":1.0,"nq":1000,"search_s_info":0.478}
+{"layer":1,"phase":"query","arm":"jv-INT8","dataset":"sift128","n":100000,"dim":128,"ef":200,"rerank":5,"recall10":0.9998,"recall1":1.0,"nq":1000,"search_s_info":0.654}
+{"layer":1,"phase":"query","arm":"jv-INT8","dataset":"sift128","n":100000,"dim":128,"ef":200,"rerank":10,"recall10":0.9998,"recall1":1.0,"nq":1000,"search_s_info":0.677}
+{"layer":1,"phase":"query","arm":"jv-INT8","dataset":"sift128","n":100000,"dim":128,"ef":400,"rerank":0,"recall10":1.0,"recall1":1.0,"nq":1000,"search_s_info":0.841}
+{"layer":1,"phase":"query","arm":"jv-INT8","dataset":"sift128","n":100000,"dim":128,"ef":400,"rerank":5,"recall10":1.0,"recall1":1.0,"nq":1000,"search_s_info":1.006}
+{"layer":1,"phase":"query","arm":"jv-INT8","dataset":"sift128","n":100000,"dim":128,"ef":400,"rerank":10,"recall10":1.0,"recall1":1.0,"nq":1000,"search_s_info":0.927}
+{"layer":1,"phase":"calib","arm":"jv-INT8","dataset":"sift128","n":100000,"dim":128,"target":0.95,"reached":true,"ef":50,"rerank":0,"recall10":0.9903,"recall1":0.996,"rule":"cheapest tested (ef,rerank) by single-thread search time of the sweep pass with recall@10 >= target; not reached: the highest recall tested"}
+{"layer":1,"phase":"peak","arm":"jv-INT8","dataset":"sift128","n":100000,"peak_heap_mb":154,"peak_rss_mb":356,"peak_rss_anon_mb":261}

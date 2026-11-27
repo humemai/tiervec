@@ -1,0 +1,205 @@
+finished 2026-11-24T16:12:17+00:00 out i8rc1n-sift128_d1536_d768_d256 final exit 0
+== cell sift128-100000 (i8rc1n-sift128_d1536_d768_d256)
+provider check: 117 QueryBench runs report NativeVectorizationProvider, 0 report another
+cell sift128-100000, cpus 0,2 (nt 2), heap 4g, JMH -f 1 -wi 3 -w 2s -i 5 -r 2s, metrics lat qps1 qpsN, nq 1000; 7.0.0-43-generic; model name	: 12th Gen Intel(R) Core(TM) i9-12900HK
+calib jv-FP32 ef,rerank = 50 0
+calib jv-INT8 ef,rerank = 50 0
+calib jv-FP32-aa ef,rerank = 50 0
+arm jv-FP32 jvector jar sha256 16d609b5eec7864bf5d984c0e03d0e3ba1ec0d77c159b46d9bb4400e0b898528 (<study-dir>/jars/jvector-4.1.0-rc.1.jar)
+arm jv-INT8 jvector jar sha256 16d609b5eec7864bf5d984c0e03d0e3ba1ec0d77c159b46d9bb4400e0b898528 (<study-dir>/jars/jvector-4.1.0-rc.1.jar)
+arm jv-FP32-aa jvector jar sha256 16d609b5eec7864bf5d984c0e03d0e3ba1ec0d77c159b46d9bb4400e0b898528 (<study-dir>/jars/jvector-4.1.0-rc.1.jar)
+== lat50-jv-FP32-vs-jv-FP32-aa
+clean pairs 12, dropped 0 
+median ratio B vs A 0.999  95% CI [0.987, 1.007]  (>1 = B worse)
+VERDICT: no detectable difference
+== lat50-jv-FP32-vs-jv-INT8
+clean pairs 12, dropped 0 
+median ratio B vs A 0.533  95% CI [0.526, 0.544]  (>1 = B worse)
+VERDICT: B better by 46 to 47 percent
+== lat95-jv-FP32-vs-jv-FP32-aa
+clean pairs 12, dropped 0 
+median ratio B vs A 1.002  95% CI [0.985, 1.006]  (>1 = B worse)
+VERDICT: no detectable difference
+== lat95-jv-FP32-vs-jv-INT8
+clean pairs 12, dropped 0 
+median ratio B vs A 0.574  95% CI [0.563, 0.591]  (>1 = B worse)
+VERDICT: B better by 41 to 44 percent
+== lat99-jv-FP32-vs-jv-FP32-aa
+clean pairs 12, dropped 0 
+median ratio B vs A 1.001  95% CI [0.983, 1.009]  (>1 = B worse)
+VERDICT: no detectable difference
+== lat99-jv-FP32-vs-jv-INT8
+clean pairs 12, dropped 0 
+median ratio B vs A 0.586  95% CI [0.570, 0.610]  (>1 = B worse)
+VERDICT: B better by 39 to 43 percent
+== qps1-jv-FP32-vs-jv-FP32-aa
+clean pairs 12, dropped 0 
+median ratio B vs A 1.004  95% CI [0.993, 1.017]  (>1 = B worse)
+VERDICT: no detectable difference
+== qps1-jv-FP32-vs-jv-INT8
+clean pairs 12, dropped 0 
+median ratio B vs A 0.525  95% CI [0.522, 0.535]  (>1 = B worse)
+VERDICT: B better by 46 to 48 percent
+== qpsN-jv-FP32-vs-jv-FP32-aa
+clean pairs 12, dropped 0 
+median ratio B vs A 0.999  95% CI [0.994, 1.005]  (>1 = B worse)
+VERDICT: no detectable difference
+== qpsN-jv-FP32-vs-jv-INT8
+clean pairs 12, dropped 0 
+median ratio B vs A 0.550  95% CI [0.547, 0.575]  (>1 = B worse)
+VERDICT: B better by 42 to 45 percent
+MINCLEAN 12
+VALIDITY exit 0: ok INT8-FASTER p50 B/A 0.533 [0.526, 0.544] (12 clean pairs); A/A Z/A 0.999 [0.987, 1.007] (12 clean pairs) in [0.97, 1.03]
+== cell dbpedia-openai3-1536-100000 (i8rc1n-sift128_d1536_d768_d256)
+provider check: 117 QueryBench runs report NativeVectorizationProvider, 0 report another
+cell dbpedia-openai3-1536-100000, cpus 0,2 (nt 2), heap 4g, JMH -f 1 -wi 3 -w 2s -i 5 -r 2s, metrics lat qps1 qpsN, nq 1000; 7.0.0-43-generic; model name	: 12th Gen Intel(R) Core(TM) i9-12900HK
+calib jv-FP32 ef,rerank = 50 0
+calib jv-INT8 ef,rerank = 50 0
+calib jv-FP32-aa ef,rerank = 50 0
+arm jv-FP32 jvector jar sha256 16d609b5eec7864bf5d984c0e03d0e3ba1ec0d77c159b46d9bb4400e0b898528 (<study-dir>/jars/jvector-4.1.0-rc.1.jar)
+arm jv-INT8 jvector jar sha256 16d609b5eec7864bf5d984c0e03d0e3ba1ec0d77c159b46d9bb4400e0b898528 (<study-dir>/jars/jvector-4.1.0-rc.1.jar)
+arm jv-FP32-aa jvector jar sha256 16d609b5eec7864bf5d984c0e03d0e3ba1ec0d77c159b46d9bb4400e0b898528 (<study-dir>/jars/jvector-4.1.0-rc.1.jar)
+== lat50-jv-FP32-vs-jv-FP32-aa
+clean pairs 12, dropped 0 
+median ratio B vs A 1.000  95% CI [0.987, 1.012]  (>1 = B worse)
+VERDICT: no detectable difference
+== lat50-jv-FP32-vs-jv-INT8
+clean pairs 11, dropped 1 [8]
+median ratio B vs A 0.607  95% CI [0.597, 0.618]  (>1 = B worse)
+VERDICT: B better by 38 to 40 percent
+== lat95-jv-FP32-vs-jv-FP32-aa
+clean pairs 12, dropped 0 
+median ratio B vs A 0.998  95% CI [0.967, 1.018]  (>1 = B worse)
+VERDICT: no detectable difference
+== lat95-jv-FP32-vs-jv-INT8
+clean pairs 11, dropped 1 [8]
+median ratio B vs A 0.590  95% CI [0.568, 0.598]  (>1 = B worse)
+VERDICT: B better by 40 to 43 percent
+== lat99-jv-FP32-vs-jv-FP32-aa
+clean pairs 12, dropped 0 
+median ratio B vs A 0.990  95% CI [0.963, 1.007]  (>1 = B worse)
+VERDICT: no detectable difference
+== lat99-jv-FP32-vs-jv-INT8
+clean pairs 11, dropped 1 [8]
+median ratio B vs A 0.566  95% CI [0.554, 0.588]  (>1 = B worse)
+VERDICT: B better by 41 to 45 percent
+== qps1-jv-FP32-vs-jv-FP32-aa
+clean pairs 12, dropped 0 
+median ratio B vs A 1.001  95% CI [0.986, 1.011]  (>1 = B worse)
+VERDICT: no detectable difference
+== qps1-jv-FP32-vs-jv-INT8
+clean pairs 12, dropped 0 
+median ratio B vs A 0.609  95% CI [0.593, 0.612]  (>1 = B worse)
+VERDICT: B better by 39 to 41 percent
+== qpsN-jv-FP32-vs-jv-FP32-aa
+clean pairs 12, dropped 0 
+median ratio B vs A 0.999  95% CI [0.986, 1.015]  (>1 = B worse)
+VERDICT: no detectable difference
+== qpsN-jv-FP32-vs-jv-INT8
+clean pairs 12, dropped 0 
+median ratio B vs A 0.533  95% CI [0.521, 0.541]  (>1 = B worse)
+VERDICT: B better by 46 to 48 percent
+MINCLEAN 11
+VALIDITY exit 0: ok INT8-FASTER p50 B/A 0.607 [0.597, 0.618] (11 clean pairs); A/A Z/A 1.000 [0.987, 1.012] (12 clean pairs) in [0.97, 1.03]
+== cell dbpedia-openai3-768-100000 (i8rc1n-sift128_d1536_d768_d256)
+provider check: 117 QueryBench runs report NativeVectorizationProvider, 0 report another
+cell dbpedia-openai3-768-100000, cpus 0,2 (nt 2), heap 4g, JMH -f 1 -wi 3 -w 2s -i 5 -r 2s, metrics lat qps1 qpsN, nq 1000; 7.0.0-43-generic; model name	: 12th Gen Intel(R) Core(TM) i9-12900HK
+calib jv-FP32 ef,rerank = 50 0
+calib jv-INT8 ef,rerank = 50 0
+calib jv-FP32-aa ef,rerank = 50 0
+arm jv-FP32 jvector jar sha256 16d609b5eec7864bf5d984c0e03d0e3ba1ec0d77c159b46d9bb4400e0b898528 (<study-dir>/jars/jvector-4.1.0-rc.1.jar)
+arm jv-INT8 jvector jar sha256 16d609b5eec7864bf5d984c0e03d0e3ba1ec0d77c159b46d9bb4400e0b898528 (<study-dir>/jars/jvector-4.1.0-rc.1.jar)
+arm jv-FP32-aa jvector jar sha256 16d609b5eec7864bf5d984c0e03d0e3ba1ec0d77c159b46d9bb4400e0b898528 (<study-dir>/jars/jvector-4.1.0-rc.1.jar)
+== lat50-jv-FP32-vs-jv-FP32-aa
+clean pairs 12, dropped 0 
+median ratio B vs A 1.002  95% CI [0.987, 1.006]  (>1 = B worse)
+VERDICT: no detectable difference
+== lat50-jv-FP32-vs-jv-INT8
+clean pairs 12, dropped 0 
+median ratio B vs A 0.605  95% CI [0.602, 0.609]  (>1 = B worse)
+VERDICT: B better by 39 to 40 percent
+== lat95-jv-FP32-vs-jv-FP32-aa
+clean pairs 12, dropped 0 
+median ratio B vs A 0.994  95% CI [0.967, 1.017]  (>1 = B worse)
+VERDICT: no detectable difference
+== lat95-jv-FP32-vs-jv-INT8
+clean pairs 12, dropped 0 
+median ratio B vs A 0.575  95% CI [0.563, 0.579]  (>1 = B worse)
+VERDICT: B better by 42 to 44 percent
+== lat99-jv-FP32-vs-jv-FP32-aa
+clean pairs 12, dropped 0 
+median ratio B vs A 0.985  95% CI [0.963, 1.016]  (>1 = B worse)
+VERDICT: no detectable difference
+== lat99-jv-FP32-vs-jv-INT8
+clean pairs 12, dropped 0 
+median ratio B vs A 0.557  95% CI [0.544, 0.563]  (>1 = B worse)
+VERDICT: B better by 44 to 46 percent
+== qps1-jv-FP32-vs-jv-FP32-aa
+clean pairs 12, dropped 0 
+median ratio B vs A 1.000  95% CI [0.997, 1.006]  (>1 = B worse)
+VERDICT: no detectable difference
+== qps1-jv-FP32-vs-jv-INT8
+clean pairs 12, dropped 0 
+median ratio B vs A 0.600  95% CI [0.595, 0.605]  (>1 = B worse)
+VERDICT: B better by 40 to 40 percent
+== qpsN-jv-FP32-vs-jv-FP32-aa
+clean pairs 12, dropped 0 
+median ratio B vs A 0.999  95% CI [0.948, 1.008]  (>1 = B worse)
+VERDICT: no detectable difference
+== qpsN-jv-FP32-vs-jv-INT8
+clean pairs 12, dropped 0 
+median ratio B vs A 0.566  95% CI [0.532, 0.586]  (>1 = B worse)
+VERDICT: B better by 41 to 47 percent
+MINCLEAN 12
+VALIDITY exit 0: ok INT8-FASTER p50 B/A 0.605 [0.602, 0.609] (12 clean pairs); A/A Z/A 1.002 [0.987, 1.006] (12 clean pairs) in [0.97, 1.03]
+== cell dbpedia-openai3-256-100000 (i8rc1n-sift128_d1536_d768_d256)
+provider check: 117 QueryBench runs report NativeVectorizationProvider, 0 report another
+cell dbpedia-openai3-256-100000, cpus 0,2 (nt 2), heap 4g, JMH -f 1 -wi 3 -w 2s -i 5 -r 2s, metrics lat qps1 qpsN, nq 1000; 7.0.0-43-generic; model name	: 12th Gen Intel(R) Core(TM) i9-12900HK
+calib jv-FP32 ef,rerank = 50 0
+calib jv-INT8 ef,rerank = 50 5
+calib jv-FP32-aa ef,rerank = 50 0
+arm jv-FP32 jvector jar sha256 16d609b5eec7864bf5d984c0e03d0e3ba1ec0d77c159b46d9bb4400e0b898528 (<study-dir>/jars/jvector-4.1.0-rc.1.jar)
+arm jv-INT8 jvector jar sha256 16d609b5eec7864bf5d984c0e03d0e3ba1ec0d77c159b46d9bb4400e0b898528 (<study-dir>/jars/jvector-4.1.0-rc.1.jar)
+arm jv-FP32-aa jvector jar sha256 16d609b5eec7864bf5d984c0e03d0e3ba1ec0d77c159b46d9bb4400e0b898528 (<study-dir>/jars/jvector-4.1.0-rc.1.jar)
+== lat50-jv-FP32-vs-jv-FP32-aa
+clean pairs 12, dropped 0 
+median ratio B vs A 0.995  95% CI [0.985, 1.003]  (>1 = B worse)
+VERDICT: no detectable difference
+== lat50-jv-FP32-vs-jv-INT8
+clean pairs 12, dropped 0 
+median ratio B vs A 0.559  95% CI [0.552, 0.579]  (>1 = B worse)
+VERDICT: B better by 42 to 45 percent
+== lat95-jv-FP32-vs-jv-FP32-aa
+clean pairs 12, dropped 0 
+median ratio B vs A 0.991  95% CI [0.984, 1.003]  (>1 = B worse)
+VERDICT: no detectable difference
+== lat95-jv-FP32-vs-jv-INT8
+clean pairs 12, dropped 0 
+median ratio B vs A 0.544  95% CI [0.537, 0.568]  (>1 = B worse)
+VERDICT: B better by 43 to 46 percent
+== lat99-jv-FP32-vs-jv-FP32-aa
+clean pairs 12, dropped 0 
+median ratio B vs A 0.992  95% CI [0.975, 1.006]  (>1 = B worse)
+VERDICT: no detectable difference
+== lat99-jv-FP32-vs-jv-INT8
+clean pairs 12, dropped 0 
+median ratio B vs A 0.544  95% CI [0.532, 0.565]  (>1 = B worse)
+VERDICT: B better by 43 to 47 percent
+== qps1-jv-FP32-vs-jv-FP32-aa
+clean pairs 11, dropped 1 [8]
+median ratio B vs A 1.002  95% CI [0.993, 1.015]  (>1 = B worse)
+VERDICT: no detectable difference
+== qps1-jv-FP32-vs-jv-INT8
+clean pairs 11, dropped 1 [8]
+median ratio B vs A 0.556  95% CI [0.551, 0.603]  (>1 = B worse)
+VERDICT: B better by 40 to 45 percent
+== qpsN-jv-FP32-vs-jv-FP32-aa
+clean pairs 12, dropped 0 
+median ratio B vs A 1.003  95% CI [0.987, 1.014]  (>1 = B worse)
+VERDICT: no detectable difference
+== qpsN-jv-FP32-vs-jv-INT8
+clean pairs 12, dropped 0 
+median ratio B vs A 0.623  95% CI [0.603, 0.646]  (>1 = B worse)
+VERDICT: B better by 35 to 40 percent
+MINCLEAN 11
+VALIDITY exit 0: ok INT8-FASTER p50 B/A 0.559 [0.552, 0.579] (12 clean pairs); A/A Z/A 0.995 [0.985, 1.003] (12 clean pairs) in [0.97, 1.03]

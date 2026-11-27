@@ -20,11 +20,12 @@ Do not copy code or text into the repository unless its licence is compatible wi
 You need JDK 21 or newer and Maven 3.9 or newer.
 
 ```
-mvn -B -ntp verify            # fast tests: Vector API kernels, then the scalar twins
+mvn -B -ntp verify            # all fast tests: Vector API kernels, then the scalar twins
+mvn -B -ntp verify -Ppr       # the fast tests of an ordinary pull request (without the tag "postmerge")
 mvn -B -ntp verify -Pslow     # the long concurrency and stress tests (tag "slow")
 ```
 
-The fast tests run on every pull request, on JDK 21 and 25. The slow tests take about 40 minutes per JDK, so they do not run on an ordinary pull request: see [What CI runs, and when](#what-ci-runs-and-when). You do not have to run them on your own machine.
+The fast tests run on every pull request, on JDK 21 and 25. An ordinary pull request leaves out the few of them that carry the tag `postmerge`. The slow tests take about 40 minutes per JDK, so they do not run on an ordinary pull request either: see [What CI runs, and when](#what-ci-runs-and-when). You do not have to run them on your own machine.
 
 ### Build the documentation
 
@@ -63,14 +64,18 @@ The other jobs (the benchmark smoke, and the arm64 and native image jobs where t
 
 ### What CI runs, and when
 
+The checks of an ordinary pull request should end in about 10 minutes, counted from the creation of the runs to the end of the last job, and never take more than 15 ([#154](https://github.com/humemai/tiervec/issues/154)). A test or a job that would make them longer runs on `main` after the merge, on a schedule, or on request instead.
+
 | When | What runs |
 | --- | --- |
-| Every pull request | The fast tests (x86-64 Linux on JDK 21 and 25, Windows x64), the benchmark smoke, the documentation build and the workflow check. The Maven Central dry run starts only when the files it covers change. It ends in about 12 minutes. |
+| Every pull request | The fast tests (x86-64 Linux on JDK 21 and 25, Windows x64) without the tests tagged `postmerge`, the benchmark smoke, the documentation build and the workflow check. The Maven Central dry run and the measurement workflows start only when the files they cover change. |
 | A pull request that changes `src/smoke`, `META-INF/native-image`, `Kern.java`, `Kernels.java`, `NKernels.java` or `native-image.yml` | The same, and the native image jobs. |
-| A pull request from a `release/` branch | The same, and the fast tests on arm64 Linux and arm64 macOS. |
+| A pull request from a `release/` branch | The same with all fast tests, and the fast tests on arm64 Linux and arm64 macOS. |
 | A pull request with the label `ci:slow` | The same, the slow tests on JDK 21 and 25 (about 40 minutes each), and the two slow crash tests on Windows x64. |
-| Every push to `main` | The jobs of every pull request, the arm64 fast tests and the slow tests. The native image jobs run when the push changes `src/main`, `src/smoke` or their workflow file. |
+| Every push to `main` | The jobs of every pull request with all fast tests, the arm64 fast tests and the slow tests. The native image jobs run when the push changes `src/main`, `src/smoke` or their workflow file. |
 | Every day at 19:17 UTC | The slow tests, on the head of `main`. |
+
+The tag `postmerge` is for a test of the fast set that takes long and that a pull request can merge without, because a cheaper run of the same check stays in the pull request. Today these are three of the four runs of `RidReuseTest`, about a minute each on a runner; the fourth runs on every pull request. To run all fast tests on a branch before the merge, use `gh workflow run ci.yml --ref <branch>` (it needs write access). On Linux the label `ci:slow` covers the same ground: `RidReuseLongTest` has those configurations and seeds, with every case of the probe.
 
 To ask for the slow tests on a pull request, add the label `ci:slow`. If you cannot set labels, ask for it in the pull request and the maintainer adds it. The slow tests start when the label is added and run again on every later push to that pull request. Ask for them when a change touches what they cover: concurrent readers and writers, seals and merges, record-id reuse, or the batch paths. On a pull request without the label, the slow tests show as one skipped check, which is not a failure.
 
@@ -78,7 +83,7 @@ The slow tests also run by hand on any branch: `gh workflow run slow-tests.yml -
 
 The arm64 fast tests and the native image jobs do not run on an ordinary pull request. When a change can behave differently on arm64 or in a native image (a kernel, for example), start them on the branch before the merge: `gh workflow run ci.yml --ref <branch>` (every job of `ci.yml`) and `gh workflow run native-image.yml --ref <branch>`. This needs write access, so ask the maintainer if you do not have it. When one of these jobs is red on `main`, the workflow opens the issue "arm64 tests are red on main" or "Native image jobs are red on main", or comments on it when it is already open.
 
-When a slow run on `main` is red, the workflow opens the issue "Slow tests are red on main", or comments on it when it is already open. The slow tests are in `.github/workflows/slow-tests.yml`; the other tests are in `ci.yml`.
+When a fast test job on x86-64 Linux or Windows is red on `main`, the workflow opens the issue "Fast tests are red on main", and when a slow run on `main` is red, the issue "Slow tests are red on main"; it comments on the issue when that is already open. The slow tests are in `.github/workflows/slow-tests.yml`; the other tests are in `ci.yml`.
 
 ### Workflow files
 

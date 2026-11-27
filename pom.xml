@@ -86,7 +86,8 @@
         <central.waitPollingInterval>15</central.waitPollingInterval>
 
         <!-- Test selection by JUnit tag. Default run: everything except the tags "slow" and "scalar". "scalar" tests run in their own
-             surefire execution (scalar-twin) with -Dai.humem.tiervec.scalar=true. Profile "slow" runs only the slow tag. -->
+             surefire execution (scalar-twin) with -Dai.humem.tiervec.scalar=true. Profile "slow" runs only the slow tag. Profile "pr"
+             is the default run without the tag "postmerge". -->
         <test.groups></test.groups>
         <test.excludedGroups>slow,scalar</test.excludedGroups>
         <test.scalar.skip>false</test.scalar.skip>
@@ -205,6 +206,17 @@
                     <scope>runtime</scope>
                 </dependency>
             </dependencies>
+        </profile>
+
+        <!-- mvn -B -ntp verify -Ppr : the fast tests of an ordinary pull request, which is the default run without the tag "postmerge"
+             (issue #154: the checks of a pull request end in about 10 minutes). The default run keeps those tests, and every push to
+             main, a pull request from a release/ branch, a run by hand and the publish run use the default. Only the fast jobs of
+             .github/workflows/ci.yml turn this profile on. -->
+        <profile>
+            <id>pr</id>
+            <properties>
+                <test.excludedGroups>slow,scalar,postmerge</test.excludedGroups>
+            </properties>
         </profile>
 
         <!-- mvn -B -ntp verify -Pslow : the long concurrency and stress tests only (tag "slow"). -->

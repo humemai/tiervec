@@ -40,7 +40,7 @@ Only the maintainer tags and publishes a release.
    gh workflow run release-central.yml --ref release/<version> -f dry-run=true
    ```
 
-7. Open a pull request named `Release <version>` and add the label `ci:slow` to it, so that the slow tests run on it (a pull request without the label skips them). The arm64 fast tests run on it too, because the branch name starts with `release/`. Wait for green, the two slow jobs and the three arm64 jobs included, and merge it.
+7. Open a pull request named `Release <version>` and add the label `ci:slow` to it, so that the slow tests run on it (a pull request without the label skips them). The arm64 fast tests run on it too, and every fast job runs all fast tests (the tests tagged `postmerge` included), because the branch name starts with `release/`. Wait for green, the two slow jobs and the three arm64 jobs included, and merge it.
 8. The merge is a push to `main`, and it starts the slow tests on the merge commit, which is the commit of the release. Wait for that run to end green (`gh run list --workflow slow-tests.yml --commit <merge-sha>`). Then tag the merge commit and push the tag. The tag is the bare version:
 
    ```

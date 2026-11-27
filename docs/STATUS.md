@@ -4,7 +4,7 @@ Experimental. The sources come from the first experiment and were imported uncha
 
 ## What exists
 
-Each part has the test programs of the experiment, wrapped as JUnit 5 tests that CI runs on JDK 21 and 25 (see [README](../README.md#build-and-test)). The fast tests also run on arm64: Linux with JDK 21 and 25, macOS with JDK 21 (none of these jobs is a required check). They also run on Windows x64 with JDK 21 (`fast tests (Windows x64, JDK 21)`; not a required check). The slow tests run on x86-64 Linux; on Windows x64 only the two slow crash tests run, `TierHaltLongTest` and `TierKillLongTest` (`slow crash tests (Windows x64, JDK 21)`).
+Each part has the test programs of the experiment, wrapped as JUnit 5 tests that CI runs on JDK 21 and 25 (see [README](../README.md#build-and-test)). The fast tests also run on arm64: Linux with JDK 21 and 25, macOS with JDK 21 (none of these jobs is a required check). They also run on Windows x64 with JDK 21 (`fast tests (Windows x64, JDK 21)`, a required check). The slow tests run on x86-64 Linux; on Windows x64 only the two slow crash tests run, `TierHaltLongTest` and `TierKillLongTest` (`slow crash tests (Windows x64, JDK 21)`).
 
 | Part | What exists | Tests |
 |---|---|---|

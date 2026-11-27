@@ -51,14 +51,15 @@ Pull requests are squash-merged into `main`, so the history is linear.
 
 ### Checks that must pass
 
-Four checks are required before a merge:
+Five checks are required before a merge:
 
 - `fast tests (JDK 21)`
 - `fast tests (JDK 25)`
+- `fast tests (Windows x64, JDK 21)`
 - `Ensure SHA pinned actions`
 - `docs build (strict)`
 
-The other jobs of a pull request (arm64, Windows, the benchmark smoke, native image) are not required. A failure there is read like any other failure.
+The other jobs of a pull request (arm64, the benchmark smoke, native image) are not required. A failure there is read like any other failure.
 
 ### What CI runs, and when
 

@@ -1,0 +1,70 @@
+# What a row copy costs when the vectors of a sealed segment stay in a mapped file (issue #27; docs/BENCHMARKS.md, "The cost of a row copy"):
+# two segments, each measured in 5 fresh JVMs per JDK. It starts by hand, and on a pull request that changes the harness or this file. It has no
+# speed bar and it is not a required check. A timing from a shared runner is a ratio inside one run, never an absolute speed.
+name: Mapped row copy
+
+on:
+  pull_request:
+    paths:
+      - src/bench/java/ai/humem/tiervec/MappedRows.java
+      - .github/workflows/mapped-rows.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  mapped-rows:
+    name: mapped row copy (JDK ${{ matrix.java }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        java: ["21", "25"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.java }}
+      - name: Machine and toolchain
+        run: |
+          java -version
+          lscpu | grep -E '^(Model name|CPU\(s\)|Thread|Core|L3)'
+          free -g
+      - name: Compile the library and the harness
+        run: |
+          mkdir -p target/bench/classes
+          find src/main/java src/bench/java -name '*.java' > target/bench/sources.txt
+          javac -d target/bench/classes --add-modules jdk.incubator.vector @target/bench/sources.txt
+      - name: Build two segments and run 5 fresh JVMs on each
+        env:
+          JDK: ${{ matrix.java }}
+        run: |
+          jvm=(java -Xmx3g --add-modules jdk.incubator.vector -cp target/bench/classes ai.humem.tiervec.MappedRows)
+          out="target/bench/mapped-rows-jdk$JDK.txt"
+          table="target/bench/mapped-rows-jdk$JDK.md"
+          for shape in "200000 128" "50000 768"; do
+            read -r rows dim <<< "$shape"
+            timeout 900 "${jvm[@]}" build "target/bench/segment-$dim.tvs" "$rows" "$dim"
+            for i in $(seq 1 5); do
+              timeout 600 "${jvm[@]}" run "target/bench/segment-$dim.tvs" > target/bench/one.txt || { cat target/bench/one.txt; exit 1; }
+              cat target/bench/one.txt
+              cat target/bench/one.txt >> "$out"
+            done
+          done
+          "${jvm[@]}" summary "$out" > "$table"
+          echo >> "$table"
+          echo "Runner: $(lscpu | grep -E '^Model name' | cut -d: -f2 | xargs), $(nproc) processors." >> "$table"
+          cat "$table" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Upload the result files
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: mapped-rows-jdk${{ matrix.java }}
+          path: |
+            target/bench/mapped-rows-jdk${{ matrix.java }}.txt
+            target/bench/mapped-rows-jdk${{ matrix.java }}.md
+          retention-days: 90

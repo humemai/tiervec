@@ -42,7 +42,7 @@ public final class SegmentWriter {
         final int dim = g.dim;
         if (vers != null && vers.length != n) throw new IllegalArgumentException("vers has " + vers.length + " entries for " + n + " rows");
         if (g.size() != n) throw new IllegalStateException("the graph has deleted rows; this version does not store tombstones in a segment");
-        if (g.vec.length != n * dim) throw new IllegalStateException("vector array has " + g.vec.length + " floats, expected " + (long) n * dim);
+        if (g.vectors.length() != n * dim) throw new IllegalStateException("vector array has " + g.vectors.length() + " floats, expected " + (long) n * dim);
         final boolean sq8 = g.codes != null;
         if (sq8 && (g.qbase == null || g.qdelta == null || g.qnorm == null)) throw new IllegalStateException("SQ8 codes without their parameters");
         final GraphIndex.Params p = g.params;
@@ -75,7 +75,7 @@ public final class SegmentWriter {
             s.ints(g.sortedRows, n);
             s.end(S_BYID, FLAG_REQUIRED, 4, n);
             s.begin();
-            s.floats(g.vec, n * dim);
+            s.vectors(g.vectors, n * dim);
             s.end(S_VEC, FLAG_REQUIRED, 4, (long) n * dim);
             s.begin();
             s.bytes(g.level, n);
@@ -231,6 +231,18 @@ public final class SegmentWriter {
                 int c = Math.min(per, count - i);
                 buf.clear();
                 buf.asFloatBuffer().put(a, i, c);
+                flush(c * 4);
+                i += c;
+            }
+        }
+
+        /** {@link #floats} for the vector section, which is not an array here */
+        void vectors(SealedVectors v, int count) throws IOException {
+            final int per = buf.capacity() / 4;
+            for (int i = 0; i < count; ) {
+                int c = Math.min(per, count - i);
+                buf.clear();
+                v.put(buf.asFloatBuffer(), i, c);
                 flush(c * 4);
                 i += c;
             }

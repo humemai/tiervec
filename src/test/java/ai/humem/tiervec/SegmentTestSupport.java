@@ -34,6 +34,13 @@ final class SegmentTestSupport {
         return gi.seal();
     }
 
+    /** every float of the graph's vectors, in row order */
+    static float[] vectorsOf(SealedGraph g) {
+        float[] all = new float[g.vectors.length()];
+        for (int r = 0; r < g.rowCount(); r++) g.copyVector(r, all, r * g.dim());
+        return all;
+    }
+
     /** per-row versions for a segment of n rows */
     static long[] versOf(int n) {
         long[] v = new long[n];

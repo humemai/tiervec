@@ -4,6 +4,7 @@ import static ai.humem.tiervec.SegmentForge.refused;
 import static ai.humem.tiervec.SegmentTestSupport.graph;
 import static ai.humem.tiervec.SegmentTestSupport.params;
 import static ai.humem.tiervec.SegmentTestSupport.vectors;
+import static ai.humem.tiervec.SegmentTestSupport.vectorsOf;
 import static ai.humem.tiervec.SegmentTestSupport.versOf;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -250,7 +251,7 @@ class SegmentCorruptionTest {
                         flip(ch, pos, bit);
                         SealedGraph h = SealedGraph.load(scratch);
                         assertArrayEquals(orig.ids, h.ids, "zero fill byte " + pos);
-                        assertArrayEquals(orig.vec, h.vec, "zero fill byte " + pos);
+                        assertArrayEquals(vectorsOf(orig), vectorsOf(h), "zero fill byte " + pos);
                         for (float[] q : qs) assertArrayEquals(orig.search(q, 10, null), h.search(q, 10, null), "zero fill byte " + pos);
                         restore(ch, pos);
                     }

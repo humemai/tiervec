@@ -6,6 +6,7 @@ import static ai.humem.tiervec.SegmentTestSupport.idSet;
 import static ai.humem.tiervec.SegmentTestSupport.params;
 import static ai.humem.tiervec.SegmentTestSupport.recall;
 import static ai.humem.tiervec.SegmentTestSupport.vectors;
+import static ai.humem.tiervec.SegmentTestSupport.vectorsOf;
 import static ai.humem.tiervec.SegmentTestSupport.versOf;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -58,7 +59,7 @@ class SegmentFormatTest {
         assertEquals(g.entryRow, h.entryRow);
         assertEquals(g.maxLevel, h.maxLevel);
         assertArrayEquals(g.ids, h.ids);
-        assertArrayEquals(g.vec, h.vec);
+        assertArrayEquals(vectorsOf(g), vectorsOf(h));
         assertArrayEquals(g.level, h.level);
         assertArrayEquals(g.off0, h.off0);
         assertArrayEquals(g.edges0, h.edges0);

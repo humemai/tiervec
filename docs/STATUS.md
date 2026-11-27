@@ -82,7 +82,7 @@ The threaded program (`GraphConcurrencyTest`) therefore checks read-your-writes 
 - IVF as a segment type of the tier. `IvfIndex` is standalone.
 - Native-image coverage beyond the smoke job. The program does not write or read segment files (`checkpoint`, `open`), does not call `rebuildFrom`, and uses no concurrent writers; the image is built on Linux (x86-64 and arm64) and on macOS arm64 in CI, and on Windows x64 in the vector job only (there is no scalar image job on Windows), and it is not published.
 - A stable API. `0.1.0` is the first release. Until 1.0 a breaking change to the supported surface needs a new minor version ([API.md](API.md#stability-policy-for-0x)). The version rule, the steps and the Maven Central details are in [RELEASING.md](RELEASING.md).
-- Published measurements. The experiment's own measurements are in a private harness. The harness `Bench` ([BENCHMARKS.md](BENCHMARKS.md)) is in the repository and the CI job `bench smoke` runs it at 10,000 vectors. The only committed result files are recall results on generated data ([EVIDENCE.md](EVIDENCE.md)).
+- Published measurements. The experiment's own measurements are in a private harness. The harness `Bench` ([BENCHMARKS.md](BENCHMARKS.md)) is in the repository and the CI job `bench smoke` runs it at 10,000 vectors. The only committed result files are recall results on generated data and on one set of real embeddings ([EVIDENCE.md](EVIDENCE.md)).
 - The longer mode of the graph test program (a recall curve at n = 20000) is not wired into the JUnit tests.
 
 ## Import notes

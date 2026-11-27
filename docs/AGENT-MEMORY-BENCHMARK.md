@@ -15,7 +15,7 @@ On a stream of creates, reads, updates, and deletes, does an index stay correct 
 | `Bench` ([BENCHMARKS.md](BENCHMARKS.md)) | Static recall and latency, filtered cells with random filters, checks of writes, a concurrent phase of adds and deletes with recall scored once at its end, a JVector arm | Replacements under load, recall during the stream, real data in the concurrent phase, updates in the JVector arm |
 | [`PacedWrites`](BENCHMARKS.md#paced-writes) | Adds at a fixed rate with paced searches, write amplification | Deletes and replacements |
 | [`MergeGenerations`](BENCHMARKS.md#successive-merges) | Recall over successive merges with deletes | Writes during searches, other libraries |
-| `AgentMemory`, the first step of [#159](https://github.com/humemai/tiervec/issues/159): [the runbook](#the-runbook) replayed into the exact, tier, and live graph arms ([how](#how-the-program-replays-a-runbook)) | Creates, updates, deletes, reuses, batches, searches, and checkpoints from a seed; violation counts; recall at every checkpoint; rows built per row written; bytes held per row | Restarts, filtered searches, many collections as its own study, the JVector and Lucene arms, real embeddings, every timing |
+| `AgentMemory`, the first step of [#159](https://github.com/humemai/tiervec/issues/159): [the runbook](#the-runbook) replayed into the exact, tier, and live graph arms ([how](#how-the-program-replays-a-runbook)) | Creates, updates, deletes, reuses, batches, searches, and checkpoints from a seed; violation counts; recall at every checkpoint; distance computations; rows built per row written; memory per row; the [screen](#the-screen), started by hand | Restarts, filtered searches, many collections as its own study, the JVector and Lucene arms, real embeddings, every timing |
 
 ## The workload
 
@@ -72,13 +72,30 @@ java -Xmx2g --add-modules jdk.incubator.vector -cp target/bench/classes ai.humem
   --shapes smoke,p20 --variants 'exact exact; tier tier; graph-a12 graph graph.alpha=1.2' --mix read --out target/agent-memory/out
 ```
 
-The program writes one runbook per shape into `--out`, reads it back, replays it into each variant, and writes `result.txt` there. A variant is `name arm key=value ...`. The arm `tier` takes every key of `TieredIndex.Config` (see `Config.toMap`) except `buildThreads`, `tailAgeMs`, and `mergeRatePerSec`; the arm `graph` takes `graph.M`, `graph.efConstruction`, `graph.efSearch`, `graph.alpha`, `graph.sq8`, and `consolidateAt` (default 0.2: `consolidate()` runs when the deleted nodes are more than that share of the live ones); the arm `exact` takes none. The shapes are `smoke` (3,000 rows), `p20`, `p200`, and `p2000` (50, 20, and 5 collections of that many rows), and `a10k` and `a100k`.
+The program writes one runbook per shape into `--out`, reads it back, replays it into each variant, and writes there `result.txt` (one line per fact), `results.tsv` (one row per shape and variant), `curve.tsv` (recall at every checkpoint), and `summary.md`. A variant is `name arm key=value ...`. The arm `tier` takes every key of `TieredIndex.Config` (see `Config.toMap`) except `buildThreads`, `tailAgeMs`, and `mergeRatePerSec`; the arm `graph` takes `graph.M`, `graph.efConstruction`, `graph.efSearch`, `graph.alpha`, `graph.sq8`, and `consolidateAt` (default 0.2: `consolidate()` runs when the deleted nodes are more than that share of the live ones); the arm `exact` takes none. The shapes are `smoke` (3,000 rows), `p20`, `p200`, and `p2000` (50, 20, and 5 collections of that many rows), and `a10k` and `a100k`.
 
 - **Nothing depends on timing.** The tier runs with one build thread, no seal by age, and no merge throttle, and with a host environment that runs each seal and merge inside the write that made it due. So one runbook gives the same segments on every run.
 - **Every search is checked** against the live rows: a deleted or never-added id, a score of another vector, and fewer than `k` ids when `k` rows are live.
 - **Writes are probed.** After a write, a search that allows only the written ids must see all of them. A filter of that size takes the exact path of every arm. The large shapes probe every 10th or 100th single write, and every batch.
 - **Batches are watched.** On the tier a second thread searches while the batch is applied. On the arms without atomic batches the replay applies one write at a time and searches in between, so their `partOfBatch` count is expected and does not fail the run.
-- **Rows built per row written** counts the rows put into a graph (for the tier by seals and merges, for the live graph once per added row) over the rows created, updated, or reused. **Bytes held per row** is what `bytesHeld()` reports, over the live rows at the end.
+- **Rows built per row written** counts the rows put into a graph (for the tier by seals and merges, for the live graph once per added row) over the rows created, updated, or reused. **Bytes held per row** is what `bytesHeld()` reports, over the live rows at the end. **Heap bytes per row** is what the heap gives back when the arms are closed and dropped, after full collections; for small collections the noise of the runtime is as large as the figure.
+
+## The screen
+
+The screen is the quick round for one idea: small shapes, many named variants over the same runbooks, and only measures that do not depend on timing. The ideas, with the bar each one has to pass, are in [SCREEN-IDEAS.md](SCREEN-IDEAS.md). Its results pick what is worth a confirmation run at larger sizes; they change no default by themselves.
+
+Start it by hand on any branch that has it. The result files are the artifact `screen-results` of the run, and the summary table is on the run page.
+
+```text
+gh workflow run screen.yml --ref <branch>
+gh workflow run screen.yml --ref <branch> -f shapes=p20,a10k -f variants='tier tier; mine tier tailLimit=500' -f seed=2
+```
+
+`--preset screen` runs `p20`, `p200`, `p2000`, and `a10k` (add `a100k` with `--shapes`), 128 dimensions, the write-heavy mix, and the variants of `src/bench/agent-memory-screen.variants`. It reports violations, recall at every checkpoint, distance computations per search and per written row, rows built per row written, and memory per row.
+
+- **Distance computations** are counted by a copy of the library in which `scripts/instrument_distances.py` adds one line to every distance kernel; the library that ships is unchanged, and the screen refuses a build that does not count. Compile `target/agent-memory/src` (the copy) instead of `src/main/java`. A computation on quantized codes counts as one, and `quantizedPerSearch` says how many of them there were. Per search they are counted over the queries of the checkpoints, the same queries that recall is scored on; per written row over the writes and their maintenance. Probes are in neither.
+- **The same numbers again.** On one machine, two runs of one seed on one commit give the same results apart from the heap column, and the CI smoke checks that. Another CPU can have other vector lanes, which can move a float32 score in its last digits.
+- **What a screen cannot say.** The data is generated, the sizes are small, and nothing is timed. Recall is usually higher on small sets, and the size at which a graph beats a scan depends on the dimension and the machine.
 
 ## Metrics
 

@@ -11,9 +11,13 @@ import java.util.Map;
 
 /**
  * The agent-memory benchmark (docs/AGENT-MEMORY-BENCHMARK.md, issue #159). For every shape it generates a runbook from the seed, writes it
- * to a file, reads the file back, and replays it into every variant. It counts violations, scores recall at every checkpoint, and writes
- * {@code result.txt}. Nothing is timed. Exit code 0: no failure; 1: a violation that fails the run, a failed arm, or recall below the floor;
- * 2: wrong options.
+ * to a file, reads the file back, and replays it into every variant. It counts violations, scores recall at every checkpoint, and writes the
+ * result files into {@code --out}: {@code result.txt} (one line per fact), {@code results.tsv} (one row per shape and variant),
+ * {@code curve.tsv} (recall per checkpoint), and {@code summary.md}. Nothing is timed. Exit code 0: no failure; 1: a violation that fails the
+ * run, a failed arm, or recall below the floor; 2: wrong options.
+ *
+ * <p>{@code --preset screen} is the quick round for an idea: the small shapes, many variants, and measures that do not depend on timing. It
+ * needs the copy of the library that counts distance computations (scripts/instrument_distances.py).
  */
 public final class AgentMemory {
     /** the size of a shape. One probe visits every row of a collection, so the large shapes probe only every {@code probeEvery}-th write. */
@@ -27,21 +31,33 @@ public final class AgentMemory {
     private static final String SMOKE_VARIANTS = "exact exact; tier tier; tier-small tier tailLimit=300 smallLimit=100 maxSegments=3;"
             + " tier-insert tier tailLimit=300 smallLimit=100 maxSegments=3 mergeMode=INSERT; graph-a10 graph graph.alpha=1.0; graph-a12 graph graph.alpha=1.2";
 
-    private static Map<String, String> defaults() {
+    private static final String SCREEN_VARIANTS = "@src/bench/agent-memory-screen.variants";
+
+    private static Map<String, String> defaults(String preset) {
+        boolean screen = switch (preset) {
+            case "smoke" -> false;
+            case "screen" -> true;
+            default -> throw new IllegalArgumentException("--preset is smoke or screen");
+        };
         Map<String, String> d = new LinkedHashMap<>();
-        d.put("shapes", "smoke,p20");           // names of SHAPES, separated by ','
-        d.put("variants", SMOKE_VARIANTS);      // 'name arm key=value ...' separated by ';', see MemoryArm.Variant
+        d.put("preset", preset);
+        d.put("shapes", screen ? "p20,p200,p2000,a10k" : "smoke,p20"); // names of SHAPES, separated by ','
+        d.put("variants", screen ? SCREEN_VARIANTS : SMOKE_VARIANTS);  // 'name arm key=value ...' separated by ';', or @file with one per line
         d.put("seed", "1");
-        d.put("dim", "64");
-        d.put("mix", "read");                   // read: 4 searches per written row; write: 1 search per 8 written rows
-        d.put("turnover", "3");                 // retired row versions per live row
+        d.put("dim", screen ? "128" : "64");
+        d.put("mix", screen ? "write" : "read"); // read: 4 searches per written row; write: 1 search per 8 written rows
+        d.put("turnover", "3");                  // retired row versions per live row
         d.put("checkpoints", "10");
-        d.put("min-recall", "0");               // the run fails when the mean recall of a checkpoint is below this
+        d.put("min-recall", "0");                // the run fails when the mean recall of a checkpoint is below this
         d.put("out", "target/agent-memory/out"); // the directory of the runbooks and the results
         return d;
     }
 
     private final List<String> lines = new ArrayList<>();
+    private final List<String> table = new ArrayList<>();
+    private final List<String> curve = new ArrayList<>();
+    private final List<String> summary = new ArrayList<>();
+    private final boolean counted = DistanceCount.active();
     private int failures;
 
     private void line(String s) {
@@ -55,14 +71,18 @@ public final class AgentMemory {
     }
 
     public static void main(String[] args) throws Exception {
-        Map<String, String> o = defaults();
+        Map<String, String> o;
         List<Shape> shapes = new ArrayList<>();
         List<MemoryArm.Variant> variants;
         List<Runbook.Params> params = new ArrayList<>();
         double floor;
         try {
+            if (args.length % 2 != 0) throw new IllegalArgumentException("options are --key value pairs");
+            String preset = "smoke";
+            for (int i = 0; i < args.length; i += 2) if (args[i].equals("--preset")) preset = args[i + 1];
+            o = defaults(preset);
             for (int i = 0; i < args.length; i += 2) {
-                if (!args[i].startsWith("--") || !o.containsKey(args[i].substring(2)) || i + 1 >= args.length) {
+                if (!args[i].startsWith("--") || !o.containsKey(args[i].substring(2))) {
                     throw new IllegalArgumentException("bad option " + args[i] + " (options are --key value pairs: " + o.keySet() + ")");
                 }
                 o.put(args[i].substring(2), args[i + 1]);
@@ -73,7 +93,8 @@ public final class AgentMemory {
                 if (shapes.contains(shape)) throw new IllegalArgumentException("the shape " + shape.name() + " is named twice");
                 shapes.add(shape);
             }
-            variants = MemoryArm.Variant.parseAll(o.get("variants"));
+            String text = o.get("variants");
+            variants = MemoryArm.Variant.parseAll(text.startsWith("@") ? Files.readString(Path.of(text.substring(1))) : text);
             double searchesPerWrite = switch (o.get("mix")) {
                 case "read" -> 4.0;
                 case "write" -> 0.125;
@@ -85,21 +106,40 @@ public final class AgentMemory {
                         Integer.parseInt(o.get("checkpoints")), s.queries(), 50));
             }
             floor = Double.parseDouble(o.get("min-recall"));
-        } catch (IllegalArgumentException e) {
-            System.err.println(e.getMessage());
+        } catch (IllegalArgumentException | IOException e) {
+            System.err.println(e);
             System.exit(2);
             return;
         }
         AgentMemory run = new AgentMemory();
+        if (o.get("preset").equals("screen") && !run.counted) {
+            System.err.println("the screen reports distance computations: compile the copy of the library that scripts/instrument_distances.py makes");
+            System.exit(2);
+        }
         Path out = Path.of(o.get("out"));
         Files.createDirectories(out);
         run.line("AGENT-MEMORY format=1");
         String commit = Bench.sh("git", "rev-parse", "HEAD");
-        run.line("RUN started=" + Instant.now() + " commit=" + (commit == null ? "unknown" : commit) + " jdk=" + System.getProperty("java.runtime.version")
-                + " arch=" + System.getProperty("os.arch") + " kernels=" + (Kernels.VECTOR ? "vector" : "scalar") + " lanes=" + Kern.lanes());
+        String machine = "commit=" + (commit == null ? "unknown" : commit) + " jdk=" + System.getProperty("java.runtime.version")
+                + " arch=" + System.getProperty("os.arch") + " kernels=" + (Kernels.VECTOR ? "vector" : "scalar") + " lanes=" + Kern.lanes();
+        run.line("RUN started=" + Instant.now() + " " + machine);
+        run.line("OPTIONS " + o);
+        run.table.add(String.join("\t", "shape", "variant", "arm", "settings", "atomicBatches", "violations", "writeNotSeen", "deletedReturned", "oldScore",
+                "partOfBatch", "tooFewHits", "recallFinal", "recallLowest", "distancesPerSearch", "quantizedPerSearch", "distancesPerRowWritten",
+                "rowsBuiltPerRowWritten", "rowsRebuiltPerRowWritten", "bytesHeldPerRow", "heapBytesPerRow"));
+        run.curve.add(String.join("\t", "shape", "variant", "checkpoint", "recall"));
+        run.summary.add("## Agent-memory benchmark, preset " + o.get("preset"));
+        run.summary.add("");
+        run.summary.add("Seed " + o.get("seed") + ", " + o.get("dim") + " dimensions, " + o.get("mix") + " mix, generated data. " + machine.replace(" ", ", ")
+                + ". No timing. A `*` marks an arm without atomic batches, whose batches in part do not fail the run.");
         for (int i = 0; i < shapes.size(); i++) run.shape(shapes.get(i), params.get(i), variants, floor, out);
         run.line("SUMMARY status=" + (run.failures == 0 ? "OK" : "FAILED") + " failures=" + run.failures);
+        run.summary.add("");
+        run.summary.add(run.failures == 0 ? "No failure." : "**" + run.failures + " failures**, see `result.txt`.");
         Files.write(out.resolve("result.txt"), run.lines);
+        Files.write(out.resolve("results.tsv"), run.table);
+        Files.write(out.resolve("curve.tsv"), run.curve);
+        Files.write(out.resolve("summary.md"), run.summary);
         System.exit(run.failures == 0 ? 0 : 1);
     }
 
@@ -109,29 +149,54 @@ public final class AgentMemory {
         Runbook.Read read = Runbook.read(file);
         if (!read.sha256().equals(written)) throw new IOException(file + " changed between the write and the read");
         line("SHAPE name=" + shape.name() + " probeEvery=" + shape.probeEvery() + " runbookSha256=" + written + " " + params.describe());
+        summary.add("");
+        summary.add("### " + shape.name() + ": " + shape.collections() + " x " + shape.rows() + " rows, runbook `" + written.substring(0, 12) + "`");
+        summary.add("");
+        summary.add("| Variant | Violations | Batches in part | Recall, lowest | Recall, final | Distances per search | Rows built per row written "
+                + "| Distances per row written | Bytes held per row | Heap bytes per row |");
+        summary.add("|---|---|---|---|---|---|---|---|---|---|");
         MemoryReplay.Answers answers = new MemoryReplay.Answers(read.runbook());
         for (MemoryArm.Variant v : variants) {
             String who = "shape=" + shape.name() + " variant=" + v.name();
             try {
                 MemoryReplay.Result r = MemoryReplay.run(read.runbook(), answers, () -> v.open(params.dim()), shape.probeEvery());
-                report(who, v, r, floor);
+                report(shape.name(), who, v, r, floor);
             } catch (RuntimeException | OutOfMemoryError e) {
                 e.printStackTrace();
                 failure(who + " the replay stopped: " + e);
+                summary.add("| " + v.name() + " | the replay stopped | | | | | | | | |");
             }
         }
     }
 
-    private void report(String who, MemoryArm.Variant v, MemoryReplay.Result r, double floor) {
+    /** a count of distances over a number of things, or "-" in a build that does not count */
+    private String per(long distances, long things) { return counted ? Bench.f("%.1f", (double) distances / things) : "-"; }
+
+    private void report(String shape, String who, MemoryArm.Variant v, MemoryReplay.Result r, double floor) {
         line("VARIANT " + who + " arm=" + v.arm() + " atomicBatches=" + r.atomicBatches + " settings=" + v.describe());
-        for (int i = 0; i < r.recallSum.length; i++) line(Bench.f("CHECKPOINT %s n=%d recall=%.4f", who, i, r.recall(i)));
-        StringBuilder counts = new StringBuilder();
-        for (Violations.Kind k : Violations.Kind.values()) counts.append(' ').append(k.key).append('=').append(r.violations.count(k));
+        for (int i = 0; i < r.recallSum.length; i++) {
+            line(Bench.f("CHECKPOINT %s n=%d recall=%.4f", who, i, r.recall(i)));
+            curve.add(Bench.f("%s\t%s\t%d\t%.4f", shape, v.name(), i, r.recall(i)));
+        }
+        StringBuilder counts = new StringBuilder(), cells = new StringBuilder();
+        for (Violations.Kind k : Violations.Kind.values()) {
+            counts.append(' ').append(k.key).append('=').append(r.violations.count(k));
+            cells.append('\t').append(r.violations.count(k));
+        }
         long failing = r.violations.failing(r.atomicBatches);
-        line(Bench.f("RESULT %s violations=%d%s added=%d deleted=%d batches=%d searches=%d probes=%d recallFinal=%.4f recallLowest=%.4f"
-                        + " rowsBuiltPerWrite=%.3f rowsRebuiltPerWrite=%.3f bytesHeldPerRow=%.0f",
-                who, failing, counts, r.added, r.deleted, r.batches, r.searches, r.probes, r.finalRecall(), r.lowestRecall(),
-                (double) r.rowsBuilt / r.added, (double) r.rowsRebuilt / r.added, (double) r.bytesHeld / r.liveRows));
+        String recallFinal = Bench.f("%.4f", r.finalRecall()), recallLowest = Bench.f("%.4f", r.lowestRecall());
+        String perSearch = per(r.searchDistances, r.checkpointSearches), quantized = per(r.searchQuantized, r.checkpointSearches);
+        String perWrite = per(r.writeDistances, r.added);
+        String built = Bench.f("%.3f", (double) r.rowsBuilt / r.added), rebuilt = Bench.f("%.3f", (double) r.rowsRebuilt / r.added);
+        String held = Bench.f("%.0f", (double) r.bytesHeld / r.liveRows), heap = Bench.f("%.0f", (double) r.heapBytes / r.liveRows);
+        line("RESULT " + who + " violations=" + failing + counts + " added=" + r.added + " deleted=" + r.deleted + " batches=" + r.batches
+                + " searches=" + r.searches + " probes=" + r.probes + " recallFinal=" + recallFinal + " recallLowest=" + recallLowest
+                + " rowsBuiltPerWrite=" + built + " rowsRebuiltPerWrite=" + rebuilt + " bytesHeldPerRow=" + held + " distancesPerSearch=" + perSearch
+                + " quantizedPerSearch=" + quantized + " distancesPerRowWritten=" + perWrite + " heapBytesPerRow=" + heap);
+        table.add(String.join("\t", shape, v.name(), v.arm(), v.describe(), String.valueOf(r.atomicBatches), String.valueOf(failing)) + cells + "\t"
+                + String.join("\t", recallFinal, recallLowest, perSearch, quantized, perWrite, built, rebuilt, held, heap));
+        summary.add("| " + String.join(" | ", v.name() + (r.atomicBatches ? "" : " \\*"), String.valueOf(failing),
+                String.valueOf(r.violations.count(Violations.Kind.PART_OF_BATCH)), recallLowest, recallFinal, perSearch, built, perWrite, held, heap) + " |");
         for (String x : r.violations.examples) line("EXAMPLE " + who + " " + x);
         if (failing > 0) failure(who + " " + failing + " violations");
         for (String x : r.failures) failure(who + " " + x);

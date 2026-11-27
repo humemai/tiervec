@@ -392,7 +392,7 @@ class TierCorruptionTest {
         SegmentForge.le(t).putInt(t.length - 4, SegmentFormat.crc32c(t, 0, t.length - 4));
         Files.write(tf, t);
         Manifest m2 = new Manifest(m.generation(), m.epoch(), m.hwm(), m.versionCounter(), m.nextSegId(), m.fingerprint(), m.entries(), m.tombGeneration(),
-                t.length, SegmentFormat.crc32c(t, 0, t.length));
+                t.length, Manifest.tombChecksum(t, m.major()), m.tailRows(), m.tailLength(), m.tailCrc(), m.major());
         Files.write(dir.resolve(Manifest.manifestName(m.generation())), m2.encode(Manifest.FORMAT_MAJOR, Manifest.FORMAT_MINOR));
     }
 
@@ -434,6 +434,45 @@ class TierCorruptionTest {
         assertEquals("TOMBSTONES", beyond.section());
     }
 
+    @Test
+    void aTombstoneFileWithOtherBitsIsRefusedThoughItIsConsistentInItself(@TempDir Path other) throws IOException {
+        // #173: two checkpoints of the same generation, with the same segments and row counts, that hide different rows
+        copy(single, dir);
+        copy(single, other);
+        hideOneRow(dir, idOf(1));
+        hideOneRow(other, idOf(2));
+        Manifest mine = Manifest.readLatest(dir);
+        Manifest theirs = Manifest.readLatest(other);
+        assertEquals(mine.generation(), theirs.generation());
+        assertEquals(mine.entries(), theirs.entries());
+        Path file = dir.resolve(Manifest.tombName(mine.tombGeneration()));
+        byte[] own = Files.readAllBytes(file);
+        byte[] swapped = Files.readAllBytes(other.resolve(Manifest.tombName(theirs.tombGeneration())));
+        assertEquals(own.length, swapped.length);
+        assertTrue(!Arrays.equals(own, swapped), "the two files mark different rows");
+        // what the checksum of major 1 covered cannot tell them apart; what major 2 covers can
+        assertEquals(Manifest.tombChecksum(own, 1), Manifest.tombChecksum(swapped, 1));
+        assertTrue(Manifest.tombChecksum(own, 2) != Manifest.tombChecksum(swapped, 2));
+
+        Files.write(file, swapped);
+        Map<String, byte[]> before = snapshot(dir);
+        CorruptException e = assertInstanceOf(CorruptException.class, latestRefused(dir, "a swapped tombstone file").getCause());
+        assertEquals("TOMBSTONES", e.section());
+        assertInstanceOf(CorruptException.class, openRefused(dir, "a swapped tombstone file"));
+        assertUnchanged(before, dir, "a swapped tombstone file");
+        Files.write(file, own);
+        try (TieredIndex u = TieredIndex.open(dir, cfg())) {
+            assertEquals(2 * ROWS - 1, u.size());
+        }
+    }
+
+    private static void hideOneRow(Path d, long id) throws IOException {
+        try (TieredIndex t = TieredIndex.open(d, cfg())) {
+            assertTrue(t.delete(id));
+            t.checkpoint(d);
+        }
+    }
+
     // ---- versions, in the directory ----
 
     /**
@@ -453,7 +492,7 @@ class TierCorruptionTest {
             entries.add(e.segId() != segId ? e : new Manifest.Entry(e.segId(), e.n(), bytes.length, headerCrc, e.verMin(), e.verMax()));
         }
         Manifest m2 = new Manifest(m.generation(), m.epoch(), m.hwm(), m.versionCounter(), m.nextSegId(), m.fingerprint(), entries, m.tombGeneration(),
-                m.tombLength(), m.tombCrc());
+                m.tombLength(), m.tombCrc(), m.tailRows(), m.tailLength(), m.tailCrc(), m.major());
         Files.write(dir.resolve(Manifest.manifestName(m.generation())), m2.encode(Manifest.FORMAT_MAJOR, Manifest.FORMAT_MINOR));
     }
 
@@ -681,13 +720,15 @@ class TierCorruptionTest {
         copy(twoGen, dir);
         byte[] m = new byte[20];
         System.arraycopy(Files.readAllBytes(dir.resolve(Manifest.manifestName(2))), 0, m, 0, 8);
-        SegmentForge.le(m).putShort(8, (short) 2).putShort(10, (short) 0).putInt(12, 16);
+        SegmentForge.le(m).putShort(8, (short) (Manifest.FORMAT_MAJOR + 1)).putShort(10, (short) 0).putInt(12, 16);
         Files.write(dir.resolve(Manifest.manifestName(2)), withManifestCrc(m));
-        assertInstanceOf(UnsupportedException.class, latestRefused(dir, "short major 2"));
-        // the same bytes as major 1 are damage: this version's fields do not fit
-        SegmentForge.le(m).putShort(8, (short) 1);
-        Files.write(dir.resolve(Manifest.manifestName(2)), withManifestCrc(m));
-        assertEquals(1, Manifest.readLatest(dir).generation());
+        assertInstanceOf(UnsupportedException.class, latestRefused(dir, "short newer major"));
+        // the same bytes as a major that this version reads are damage: its fields do not fit
+        for (short known = 1; known <= Manifest.FORMAT_MAJOR; known++) {
+            SegmentForge.le(m).putShort(8, known);
+            Files.write(dir.resolve(Manifest.manifestName(2)), withManifestCrc(m));
+            assertEquals(1, Manifest.readLatest(dir).generation(), "major " + known);
+        }
     }
 
     // ---- damage to the newest of two generations ----

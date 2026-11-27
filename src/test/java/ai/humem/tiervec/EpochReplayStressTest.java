@@ -71,8 +71,10 @@ class EpochReplayStressTest {
                 boolean crash = rnd.nextBoolean();
                 if (rnd.nextInt(10) < 7) {
                     h.flushDeletes();
-                    t.sealNow();
-                    if (rnd.nextBoolean()) t.mergeNow(); // otherwise the generation keeps its hidden rows as tombstones
+                    if (rnd.nextBoolean()) { // otherwise the writes since the last seal are checkpointed in the tail
+                        t.sealNow();
+                        if (rnd.nextBoolean()) t.mergeNow(); // otherwise the generation keeps its hidden rows as tombstones
+                    }
                     assertTrue(t.awaitIdle(60_000), "the tier did not settle");
                     FaultHook hook = FaultHook.NONE;
                     if (rnd.nextBoolean()) {

@@ -161,6 +161,10 @@
                     <trimStackTrace>false</trimStackTrace>
                     <groups>${test.groups}</groups>
                     <excludedGroups>${test.excludedGroups}</excludedGroups>
+                    <!-- The jar of an earlier release, fetched by the execution "old-release-for-tests" below; OldReleaseTest reads it. -->
+                    <systemPropertyVariables>
+                        <tiervec.oldRelease>${project.build.directory}/old-release/tiervec-old-release.jar</tiervec.oldRelease>
+                    </systemPropertyVariables>
                     <!-- A test that hits its @Timeout prints the stack of every thread before it is interrupted. -->
                     <properties>
                         <configurationParameters>junit.jupiter.execution.timeout.threaddump.enabled = true</configurationParameters>
@@ -186,6 +190,33 @@
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-jar-plugin</artifactId>
                 <version>${maven-jar-plugin.version}</version>
+            </plugin>
+            <!-- A release that does not know the persisted tail (major 1 of the manifest). OldReleaseTest loads it in a class loader of its
+                 own, to write directories of the old format and to open new ones. It is fetched as a file and is on no class path. It stays
+                 at 0.1.1: a newer release would not test the same thing. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-dependency-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>old-release-for-tests</id>
+                        <phase>process-test-resources</phase>
+                        <goals>
+                            <goal>copy</goal>
+                        </goals>
+                        <configuration>
+                            <artifactItems>
+                                <artifactItem>
+                                    <groupId>ai.humem</groupId>
+                                    <artifactId>tiervec</artifactId>
+                                    <version>0.1.1</version>
+                                    <outputDirectory>${project.build.directory}/old-release</outputDirectory>
+                                    <destFileName>tiervec-old-release.jar</destFileName>
+                                </artifactItem>
+                            </artifactItems>
+                        </configuration>
+                    </execution>
+                </executions>
             </plugin>
         </plugins>
     </build>

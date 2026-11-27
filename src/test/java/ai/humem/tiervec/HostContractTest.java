@@ -188,7 +188,7 @@ class HostContractTest {
         assertFalse(new ContractVersion(1, 9).accepts(new ContractVersion(2, 0)));
         assertThrows(IllegalArgumentException.class, () -> new ContractVersion(-1, 0));
         for (Capability c : List.of(Capability.ATOMIC_BATCH, Capability.DEFERRED_APPLY, Capability.SEARCH_CONTEXT, Capability.PERSISTENCE,
-                Capability.SNAPSHOT_REBUILD, Capability.MAPPED_VECTORS)) {
+                Capability.SNAPSHOT_REBUILD, Capability.MAPPED_VECTORS, Capability.PERSISTED_TAIL)) {
             assertTrue(TieredIndex.capabilities().contains(c), c.name());
         }
         assertThrows(UnsupportedOperationException.class, () -> TieredIndex.capabilities().clear());

@@ -20,7 +20,7 @@ Every index implements `VecIndex`, over `float[]` vectors with a `long` id and o
 | `GraphIndex` | Mutable, concurrent HNSW-style graph. `seal()` turns it into a `SealedGraph`, `fromSealed` turns it back. |
 | `SealedGraph` | Immutable compact graph. The only mutation is a soft delete through a bitset. Has `serialize` and `load` (one segment file, see [SEGMENT-FORMAT.md](SEGMENT-FORMAT.md)). |
 | `IvfIndex` | Standalone inverted-file index with k-means lists and a background retrain. Not a segment type of `TieredIndex`. |
-| `TieredIndex` | The tier: an exact tail in front of sealed graph segments. A tier with an empty tail can be written with `checkpoint` and read with `open`. |
+| `TieredIndex` | The tier: an exact tail in front of sealed graph segments. A tier, its tail included, can be written with `checkpoint` and read with `open`. |
 | `Kernels`, `VKernels`, `NKernels`, `Kern`, `VKern` | Distance kernels. `Kernels` picks vector or scalar code once per JVM or image, for the flat, IVF, and graph kernels. `NKernels` holds the Vector API kernels for a native image: the fp32 dot and squared L2, the int8 dot, the SQ8 dots, and block16; its 128-bit forms of the last four are also what an aarch64 JVM uses for them. |
 
 ### Flat index

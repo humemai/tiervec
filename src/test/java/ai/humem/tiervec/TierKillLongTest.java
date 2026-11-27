@@ -152,6 +152,7 @@ class TierKillLongTest {
         Set<String> s = new TreeSet<>();
         s.add(Manifest.manifestName(m.generation()));
         s.add(Manifest.tombName(m.tombGeneration()));
+        if (m.tailRows() > 0) s.add(Manifest.tailName(m.generation()));
         for (Manifest.Entry e : m.entries()) s.add(Manifest.segName(e.segId()));
         return s;
     }

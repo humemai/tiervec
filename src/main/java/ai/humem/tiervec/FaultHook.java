@@ -13,6 +13,8 @@ public interface FaultHook {
     enum Step {
         /** the segment files are written and flushed (done by the caller before publish) */
         SEGMENTS_WRITTEN,
+        /** the tombstone file is written and flushed, and so is the tail file when the tail is not empty; their names are not flushed yet */
+        TAIL_WRITTEN,
         /** the tombstone file is written and flushed, and the directory is flushed: the new names are durable */
         DIR_SYNCED_AFTER_SEGMENTS,
         /** the temporary manifest holds its bytes but they are not flushed yet */

@@ -14,7 +14,7 @@ How to read it:
 tiervec cannot claim to be the best vector index for agent memory, and it cannot claim that its whole design follows the state of the art.
 
 - Its overall shape is established practice: an exact buffer for new rows, immutable index segments, delete markers, background merges, and the host's rows as the source of truth.
-- It is behind on filtered search, on memory per vector, on the update rules of graphs that live through deletes, on batch visibility under a steady stream of commits, and on restart with unsealed rows.
+- It is behind on filtered search, on memory per vector, on the update rules of graphs that live through deletes, and on batch visibility under a steady stream of commits.
 - Nothing is measured under churn: no recall over a long stream of updates and deletes, no latency under writes against another library, and nothing about thousands of small collections.
 - The largest open design question is whether segments beat one graph that is updated in place. Published work argues both ways, and no measurement here compares them.
 
@@ -35,7 +35,7 @@ tiervec cannot claim to be the best vector index for agent memory, and it cannot
 | 13 | [Batch visibility by waiting and scanning again](#consistency-transactions-and-concurrency) | Behind | [#163](https://github.com/humemai/tiervec/issues/163) |
 | 14 | [One write lock, many writers](#consistency-transactions-and-concurrency) | Unproven | [#60](https://github.com/humemai/tiervec/issues/60), [#159](https://github.com/humemai/tiervec/issues/159) |
 | 15 | [Host rows as the truth, id epoch, replay](#persistence-and-restart) | Matches | [#78](https://github.com/humemai/tiervec/issues/78) |
-| 16 | [The tail is not persisted](#persistence-and-restart) | Behind | [#158](https://github.com/humemai/tiervec/issues/158), [#159](https://github.com/humemai/tiervec/issues/159) |
+| 16 | [The tail is written at a checkpoint](#persistence-and-restart) | Matches, restart time unmeasured | [#159](https://github.com/humemai/tiervec/issues/159) |
 
 ## The workload that agent memory implies
 
@@ -132,9 +132,9 @@ Two conclusions follow, both *(inference)*. A conversational memory per user is 
 
 **Sources say.** FreshDiskANN rebuilds its in-memory index and delete list after a crash by replaying a redo log since the last snapshot. Cosmos DB stores its index in the database's own index trees, and TigerVector reuses the database's write-ahead log and commit protocol.
 
-**tiervec today.** The host's rows and log are the truth. Segments, tombstones, and a manifest are checkpointed and verified at `open`, and the host replays newer rows through an id epoch and a high-water id ([ID-EPOCH-AND-REPLAY.md](ID-EPOCH-AND-REPLAY.md)). `checkpoint` refuses a tier with a non-empty tail, so a host must seal first.
+**tiervec today.** The host's rows and log are the truth. Segments, tombstones, the tail, and a manifest are checkpointed and verified at `open`, and the host replays newer rows through an id epoch and a high-water id ([ID-EPOCH-AND-REPLAY.md](ID-EPOCH-AND-REPLAY.md)). `checkpoint` writes the tail as it is, without building a segment ([#158](https://github.com/humemai/tiervec/issues/158), [SEGMENT-FORMAT.md](SEGMENT-FORMAT.md#tail-file)).
 
-**Verdict.** The host contract **matches** the practice of an index that follows the database's log. The empty-tail rule is **behind** ([#158](https://github.com/humemai/tiervec/issues/158)). Restart time is unmeasured.
+**Verdict.** The host contract **matches** the practice of an index that follows the database's log, and a snapshot of the unsealed rows with a replay from the snapshot on is what FreshDiskANN describes. The whole tail is written at every checkpoint, and restart time is unmeasured.
 
 ### Hybrid search, recency, and time
 
@@ -159,7 +159,7 @@ Only what the linked sources state. A dash means that nothing was checked.
 
 - Filtered search has no filter-aware walk and untested thresholds.
 - Memory per vector is bound by fp32, and was higher than JVector's in the one posted comparison.
-- A checkpoint needs an empty tail, and restart time is unknown.
+- Restart time is unknown.
 - A search can be starved by a steady stream of batches.
 - The default merge rewrites whole graphs, and the default merge policy searches several segments.
 - There is no evidence for any size above 1,000,000 vectors, for concurrent writers at scale, or for many collections.

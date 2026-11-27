@@ -28,30 +28,43 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * One generation of the index directory: which segment files are live, the tombstone file that goes with them, and a fingerprint of the
- * data-affecting configuration. A manifest is a file {@code manifest-<generation>.tvm} that is written once under a temporary name and
- * renamed into place; it is never modified. The newest generation that validates is the live one.
+ * One generation of the index directory: which segment files are live, the tombstone file that goes with them, the tail file when the tier
+ * had rows outside its segments, and a fingerprint of the data-affecting configuration. A manifest is a file
+ * {@code manifest-<generation>.tvm} that is written once under a temporary name and renamed into place; it is never modified. The newest
+ * generation that validates is the live one.
  *
- * <p>{@code epoch} and {@code hwm} (the host's id epoch and high-water id) are carried in the file and are {@link #NONE} in this version.
- * {@code versionCounter} restores the tier's version counter; {@code nextSegId} is the smallest segment id not used by this generation.
- * {@code tombGeneration}, {@code tombLength} and {@code tombCrc} describe the tombstone file the manifest names; {@link #publish} fills
- * them in.
+ * <p>{@code epoch} is the host's id epoch and {@code hwm} the high-water id, the largest id that the segments or the tail of the generation
+ * hold; both are {@link #NONE} for a tier that never had an epoch. {@code versionCounter} restores the tier's version counter;
+ * {@code nextSegId} is the smallest segment id not used by this generation. {@code tombGeneration}, {@code tombLength} and {@code tombCrc}
+ * describe the tombstone file the manifest names: since major 2 {@code tombCrc} is the CRC32C of that file without its last 4 bytes, which
+ * are its own checksum; in major 1 it was the CRC32C of the whole file, which comes out the same for any content (#173). {@code tailRows},
+ * {@code tailLength} and {@code tailCrc} describe the tail file of the same generation ({@code tailCrc} is the CRC32C of its rows); all
+ * three are 0 when the tail was empty, and then there is no tail file. {@link #publish} fills in the fields of both files. {@code major} is
+ * the major version of the manifest, which says what {@code tombCrc} covers; a manifest of major 1 has no tail fields.
  */
 @Internal
 public record Manifest(long generation, long epoch, long hwm, long versionCounter, long nextSegId, Fingerprint fingerprint,
-                       List<Entry> entries, long tombGeneration, long tombLength, int tombCrc) {
+                       List<Entry> entries, long tombGeneration, long tombLength, int tombCrc, long tailRows, long tailLength, int tailCrc,
+                       int major) {
 
-    /** a value that was not set (epoch and high-water id in this version) */
+    /** a value that was not set (the epoch and the high-water id of a tier that never had an epoch) */
     public static final long NONE = Long.MIN_VALUE;
-    /** a reader refuses a larger major and opens a larger minor, like the segment format */
-    public static final int FORMAT_MAJOR = 1, FORMAT_MINOR = 0;
+    /**
+     * The version of the manifest that this code writes. A reader refuses a larger major and opens a larger minor, like the segment format.
+     * This code also reads major 1, which has no tail fields. A reader of major 1 refuses major 2, so it never serves segments without their
+     * tail.
+     */
+    public static final int FORMAT_MAJOR = 2, FORMAT_MINOR = 0;
+    /** the version of the tombstone file, which has its own number */
+    static final int TOMB_MAJOR = 1, TOMB_MINOR = 0;
 
     private static final byte[] MAGIC = {'T', 'V', 'M', 'A', 'N', '0', '0', '1'};
     private static final byte[] TOMB_MAGIC = {'T', 'V', 'T', 'O', 'M', 'B', '0', '1'};
     private static final Pattern MANIFEST_NAME = Pattern.compile("manifest-(\\d{20})\\.tvm");
-    private static final Pattern GEN_FILE = Pattern.compile("(manifest|tomb)-(\\d{20})\\.(tvm|tvd)(\\.tmp)?");
+    private static final Pattern GEN_FILE = Pattern.compile("(manifest|tomb|tail)-(\\d{20})\\.(tvm|tvd|tvt)(\\.tmp)?");
     private static final Pattern SEG_FILE = Pattern.compile("seg-(\\d{6,19})\\.tvs(\\.tmp)?");
-    private static final int FIXED_BODY = 100;
+    /** bytes of the body before the entries, in major 1 and in major 2 (which adds the tail fields) */
+    private static final int FIXED_BODY_1 = 100, FIXED_BODY_2 = 124;
     /** magic, major, minor and body length: the part of a manifest that is the same in every version */
     private static final int FRAME = 16;
     private static final int ENTRY_BYTES = 48;
@@ -67,13 +80,14 @@ public record Manifest(long generation, long epoch, long hwm, long versionCounte
         Objects.requireNonNull(fingerprint, "fingerprint");
         entries = List.copyOf(entries);
         if (generation < 0 || nextSegId < 0 || tombGeneration < 0) throw new IllegalArgumentException("negative generation or id");
+        if (tailRows < 0 || tailLength < 0 || (tailRows == 0) != (tailLength == 0)) throw new IllegalArgumentException("tail rows and tail length disagree");
     }
 
-    /** a manifest with epoch and high-water id unset and {@code nextSegId} above every listed segment; the tombstone fields are filled by publish */
+    /** a manifest with epoch and high-water id unset and {@code nextSegId} above every listed segment; publish fills the tombstone and tail fields */
     public static Manifest of(long generation, Fingerprint fingerprint, List<Entry> entries) {
         long next = 1;
         for (Entry e : entries) next = Math.max(next, e.segId() + 1);
-        return new Manifest(generation, NONE, NONE, 0L, next, fingerprint, entries, 0L, 0L, 0);
+        return new Manifest(generation, NONE, NONE, 0L, next, fingerprint, entries, 0L, 0L, 0, 0L, 0L, 0, FORMAT_MAJOR);
     }
 
     public static String manifestName(long generation) {
@@ -88,26 +102,32 @@ public record Manifest(long generation, long epoch, long hwm, long versionCounte
         return String.format(Locale.ROOT, "tomb-%020d.tvd", generation);
     }
 
+    public static String tailName(long generation) {
+        return String.format(Locale.ROOT, "tail-%020d.tvt", generation);
+    }
+
     // ---- publish ----
 
     /**
      * Makes {@code m} the live generation. The segment files it names must already exist, written and flushed (SegmentWriter does that).
-     * Order: write and flush the tombstone file, flush the directory (the new names are durable), write the manifest under a temporary
-     * name, flush it, rename it to its final name, flush the directory. The hook is called after each step. Nothing is cleaned up here:
-     * {@link #gc} removes what the new manifest no longer names, once the caller has switched to the new generation.
+     * Order: write and flush the tombstone file, then the tail file when there are tail rows, flush the directory (the new names are durable),
+     * write the manifest under a temporary name, flush it, rename it to its final name, flush the directory. The hook is called after each
+     * step. Nothing is cleaned up here: {@link #gc} removes what the new manifest no longer names, once the caller has switched to the new
+     * generation.
      *
-     * @return the manifest as written (with the tombstone fields filled in)
+     * @return the manifest as written (with the tombstone and tail fields filled in)
      */
     public static Manifest publish(Path dir, Manifest m, FaultHook hook) throws IOException {
-        return publish(dir, m, null, hook);
+        return publish(dir, m, null, TailFile.Rows.NONE, hook);
     }
 
     /**
      * {@link #publish(Path, Manifest, FaultHook)} with the hidden rows that the tombstone file records. {@code hidden[i]} belongs to entry i of
      * {@code m}: one bit per row (bit {@code r & 63} of word {@code r >>> 6} is row r, set when a delete or a replace has hidden the row), in
-     * {@code (n + 63) / 64} words with no bit at or above n. A null array, or a null element, hides nothing.
+     * {@code (n + 63) / 64} words with no bit at or above n. A null array, or a null element, hides nothing. {@code tail} holds the rows of
+     * the tail file, in the order of their versions; no tail file is written when there are none.
      */
-    static Manifest publish(Path dir, Manifest m, long[][] hidden, FaultHook hook) throws IOException {
+    static Manifest publish(Path dir, Manifest m, long[][] hidden, TailFile.Rows tail, FaultHook hook) throws IOException {
         Objects.requireNonNull(hook, "hook");
         final Path fin = dir.resolve(manifestName(m.generation()));
         if (Files.exists(fin)) throw new FileAlreadyExistsException(fin.toString());
@@ -122,8 +142,11 @@ public record Manifest(long generation, long epoch, long hwm, long versionCounte
             writeFully(ch, tomb);
             ch.force(true);
         }
+        TailFile.Written written = tail.size() == 0 ? new TailFile.Written(0L, 0)
+                : TailFile.write(dir.resolve(tailName(m.generation())), m.generation(), m.fingerprint().dim(), tail);
+        hook.at(FaultHook.Step.TAIL_WRITTEN);
         Manifest out = new Manifest(m.generation(), m.epoch(), m.hwm(), m.versionCounter(), m.nextSegId(), m.fingerprint(), m.entries(),
-                m.generation(), tomb.length, SegmentFormat.crc32c(tomb, 0, tomb.length));
+                m.generation(), tomb.length, tombChecksum(tomb, FORMAT_MAJOR), tail.size(), written.length(), written.crc(), FORMAT_MAJOR);
         SegmentFormat.fsyncDir(dir);
         hook.at(FaultHook.Step.DIR_SYNCED_AFTER_SEGMENTS);
         byte[] body = out.encode(FORMAT_MAJOR, FORMAT_MINOR);
@@ -150,7 +173,8 @@ public record Manifest(long generation, long epoch, long hwm, long versionCounte
 
     /**
      * The newest manifest in the directory that validates: magic, version, CRC32C, and every file it names present with the recorded
-     * length and a valid header, footer and locator (a constant amount of work per segment, no section is read). A newer candidate that
+     * length and a valid header, footer and locator (a constant amount of work per segment, no section is read), the tombstone file as the
+     * manifest describes it, and the length and header of the tail file (its rows are not read). A newer candidate that
      * fails is skipped and the next older one is tried, which is what a crash between the steps of {@link #publish} needs. Returns null when
      * the directory has no manifest file at all. Throws {@link CorruptException} when there are manifests but none validates. A manifest
      * or segment that is intact but written in a format this reader does not understand throws {@link UnsupportedException} at once and
@@ -213,6 +237,7 @@ public record Manifest(long generation, long epoch, long hwm, long versionCounte
             }
         }
         readTombstones(dir, m);
+        if (m.tailRows() > 0) TailFile.check(dir.resolve(tailName(m.generation())), m);
         return m;
     }
 
@@ -220,7 +245,7 @@ public record Manifest(long generation, long epoch, long hwm, long versionCounte
 
     /**
      * Deletes every file of this format in the directory that {@code live} does not name: older and newer manifests, retired segment files,
-     * old tombstone files and temporary files. Files of other names are left alone. Returns how many files were deleted.
+     * old tombstone and tail files and temporary files. Files of other names are left alone. Returns how many files were deleted.
      *
      * <p>Before the first delete the directory is flushed, so that the rename of {@code live} is durable before anything that it replaced is
      * gone. {@link #publish} has done that already; an open after a process was killed between the rename and its flush has not (#125).
@@ -233,6 +258,7 @@ public record Manifest(long generation, long epoch, long hwm, long versionCounte
         Set<String> keep = new HashSet<>();
         keep.add(manifestName(live.generation()));
         keep.add(tombName(live.tombGeneration()));
+        if (live.tailRows() > 0) keep.add(tailName(live.generation()));
         for (Entry e : live.entries()) keep.add(segName(e.segId()));
         int deleted = 0;
         try (DirectoryStream<Path> ds = Files.newDirectoryStream(dir)) {
@@ -272,8 +298,10 @@ public record Manifest(long generation, long epoch, long hwm, long versionCounte
 
     // ---- bytes of the manifest ----
 
+    /** the bytes of this manifest in the layout of {@code major}: major 1 has no tail fields, so it cannot name a tail */
     byte[] encode(int major, int minor) {
-        final int body = FIXED_BODY + ENTRY_BYTES * entries.size();
+        if (major == 1 && tailRows != 0) throw new IllegalStateException("a manifest of major 1 cannot name a tail");
+        final int body = (major == 1 ? FIXED_BODY_1 : FIXED_BODY_2) + ENTRY_BYTES * entries.size();
         ByteBuffer b = ByteBuffer.allocate(body + 4).order(ByteOrder.LITTLE_ENDIAN);
         b.put(MAGIC).putShort((short) major).putShort((short) minor).putInt(body);
         b.putLong(generation).putLong(epoch).putLong(hwm).putLong(versionCounter).putLong(nextSegId);
@@ -281,6 +309,7 @@ public record Manifest(long generation, long epoch, long hwm, long versionCounte
         b.put((byte) SegmentFormat.LAYOUT_CSR).put((byte) (fingerprint.sq8() ? 1 : 0));
         b.putInt(fingerprint.M()).putInt(fingerprint.efConstruction());
         b.putLong(tombGeneration).putLong(tombLength).putInt(tombCrc).putInt(0);
+        if (major != 1) b.putLong(tailRows).putLong(tailLength).putInt(tailCrc).putInt(0);
         b.putInt(entries.size());
         for (Entry e : entries) {
             b.putLong(e.segId()).putLong(e.n()).putLong(e.fileLength()).putInt(e.headerCrc()).putInt(0).putLong(e.verMin()).putLong(e.verMax());
@@ -305,7 +334,8 @@ public record Manifest(long generation, long epoch, long hwm, long versionCounte
         if (SegmentFormat.crc32c(raw, 0, bl) != b.getInt(bl)) throw new CorruptException("CRC32C mismatch", "MANIFEST");
         final int major = b.getShort(8) & 0xFFFF;
         if (major < 1 || major > FORMAT_MAJOR) throw new UnsupportedException("manifest format major version " + major + " is not supported (this reader supports " + FORMAT_MAJOR + ")");
-        if (bodyLen < FIXED_BODY) throw new CorruptException("bad manifest length", "MANIFEST");
+        final int fixed = major == 1 ? FIXED_BODY_1 : FIXED_BODY_2;
+        if (bodyLen < fixed) throw new CorruptException("bad manifest length", "MANIFEST");
         b.limit(bl);
         b.position(16);
         try {
@@ -325,9 +355,19 @@ public record Manifest(long generation, long epoch, long hwm, long versionCounte
             long tombLen = b.getLong();
             int tombCrc = b.getInt();
             b.getInt(); // reserved
+            long tailRows = 0;
+            long tailLen = 0;
+            int tailCrc = 0;
+            if (major != 1) {
+                tailRows = b.getLong();
+                tailLen = b.getLong();
+                tailCrc = b.getInt();
+                b.getInt(); // reserved
+            }
             long count = Integer.toUnsignedLong(b.getInt());
-            if (count > (bodyLen - FIXED_BODY) / ENTRY_BYTES) throw new CorruptException("entry count " + count + " does not fit the manifest", "MANIFEST");
+            if (count > (bodyLen - fixed) / ENTRY_BYTES) throw new CorruptException("entry count " + count + " does not fit the manifest", "MANIFEST");
             if (dim < 1 || gen < 0 || nextSeg < 0 || tombGen < 0 || tombLen < 0) throw new CorruptException("bad manifest field", "MANIFEST");
+            if (tailRows < 0 || tailLen < 0 || (tailRows == 0) != (tailLen == 0)) throw new CorruptException("bad tail fields in the manifest", "MANIFEST");
             Metric metric = SegmentFormat.metricOf(metricCode);
             if (idWidth != SegmentFormat.ID_WIDTH) throw new UnsupportedException("id width " + idWidth + " is not supported");
             if (layout != SegmentFormat.LAYOUT_CSR) throw new UnsupportedException("layer 0 layout " + layout + " is not supported");
@@ -344,7 +384,8 @@ public record Manifest(long generation, long epoch, long hwm, long versionCounte
                 if (segId < 0 || n < 0 || fileLength < 0 || !seen.add(segId)) throw new CorruptException("bad manifest entry " + i, "MANIFEST");
                 entries.add(new Entry(segId, n, fileLength, headerCrc, verMin, verMax));
             }
-            return new Manifest(gen, epoch, hwm, counter, nextSeg, new Fingerprint(dim, metric, m, efc, sq8), entries, tombGen, tombLen, tombCrc);
+            return new Manifest(gen, epoch, hwm, counter, nextSeg, new Fingerprint(dim, metric, m, efc, sq8), entries, tombGen, tombLen, tombCrc,
+                    tailRows, tailLen, tailCrc, major);
         } catch (BufferUnderflowException e) {
             throw new CorruptException("manifest is shorter than its fields", e);
         }
@@ -361,7 +402,7 @@ public record Manifest(long generation, long epoch, long hwm, long versionCounte
         long size = 24 + 4;
         for (Entry e : entries) size += 16 + 8L * ((e.n() + 63) / 64);
         ByteBuffer b = ByteBuffer.allocate(Math.toIntExact(size)).order(ByteOrder.LITTLE_ENDIAN);
-        b.put(TOMB_MAGIC).putShort((short) FORMAT_MAJOR).putShort((short) FORMAT_MINOR).putLong(gen).putInt(entries.size());
+        b.put(TOMB_MAGIC).putShort((short) TOMB_MAJOR).putShort((short) TOMB_MINOR).putLong(gen).putInt(entries.size());
         for (int i = 0; i < entries.size(); i++) {
             Entry e = entries.get(i);
             b.putLong(e.segId()).putLong(e.n());
@@ -396,10 +437,19 @@ public record Manifest(long generation, long epoch, long hwm, long versionCounte
         } catch (NoSuchFileException x) {
             throw new CorruptException("tombstone file " + tp.getFileName() + " is missing", "MANIFEST");
         }
-        if (tomb.length != m.tombLength() || SegmentFormat.crc32c(tomb, 0, tomb.length) != m.tombCrc()) {
+        if (tomb.length != m.tombLength() || tomb.length < 4 || tombChecksum(tomb, m.major()) != m.tombCrc()) {
             throw new CorruptException("tombstone file " + tp.getFileName() + " does not match the manifest", "TOMBSTONES");
         }
         return parseTombstones(tomb, m);
+    }
+
+    /**
+     * What a manifest of {@code major} records as the checksum of a tombstone file. Since major 2 it covers every byte before the file's own
+     * CRC32C, so another content gives another value. Major 1 covered the whole file, and a CRC32C over bytes followed by their own CRC32C
+     * is a constant (#173): that check finds damage inside the file and does not tell one consistent file from another.
+     */
+    static int tombChecksum(byte[] tomb, int major) {
+        return SegmentFormat.crc32c(tomb, 0, major == 1 ? tomb.length : tomb.length - 4);
     }
 
     private static long[][] parseTombstones(byte[] raw, Manifest m) throws IOException {
@@ -408,7 +458,7 @@ public record Manifest(long generation, long epoch, long hwm, long versionCounte
         for (int i = 0; i < TOMB_MAGIC.length; i++) {
             if (b.get(i) != TOMB_MAGIC[i]) throw new CorruptException("bad tombstone magic", "TOMBSTONES");
         }
-        if ((b.getShort(8) & 0xFFFF) > FORMAT_MAJOR) throw new UnsupportedException("tombstone format major version is not supported");
+        if ((b.getShort(8) & 0xFFFF) > TOMB_MAJOR) throw new UnsupportedException("tombstone format major version is not supported");
         final int end = raw.length - 4;
         if (SegmentFormat.crc32c(raw, 0, end) != b.getInt(end)) throw new CorruptException("CRC32C mismatch", "TOMBSTONES");
         if (b.getLong(12) != m.tombGeneration() || Integer.toUnsignedLong(b.getInt(20)) != m.entries().size()) {

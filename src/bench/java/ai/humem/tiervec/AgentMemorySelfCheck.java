@@ -285,11 +285,10 @@ public final class AgentMemorySelfCheck {
         Violations v = new Violations();
         v.add(Violations.Kind.PART_OF_BATCH, "x");
         check(v.failing(true) == 1 && v.failing(false) == 0, "a batch in part fails only an arm that promises atomic batches");
+        for (int i = 0; i < 20; i++) v.add(Violations.Kind.PART_OF_BATCH, "x");
         v.add(Violations.Kind.WRITE_NOT_SEEN, "y");
-        Violations sum = new Violations();
-        sum.add(v);
-        sum.add(v);
-        check(sum.failing(false) == 2 && sum.count(Violations.Kind.PART_OF_BATCH) == 2 && sum.examples.size() == 4, "the counters add up");
+        check(v.count(Violations.Kind.PART_OF_BATCH) == 21 && v.failing(false) == 1 && v.examples.contains("writeNotSeen: y") && v.examples.size() == 4,
+                "many batches in part do not hide the example of another kind: " + v.examples);
         SizedIdFilter only = Violations.only(new long[] {4, 5, 5});
         check(only.test(4) && !only.test(6) && only.allowedCount() == 2, "the filter of a probe");
     }

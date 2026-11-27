@@ -145,6 +145,41 @@ jobs:
         uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
         with:
           version: "0.13.4"
+      # issue #159: the screen preset (screen.yml runs it by hand), on the copy of the library that counts distance computations. Two runs of one
+      # seed must give the same numbers, apart from the heap.
+      - name: The agent-memory screen at its smallest shapes
+        run: |
+          uv run --no-project --python 3.12 scripts/instrument_distances.py src/main/java target/agent-memory/src
+          mkdir -p target/agent-memory/classes
+          find target/agent-memory/src src/bench/java -name '*.java' > target/agent-memory/sources.txt
+          javac -d target/agent-memory/classes --add-modules jdk.incubator.vector @target/agent-memory/sources.txt
+          run() { timeout 600 java -Xmx2g --add-modules jdk.incubator.vector -cp target/agent-memory/classes ai.humem.tiervec.AgentMemory --preset screen "$@"; }
+          start=$(date +%s)
+          run --shapes p20 --out target/agent-memory/default
+          v='exact exact; tier-small tier tailLimit=50 smallLimit=20 maxSegments=3; graph-a12 graph graph.alpha=1.2'
+          for i in 1 2; do run --shapes p20,p200 --variants "$v" --out "target/agent-memory/screen$i"; done
+          echo "agent-memory screen: $(( $(date +%s) - start )) s"
+          cat target/agent-memory/default/summary.md
+          r=target/agent-memory/screen1/result.txt
+          # the exact arm computes one distance per live row, so the count is checked where the number is known
+          grep -q -E '^RESULT shape=p20 variant=exact .* distancesPerSearch=20\.0 ' "$r"
+          grep -q -E '^RESULT shape=p200 variant=exact .* distancesPerSearch=200\.0 ' "$r"
+          # the graph computes distances while it is written, the exact arm none
+          grep -q -E '^RESULT shape=p200 variant=exact .* distancesPerRowWritten=0\.0 ' "$r"
+          grep -q -E '^RESULT shape=p200 variant=graph-a12 .* distancesPerRowWritten=[1-9]' "$r"
+          # this tier sealed and merged
+          grep -E '^RESULT shape=p200 variant=tier-small ' "$r" | grep -q -v ' rowsRebuiltPerWrite=0.000 '
+          # no column but the last one, the heap, depends on the run
+          for i in 1 2; do cut -f1-19 "target/agent-memory/screen$i/results.tsv" > "target/agent-memory/screen$i.rows"; done
+          test "$(wc -l < target/agent-memory/screen1.rows)" -eq 7
+          diff target/agent-memory/screen1.rows target/agent-memory/screen2.rows
+          diff target/agent-memory/screen1/curve.tsv target/agent-memory/screen2/curve.tsv
+          # the screen refuses a build that does not count distances
+          code=0
+          timeout 300 java -Xmx1g --add-modules jdk.incubator.vector -cp target/bench/classes ai.humem.tiervec.AgentMemory --preset screen --shapes p20 \
+            --out target/agent-memory/uncounted > target/agent-memory/uncounted.log 2>&1 || code=$?
+          echo "screen without the counter, exit code: $code"
+          test "$code" -eq 2
       - name: Prepare a small data set in the layout of the real one
         run: |
           uv run --python 3.12 .github/scripts/make-smoke-parquet.py target/bench/smoke-parquet 5100 64 3

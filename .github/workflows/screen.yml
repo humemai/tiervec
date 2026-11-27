@@ -1,0 +1,93 @@
+# The screen of the agent-memory benchmark (docs/AGENT-MEMORY-BENCHMARK.md, "The screen", issue #159): one runbook per small shape replayed
+# into many named variants of the index, with measures that do not depend on timing (violations, recall under churn, distance computations, rows
+# rebuilt per row written, memory per row). It runs by hand only, on any branch: gh workflow run screen.yml --ref <branch>. The result files
+# are the artifact "screen-results", and the summary table is on the run page. A violation that fails a run makes the job red.
+# Actions are pinned to full commit SHAs (see lint-workflows.yml).
+name: Screen (agent memory)
+
+on:
+  workflow_dispatch:
+    inputs:
+      shapes:
+        description: "Shapes, separated by ',': p20, p200, p2000, a10k, a100k. Empty: all but a100k"
+        required: false
+        default: ""
+        type: string
+      variants:
+        description: "Variants 'name arm key=value ...' separated by ';'. Empty: src/bench/agent-memory-screen.variants"
+        required: false
+        default: ""
+        type: string
+      seed:
+        description: "Seed of the runbooks"
+        required: false
+        default: "1"
+        type: string
+      dim:
+        description: "Dimensions of the generated vectors"
+        required: false
+        default: "128"
+        type: string
+      mix:
+        description: "write: 1 search per 8 written rows; read: 4 searches per written row"
+        required: false
+        default: "write"
+        type: choice
+        options:
+          - write
+          - read
+
+permissions:
+  contents: read
+
+jobs:
+  screen:
+    name: agent-memory screen (JDK 25)
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
+        with:
+          distribution: temurin
+          java-version: "25"
+      - name: Set up uv
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+        with:
+          version: "0.13.4"
+      - name: Compile the benchmark with the copy of the library that counts distances
+        run: |
+          uv run --no-project --python 3.12 scripts/instrument_distances.py src/main/java target/agent-memory/src
+          mkdir -p target/agent-memory/classes
+          find target/agent-memory/src src/bench/java -name '*.java' > target/agent-memory/sources.txt
+          javac -d target/agent-memory/classes --add-modules jdk.incubator.vector @target/agent-memory/sources.txt
+      # the inputs reach the shell as environment variables, never as part of the script
+      - name: Run the screen
+        env:
+          SHAPES: ${{ inputs.shapes }}
+          VARIANTS: ${{ inputs.variants }}
+          SEED: ${{ inputs.seed }}
+          DIM: ${{ inputs.dim }}
+          MIX: ${{ inputs.mix }}
+        run: |
+          args=(--preset screen --seed "$SEED" --dim "$DIM" --mix "$MIX" --out target/agent-memory/screen)
+          if [ -n "$SHAPES" ]; then args+=(--shapes "$SHAPES"); fi
+          if [ -n "$VARIANTS" ]; then args+=(--variants "$VARIANTS"); fi
+          java -Xmx10g --add-modules jdk.incubator.vector -cp target/agent-memory/classes ai.humem.tiervec.AgentMemory "${args[@]}"
+      - name: Summary
+        if: always()
+        run: cat target/agent-memory/screen/summary.md >> "$GITHUB_STEP_SUMMARY" || true
+      # the runbooks are left out: the same seed on the same commit writes them again, and result.txt holds their SHA-256
+      - name: Upload the result files
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: screen-results
+          path: |
+            target/agent-memory/screen/result.txt
+            target/agent-memory/screen/results.tsv
+            target/agent-memory/screen/curve.tsv
+            target/agent-memory/screen/summary.md
+          if-no-files-found: ignore

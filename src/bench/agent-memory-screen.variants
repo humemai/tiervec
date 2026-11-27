@@ -1,0 +1,7 @@
+# The variants of the screen preset of the agent-memory benchmark, one per line: name arm key=value ...
+# (docs/AGENT-MEMORY-BENCHMARK.md, "The screen"). An idea of docs/SCREEN-IDEAS.md adds its variants here.
+exact exact
+tier tier
+tier-insert tier mergeMode=INSERT
+graph-a10 graph graph.alpha=1.0
+graph-a12 graph graph.alpha=1.2

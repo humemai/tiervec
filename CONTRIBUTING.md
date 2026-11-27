@@ -81,6 +81,8 @@ To ask for the slow tests on a pull request, add the label `ci:slow`. If you can
 
 The slow tests also run by hand on any branch: `gh workflow run slow-tests.yml --ref <branch>`.
 
+The screen of the agent-memory benchmark runs only by hand: `gh workflow run screen.yml --ref <branch>` compares variants of the index without timing anything ([The screen](docs/AGENT-MEMORY-BENCHMARK.md#the-screen)). An idea for the index is listed in [docs/SCREEN-IDEAS.md](docs/SCREEN-IDEAS.md) before its first run.
+
 The arm64 fast tests and the native image jobs do not run on an ordinary pull request. When a change can behave differently on arm64 or in a native image (a kernel, for example), start them on the branch before the merge: `gh workflow run ci.yml --ref <branch>` (every job of `ci.yml`) and `gh workflow run native-image.yml --ref <branch>`. This needs write access, so ask the maintainer if you do not have it. When one of these jobs is red on `main`, the workflow opens the issue "arm64 tests are red on main" or "Native image jobs are red on main", or comments on it when it is already open.
 
 When a fast test job on x86-64 Linux or Windows is red on `main`, the workflow opens the issue "Fast tests are red on main", and when a slow run on `main` is red, the issue "Slow tests are red on main"; it comments on the issue when that is already open. The slow tests are in `.github/workflows/slow-tests.yml`; the other tests are in `ci.yml`.

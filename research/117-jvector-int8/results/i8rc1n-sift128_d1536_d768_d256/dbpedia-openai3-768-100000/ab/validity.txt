@@ -1,0 +1,1 @@
+ok INT8-FASTER p50 B/A 0.605 [0.602, 0.609] (12 clean pairs); A/A Z/A 1.002 [0.987, 1.006] (12 clean pairs) in [0.97, 1.03]

@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Layer 1 of the vector quantization screen, jvector INT8 re-run on the release 4.1.0-rc.1 (jv-int8-rc1-20261124/, 2026-11-24).
+     Copy of ../java-layer/pom.xml with the int8 profile folded in (no profile, no -P): jvector comes from -Dint8.jar (the Maven Central release jar, jars/jvector-4.1.0-rc.1.jar), classes and JMH libs go to ./target
+     of THIS folder. The engine and the other jars are the pinned wheel's, as in the first run (-Dwheel.jars). LuArm is excluded
+     (needs lucene-core), as in the int8 profile of the original. -->
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>ai.humem.bench</groupId>
+  <artifactId>vq-layer1-int8-rc1</artifactId>
+  <version>0.0.0</version>
+  <packaging>jar</packaging>
+  <properties>
+    <wheel.jars>${basedir}/wheel-jars</wheel.jars>
+    <int8.jar>${basedir}/jars/jvector-4.1.0-rc.1.jar</int8.jar>
+    <jmh.version>1.37</jmh.version>
+    <maven.compiler.release>25</maven.compiler.release>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+  </properties>
+  <dependencies>
+    <dependency><groupId>org.openjdk.jmh</groupId><artifactId>jmh-core</artifactId><version>${jmh.version}</version></dependency>
+    <dependency><groupId>local</groupId><artifactId>arcadedb-engine</artifactId><version>26.10.2</version><scope>system</scope><systemPath>${wheel.jars}/arcadedb-engine-26.10.2.jar</systemPath></dependency>
+    <dependency><groupId>local</groupId><artifactId>jvector</artifactId><version>4.1.0-rc.1</version><scope>system</scope><systemPath>${int8.jar}</systemPath></dependency>
+    <dependency><groupId>local</groupId><artifactId>agrona</artifactId><version>1.20.0</version><scope>system</scope><systemPath>${wheel.jars}/agrona-1.20.0.jar</systemPath></dependency>
+    <dependency><groupId>local</groupId><artifactId>slf4j-api</artifactId><version>2.0.20</version><scope>system</scope><systemPath>${wheel.jars}/slf4j-api-2.0.20.jar</systemPath></dependency>
+  </dependencies>
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId><artifactId>maven-compiler-plugin</artifactId><version>3.15.0</version>
+        <configuration>
+          <release>${maven.compiler.release}</release>
+          <excludes><exclude>**/LuArm.java</exclude></excludes>
+          <compilerArgs><arg>--add-modules</arg><arg>jdk.incubator.vector</arg></compilerArgs>
+          <annotationProcessorPaths>
+            <path><groupId>org.openjdk.jmh</groupId><artifactId>jmh-generator-annprocess</artifactId><version>${jmh.version}</version></path>
+          </annotationProcessorPaths>
+        </configuration>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId><artifactId>maven-dependency-plugin</artifactId><version>3.11.0</version>
+        <executions>
+          <execution><id>jmh-libs</id><phase>package</phase><goals><goal>copy-dependencies</goal></goals>
+            <configuration><outputDirectory>${project.build.directory}/lib</outputDirectory><includeScope>runtime</includeScope></configuration></execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
+</project>

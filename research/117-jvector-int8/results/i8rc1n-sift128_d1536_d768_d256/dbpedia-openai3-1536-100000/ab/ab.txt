@@ -1,0 +1,41 @@
+MINCLEAN 11
+== lat50-jv-FP32-vs-jv-FP32-aa
+clean pairs 12, dropped 0 
+median ratio B vs A 1.000  95% CI [0.987, 1.012]  (>1 = B worse)
+VERDICT: no detectable difference
+== lat50-jv-FP32-vs-jv-INT8
+clean pairs 11, dropped 1 [8]
+median ratio B vs A 0.607  95% CI [0.597, 0.618]  (>1 = B worse)
+VERDICT: B better by 38 to 40 percent
+== lat95-jv-FP32-vs-jv-FP32-aa
+clean pairs 12, dropped 0 
+median ratio B vs A 0.998  95% CI [0.967, 1.018]  (>1 = B worse)
+VERDICT: no detectable difference
+== lat95-jv-FP32-vs-jv-INT8
+clean pairs 11, dropped 1 [8]
+median ratio B vs A 0.590  95% CI [0.568, 0.598]  (>1 = B worse)
+VERDICT: B better by 40 to 43 percent
+== lat99-jv-FP32-vs-jv-FP32-aa
+clean pairs 12, dropped 0 
+median ratio B vs A 0.990  95% CI [0.963, 1.007]  (>1 = B worse)
+VERDICT: no detectable difference
+== lat99-jv-FP32-vs-jv-INT8
+clean pairs 11, dropped 1 [8]
+median ratio B vs A 0.566  95% CI [0.554, 0.588]  (>1 = B worse)
+VERDICT: B better by 41 to 45 percent
+== qps1-jv-FP32-vs-jv-FP32-aa
+clean pairs 12, dropped 0 
+median ratio B vs A 1.001  95% CI [0.986, 1.011]  (>1 = B worse)
+VERDICT: no detectable difference
+== qps1-jv-FP32-vs-jv-INT8
+clean pairs 12, dropped 0 
+median ratio B vs A 0.609  95% CI [0.593, 0.612]  (>1 = B worse)
+VERDICT: B better by 39 to 41 percent
+== qpsN-jv-FP32-vs-jv-FP32-aa
+clean pairs 12, dropped 0 
+median ratio B vs A 0.999  95% CI [0.986, 1.015]  (>1 = B worse)
+VERDICT: no detectable difference
+== qpsN-jv-FP32-vs-jv-INT8
+clean pairs 12, dropped 0 
+median ratio B vs A 0.533  95% CI [0.521, 0.541]  (>1 = B worse)
+VERDICT: B better by 46 to 48 percent

@@ -11,6 +11,11 @@ final class Poll {
 
     private final SearchContext context;
     private int left;
+    /** the exception that this poll threw, or null: only that one gets a partial result */
+    SearchCancelledException thrown;
+    /** the hit lists of the scan in progress, newest source first; the first {@code done} of them are of sources that were read to the end */
+    Hit[][] lists;
+    int done;
 
     Poll(SearchContext context) {
         this.context = context;
@@ -18,7 +23,7 @@ final class Poll {
 
     /** asks the context now and starts a new interval */
     void now() {
-        if (context.expired()) throw new SearchCancelledException("the search context expired");
+        if (context.expired()) throw thrown = new SearchCancelledException("the search context expired");
         left = INTERVAL;
     }
 

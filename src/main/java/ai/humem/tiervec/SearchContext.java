@@ -10,6 +10,21 @@ package ai.humem.tiervec;
  * being applied. A candidate is a vector that a scan or a graph walk looks at, whether or not the allow predicate accepts it. When the method returns
  * {@code true}, the search throws {@link SearchCancelledException} and returns no result.
  *
+ * <p>A caller that prefers some answer over none at a deadline returns {@code true} from {@link #partialWanted()}. The search still throws, and the
+ * exception carries the hits of the sources that were read to the end ({@link SearchCancelledException#partialHits()}):
+ *
+ * <pre>{@code
+ * SearchContext context = new SearchContext() {
+ *     public boolean expired()       { return System.nanoTime() - deadline >= 0; }
+ *     public boolean partialWanted() { return true; }
+ * };
+ * try {
+ *     use(index.search(query, 10, null, context));   // the complete answer
+ * } catch (SearchCancelledException e) {
+ *     useIncomplete(e.partialHits());                // at most 10 hits, best first
+ * }
+ * }</pre>
+ *
  * <p>The method must be cheap, must not block, and must not call into the index. An exception that it throws reaches the caller of the search unchanged. The
  * library does not look at the interrupt status of the thread; a context can.
  *
@@ -28,4 +43,17 @@ public interface SearchContext {
      * @return true when the search has to stop
      */
     boolean expired();
+
+    /**
+     * Asked once, when a search stops because {@link #expired()} returned true: whether the caller wants the hits that the search can still answer
+     * for. A source is a tail or a segment. The partial result holds the best hits, at most {@code k}, of the sources that were read to the end,
+     * with their exact scores; the source in progress is left out, so a search that stops inside the only large segment often has hits of the tail
+     * alone, or none. It holds no deleted id and no stale vector, as a complete result does. It is empty when a batch was applied while the search
+     * ran, because the search has no time left to run again.
+     *
+     * @return false (the default): the exception carries no hits
+     */
+    default boolean partialWanted() {
+        return false;
+    }
 }

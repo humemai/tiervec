@@ -377,6 +377,14 @@ public final class AgentMemorySelfCheck {
     }
 
     private static void replayWithFaultyArms() {
+        MemoryReplay.Result made = new MemoryReplay.Result();
+        made.recallSum = new double[] {0.5, 3.0, 4.0};
+        made.recallCount = new long[] {1, 4, 4};
+        check(close(made.churnMeanRecall(), 0.875) && made.lowestRecall() == 0.5, "the mean after the load leaves the load out: " + made.churnMeanRecall());
+        made.recallSum = new double[] {0.5};
+        made.recallCount = new long[] {1};
+        check(made.churnMeanRecall() == 0.5, "the mean of a run with the load only");
+
         Runbook rb = Runbook.generate(new Runbook.Params(11, 8, 100, 2, 2.0, 4, 0.5, 3, 5, 8));
         MemoryReplay.Answers answers = new MemoryReplay.Answers(rb);
         for (Fault fault : Fault.values()) {
@@ -388,7 +396,7 @@ public final class AgentMemorySelfCheck {
                 case NONE -> {
                     check(v.failing(false) == 0, "a right arm has no failing violation: " + what);
                     check(v.count(Violations.Kind.PART_OF_BATCH) > 0, "a batch applied one write at a time is seen in part: " + what);
-                    check(r.lowestRecall() == 1 && r.finalRecall() == 1, "the exact arm has recall 1: " + r.lowestRecall());
+                    check(r.lowestRecall() == 1 && r.finalRecall() == 1 && r.churnMeanRecall() == 1, "the exact arm has recall 1: " + r.lowestRecall());
                 }
                 case KEEPS_DELETED -> check(v.count(Violations.Kind.DELETED_RETURNED) > 0, what);
                 case KEEPS_OLD_VECTOR -> check(v.count(Violations.Kind.OLD_SCORE) > 0, what);

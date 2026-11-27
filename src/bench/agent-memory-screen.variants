@@ -3,5 +3,8 @@
 exact exact
 tier tier
 tier-insert tier mergeMode=INSERT
+# one graph segment that every seal merges into: the layout where each merge takes the largest segment (idea S2)
+tier-m1 tier maxSegments=1
+tier-m1-insert tier maxSegments=1 mergeMode=INSERT
 graph-a10 graph graph.alpha=1.0
 graph-a12 graph graph.alpha=1.2

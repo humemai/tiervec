@@ -44,9 +44,9 @@ public final class AgentMemory {
         d.put("shapes", screen ? "p20,p200,p2000,a10k" : "smoke,p20"); // names of SHAPES, separated by ','
         d.put("variants", screen ? SCREEN_VARIANTS : SMOKE_VARIANTS);  // 'name arm key=value ...' separated by ';', or @file with one per line
         d.put("seed", "1");
-        d.put("dim", screen ? "128" : "64");
-        d.put("latent", "0");                    // the kind of data, see Runbook: 0, or the dimensions that the noise of the rows spans
-        d.put("clusters", "0");                  // the clusters of a collection; 0: one per 20 rows, at least 4 and at most 16
+        d.put("dim", screen ? "768" : "64");     // the data of the screen was chosen by the rule of docs/SCREEN-IDEAS.md
+        d.put("latent", screen ? "768" : "0");   // the kind of data, see Runbook: 0, or the dimensions that the noise of the rows spans
+        d.put("clusters", screen ? "8" : "0");   // the clusters of a collection; 0: one per 20 rows, at least 4 and at most 16
         d.put("mix", screen ? "write" : "read"); // read: 4 searches per written row; write: 1 search per 8 written rows
         d.put("turnover", "3");                  // retired row versions per live row
         d.put("checkpoints", "10");
@@ -128,7 +128,7 @@ public final class AgentMemory {
         run.line("RUN started=" + Instant.now() + " " + machine);
         run.line("OPTIONS " + o);
         run.table.add(String.join("\t", "shape", "variant", "arm", "settings", "atomicBatches", "violations", "writeNotSeen", "deletedReturned", "oldScore",
-                "partOfBatch", "tooFewHits", "recallFinal", "recallLowest", "distancesPerSearch", "quantizedPerSearch", "distancesPerRowWritten",
+                "partOfBatch", "tooFewHits", "recallFinal", "recallLowest", "recallChurnMean", "distancesPerSearch", "quantizedPerSearch", "distancesPerRowWritten",
                 "rowsBuiltPerRowWritten", "rowsRebuiltPerRowWritten", "bytesHeldPerRow", "heapBytesPerRow"));
         run.curve.add(String.join("\t", "shape", "variant", "checkpoint", "recall"));
         run.summary.add("## Agent-memory benchmark, preset " + o.get("preset"));
@@ -163,9 +163,9 @@ public final class AgentMemory {
         summary.add(Bench.f("How hard the queries of the checkpoints are: local intrinsic dimension %.1f (from %d neighbours), relative contrast %.3f"
                 + " (mean distance over the distance of the 10th nearest row).", answers.intrinsicDimension(), neighbours, answers.contrast()));
         summary.add("");
-        summary.add("| Variant | Violations | Batches in part | Recall, lowest | Recall, final | Distances per search | Rows built per row written "
-                + "| Distances per row written | Bytes held per row | Heap bytes per row |");
-        summary.add("|---|---|---|---|---|---|---|---|---|---|");
+        summary.add("| Variant | Violations | Batches in part | Recall, lowest | Recall, mean after the load | Recall, final | Distances per search "
+                + "| Rows built per row written | Distances per row written | Bytes held per row | Heap bytes per row |");
+        summary.add("|---|---|---|---|---|---|---|---|---|---|---|");
         for (MemoryArm.Variant v : variants) {
             String who = "shape=" + shape.name() + " variant=" + v.name();
             try {
@@ -174,7 +174,7 @@ public final class AgentMemory {
             } catch (RuntimeException | OutOfMemoryError e) {
                 e.printStackTrace();
                 failure(who + " the replay stopped: " + e);
-                summary.add("| " + v.name() + " | the replay stopped | | | | | | | | |");
+                summary.add("| " + v.name() + " | the replay stopped | | | | | | | | | |");
             }
         }
     }
@@ -195,18 +195,20 @@ public final class AgentMemory {
         }
         long failing = r.violations.failing(r.atomicBatches);
         String recallFinal = Bench.f("%.4f", r.finalRecall()), recallLowest = Bench.f("%.4f", r.lowestRecall());
+        String recallChurnMean = Bench.f("%.4f", r.churnMeanRecall());
         String perSearch = per(r.searchDistances, r.checkpointSearches), quantized = per(r.searchQuantized, r.checkpointSearches);
         String perWrite = per(r.writeDistances, r.added);
         String built = Bench.f("%.3f", (double) r.rowsBuilt / r.added), rebuilt = Bench.f("%.3f", (double) r.rowsRebuilt / r.added);
         String held = Bench.f("%.0f", (double) r.bytesHeld / r.liveRows), heap = Bench.f("%.0f", (double) r.heapBytes / r.liveRows);
         line("RESULT " + who + " violations=" + failing + counts + " added=" + r.added + " deleted=" + r.deleted + " batches=" + r.batches
                 + " searches=" + r.searches + " probes=" + r.probes + " recallFinal=" + recallFinal + " recallLowest=" + recallLowest
-                + " rowsBuiltPerWrite=" + built + " rowsRebuiltPerWrite=" + rebuilt + " bytesHeldPerRow=" + held + " distancesPerSearch=" + perSearch
+                + " recallChurnMean=" + recallChurnMean + " rowsBuiltPerWrite=" + built + " rowsRebuiltPerWrite=" + rebuilt + " bytesHeldPerRow=" + held + " distancesPerSearch=" + perSearch
                 + " quantizedPerSearch=" + quantized + " distancesPerRowWritten=" + perWrite + " heapBytesPerRow=" + heap);
         table.add(String.join("\t", shape, v.name(), v.arm(), v.describe(), String.valueOf(r.atomicBatches), String.valueOf(failing)) + cells + "\t"
-                + String.join("\t", recallFinal, recallLowest, perSearch, quantized, perWrite, built, rebuilt, held, heap));
+                + String.join("\t", recallFinal, recallLowest, recallChurnMean, perSearch, quantized, perWrite, built, rebuilt, held, heap));
         summary.add("| " + String.join(" | ", v.name() + (r.atomicBatches ? "" : " \\*"), String.valueOf(failing),
-                String.valueOf(r.violations.count(Violations.Kind.PART_OF_BATCH)), recallLowest, recallFinal, perSearch, built, perWrite, held, heap) + " |");
+                String.valueOf(r.violations.count(Violations.Kind.PART_OF_BATCH)), recallLowest, recallChurnMean, recallFinal, perSearch, built, perWrite,
+                held, heap) + " |");
         for (String x : r.violations.examples) line("EXAMPLE " + who + " " + x);
         if (failing > 0) failure(who + " " + failing + " violations");
         for (String x : r.failures) failure(who + " " + x);

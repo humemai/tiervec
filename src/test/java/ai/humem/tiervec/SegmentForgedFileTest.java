@@ -4,6 +4,7 @@ import static ai.humem.tiervec.SegmentForge.refused;
 import static ai.humem.tiervec.SegmentTestSupport.graph;
 import static ai.humem.tiervec.SegmentTestSupport.params;
 import static ai.humem.tiervec.SegmentTestSupport.vectors;
+import static ai.humem.tiervec.SegmentTestSupport.vectorsOf;
 import static ai.humem.tiervec.SegmentTestSupport.versOf;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -62,7 +63,7 @@ class SegmentForgedFileTest {
     private void assertServedLikeTheOriginal(Path p) throws IOException {
         SealedGraph h = SealedGraph.load(p);
         assertArrayEquals(orig.ids, h.ids);
-        assertArrayEquals(orig.vec, h.vec);
+        assertArrayEquals(vectorsOf(orig), vectorsOf(h));
         assertArrayEquals(orig.level, h.level);
         assertArrayEquals(orig.off0, h.off0);
         assertArrayEquals(orig.edges0, h.edges0);

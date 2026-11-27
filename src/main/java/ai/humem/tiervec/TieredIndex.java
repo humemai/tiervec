@@ -1547,11 +1547,7 @@ public final class TieredIndex implements VecIndex {
                 }
                 final long[] mi = permute(Arrays.copyOf(ids, m), ord);
                 final long[] mv = permute(Arrays.copyOf(vers, m), ord);
-                final int d = dim;
-                final VecSource rows = j -> {
-                    int o = frr[j] * d;
-                    return Arrays.copyOfRange(fss[j].g.vec, o, o + d);
-                };
+                final VecSource rows = j -> fss[j].g.rawVector(frr[j]);
                 final SealedGraph sg;
                 if (insert) {
                     GraphIndex gi = GraphIndex.fromSealed(largest.g);

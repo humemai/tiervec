@@ -723,7 +723,7 @@ public final class GraphIndex implements VecIndex {
         Entry e = entry; int er = -1, ml = 0;
         if (e != null && e.node < hi && map[e.node] >= 0) { er = map[e.node]; ml = level[er]; }
         else for (int r = 0; r < m; r++) if (er < 0 || level[r] > ml) { er = r; ml = level[r]; }
-        return new SealedGraph(dim, metric, p, m, vec, codes, qb, qd, qn, ids, level, off0, Arrays.copyOf(edges0, ne), upIdx,
+        return new SealedGraph(dim, metric, p, m, new SealedVectors.OnHeap(vec, dim), codes, qb, qd, qn, ids, level, off0, Arrays.copyOf(edges0, ne), upIdx,
                 Arrays.copyOf(upOff, nuo), Arrays.copyOf(upEdges, nue), er, ml);
     }
 
@@ -735,12 +735,12 @@ public final class GraphIndex implements VecIndex {
         for (int r = 0; r < n; r++) {
             if (map[r] < 0) continue;
             int o = g.allocOrdinal(); Chunk c = g.chunk(o); int off = o & MASK;
-            System.arraycopy(sg.vec, r * g.dim, c.vec, off * g.dim, g.dim);
+            sg.copyVector(r, c.vec, off * g.dim);
             c.ids[off] = sg.ids[r];
             if (g.p.sq8() && sg.codes != null) {
                 System.arraycopy(sg.codes, r * g.dim, c.codes, off * g.dim, g.dim);
                 c.qbase[off] = sg.qbase[r]; c.qdelta[off] = sg.qdelta[r]; c.qnorm[off] = sg.qnorm[r];
-            } else if (g.p.sq8()) { float[] tmp = Arrays.copyOfRange(sg.vec, r * g.dim, (r + 1) * g.dim); g.writeNode(c, off, sg.ids[r], tmp); }
+            } else if (g.p.sq8()) { float[] tmp = sg.rawVector(r); g.writeNode(c, off, sg.ids[r], tmp); }
             int lv = sg.level[r]; int[][] ls = new int[lv + 1][];
             ls[0] = remap(sg.edges0, sg.off0[r], sg.off0[r + 1], map);
             for (int l = 1; l <= lv; l++) { int b = sg.upIdx[r]; ls[l] = remap(sg.upEdges, sg.upOff[b + l - 1], sg.upOff[b + l], map); }

@@ -18,7 +18,8 @@ import java.util.zip.CRC32C;
 
 /**
  * Reads a segment file written by {@link SegmentWriter}. The read is copy-based: every section is read into the heap arrays that
- * {@link SealedGraph} already uses (no memory mapping in this version).
+ * {@link SealedGraph} already uses (no memory mapping in this version). The graph gets the VEC array wrapped as
+ * {@code SealedVectors.OnHeap}.
  *
  * <p>{@link #inspect} reads the header block, the locator and the footer only: a constant amount of work whatever the file size. A file that is
  * cut short, has bytes appended, or has a damaged header, footer or locator fails there, before any section is read. {@link #read} then
@@ -239,8 +240,8 @@ public final class SegmentReader {
             if (r < 0 || r >= n) throw new CorruptException("row " + r + " out of range", "BYID");
             if (i > 0 && ids[r] <= ids[byId[i - 1]]) throw new CorruptException("rows are not in strictly increasing id order", "BYID");
         }
-        SealedGraph g = new SealedGraph(info.dim(), info.metric(), info.params(), n, vec, codes, qbase, qdelta, qnorm, ids, level, off0, edges0,
-                upIdx, upOff, upEdges, info.entryRow(), info.maxLevel(), byId);
+        SealedGraph g = new SealedGraph(info.dim(), info.metric(), info.params(), n, new SealedVectors.OnHeap(vec, info.dim()), codes, qbase, qdelta,
+                qnorm, ids, level, off0, edges0, upIdx, upOff, upEdges, info.entryRow(), info.maxLevel(), byId);
         return new Loaded(g, vers, info);
     }
 

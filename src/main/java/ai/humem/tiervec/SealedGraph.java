@@ -8,29 +8,30 @@ import java.util.concurrent.atomic.AtomicLongArray;
 import java.util.function.LongPredicate;
 
 /**
- * Immutable, compact form of a graph (the settled bulk): flat vector array, CSR neighbor lists (layer 0 in off0/edges0, layers above in
- * upIdx/upOff/upEdges), optional SQ8 codes. Searches are lock-free. The only mutation is a soft delete through a deletion bitset
- * (like a deletion vector); add() is unsupported. Produced by GraphIndex.seal(); GraphIndex.fromSealed() re-inflates it.
+ * Immutable, compact form of a graph (the settled bulk): the fp32 vectors row after row (behind {@code SealedVectors}; a heap array), CSR
+ * neighbor lists (layer 0 in off0/edges0, layers above in upIdx/upOff/upEdges), optional SQ8 codes. Searches are lock-free. The only
+ * mutation is a soft delete through a deletion bitset (like a deletion vector); add() is unsupported. Produced by GraphIndex.seal();
+ * GraphIndex.fromSealed() re-inflates it.
  */
 @Internal
 public final class SealedGraph implements VecIndex {
     final int dim; final Metric metric; final GraphIndex.Params params; final int n;
-    final float[] vec; final byte[] codes; final float[] qbase, qdelta, qnorm; final long[] ids; final byte[] level;
+    final SealedVectors vectors; final byte[] codes; final float[] qbase, qdelta, qnorm; final long[] ids; final byte[] level;
     final int[] off0, edges0, upIdx, upOff, upEdges; final int entryRow, maxLevel;
     private final int mode;
     final long[] sortedIds; final int[] sortedRows; // ids in increasing order, and the row of each (the BYID section of a segment file)
     private final AtomicLongArray dead; private final AtomicInteger live;
     private final ThreadLocal<Sc> tl = ThreadLocal.withInitial(Sc::new);
 
-    SealedGraph(int dim, Metric metric, GraphIndex.Params params, int n, float[] vec, byte[] codes, float[] qbase, float[] qdelta, float[] qnorm,
+    SealedGraph(int dim, Metric metric, GraphIndex.Params params, int n, SealedVectors vectors, byte[] codes, float[] qbase, float[] qdelta, float[] qnorm,
                 long[] ids, byte[] level, int[] off0, int[] edges0, int[] upIdx, int[] upOff, int[] upEdges, int entryRow, int maxLevel) {
-        this(dim, metric, params, n, vec, codes, qbase, qdelta, qnorm, ids, level, off0, edges0, upIdx, upOff, upEdges, entryRow, maxLevel, sortRows(ids, n));
+        this(dim, metric, params, n, vectors, codes, qbase, qdelta, qnorm, ids, level, off0, edges0, upIdx, upOff, upEdges, entryRow, maxLevel, sortRows(ids, n));
     }
 
     /** the same graph with the id order given: {@code byId[i]} is the row of the i-th smallest id. A segment file stores it, so a load skips the sort. */
-    SealedGraph(int dim, Metric metric, GraphIndex.Params params, int n, float[] vec, byte[] codes, float[] qbase, float[] qdelta, float[] qnorm,
+    SealedGraph(int dim, Metric metric, GraphIndex.Params params, int n, SealedVectors vectors, byte[] codes, float[] qbase, float[] qdelta, float[] qnorm,
                 long[] ids, byte[] level, int[] off0, int[] edges0, int[] upIdx, int[] upOff, int[] upEdges, int entryRow, int maxLevel, int[] byId) {
-        this.dim = dim; this.metric = metric; this.params = params; this.n = n; this.vec = vec; this.codes = codes;
+        this.dim = dim; this.metric = metric; this.params = params; this.n = n; this.vectors = vectors; this.codes = codes;
         this.qbase = qbase; this.qdelta = qdelta; this.qnorm = qnorm; this.ids = ids; this.level = level;
         this.off0 = off0; this.edges0 = edges0; this.upIdx = upIdx; this.upOff = upOff; this.upEdges = upEdges;
         this.entryRow = entryRow; this.maxLevel = maxLevel;
@@ -70,9 +71,9 @@ public final class SealedGraph implements VecIndex {
     /** true when the row was soft-deleted */
     public boolean isDeleted(int row) { return isDead(row); }
     /** copy of the stored fp32 vector of a row (unit length when the metric is COSINE, because vectors are normalized at add) */
-    public float[] rawVector(int row) { return Arrays.copyOfRange(vec, row * dim, (row + 1) * dim); }
+    public float[] rawVector(int row) { return vectors.row(row); }
     /** copy a row vector into dst starting at dstOff, no allocation */
-    public void copyVector(int row, float[] dst, int dstOff) { System.arraycopy(vec, row * dim, dst, dstOff, dim); }
+    public void copyVector(int row, float[] dst, int dstOff) { vectors.copy(row, dst, dstOff); }
     boolean isDead(int r) { return (dead.get(r >>> 6) >>> (r & 63) & 1L) != 0; }
     @Override public int dim() { return dim; }
     @Override public Metric metric() { return metric; }
@@ -92,11 +93,10 @@ public final class SealedGraph implements VecIndex {
     }
 
     private float distFp(float[] q, int r) {
-        int vo = r * dim;
         switch (mode) {
-            case GraphIndex.L2: return Kern.l2(q, 0, vec, vo, dim);
-            case GraphIndex.COS: return 1f - Kern.dot(q, 0, vec, vo, dim);
-            default: return -Kern.dot(q, 0, vec, vo, dim);
+            case GraphIndex.L2: return vectors.l2(q, r);
+            case GraphIndex.COS: return 1f - vectors.dot(q, r);
+            default: return -vectors.dot(q, r);
         }
     }
     private float dist(Sc s, int r, boolean q8) {
@@ -225,7 +225,7 @@ public final class SealedGraph implements VecIndex {
     }
 
     @Override public long bytesHeld() {
-        long b = (long) vec.length * 4 + (codes != null ? codes.length + 12L * n : 0) + 8L * n + n + 4L * (off0.length + edges0.length + upIdx.length + upOff.length + upEdges.length)
+        long b = vectors.heapBytes() + (codes != null ? codes.length + 12L * n : 0) + 8L * n + n + 4L * (off0.length + edges0.length + upIdx.length + upOff.length + upEdges.length)
                 + 12L * n + 8L * ((n + 63) / 64);
         return b;
     }

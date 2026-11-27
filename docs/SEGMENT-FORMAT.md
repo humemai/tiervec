@@ -212,7 +212,7 @@ Any failure throws. The overload `open(dir, dim, metric, config, rebuildSource)`
 
 ## What the first cut leaves out
 
-- Memory mapping. A segment is read into the heap arrays of `SealedGraph`.
+- Memory mapping. A segment is read into the heap arrays of `SealedGraph`. The graph, the writer, the merge, and `GraphIndex.fromSealed` reach the vectors (section `VEC`) through one internal interface, `SealedVectors`, whose only implementation is a heap array, so a mapped reader can replace that one section ([#27](https://github.com/humemai/tiervec/issues/27)). The other sections are used as arrays.
 - Replay of the tail by the library itself. The host replays what the segments lack through `RecordSource`.
 - The tail. `checkpoint` refuses a tier with a non-empty tail (an `IllegalStateException`).
 - Soft-deleted rows inside a segment file: `SegmentWriter` refuses a graph that has them. The tier does not make such graphs; it records hidden rows in the tombstone file.

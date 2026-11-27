@@ -15,7 +15,7 @@ uv run --no-project python -I research/106-real-embeddings/read_results.py --res
 
 ## Edits
 
-I replaced host names and local paths with neutral ones. In the result files of #117, `<study-dir>` stands for the study folder and `benchmark-host` for the machine, and the host environment file is called `env_host.sh`. Both plans are edited copies. The checksums that `env.txt` lists as kit sums are those of the files as they ran, so they do not match the files that I edited.
+I replaced host names and local paths with neutral ones. In the result files of #117, `<study-dir>` stands for the study folder and `benchmark-host` for the machine, and the host environment file is called `env_host.sh`. Both plans are edited copies. Where a comment in a script or a source file points to a README, it means the notes of the study folder as it ran, which are not published here. The checksums that `env.txt` lists as kit sums are those of the files as they ran, so they do not match the files that I edited.
 
 ## What is not here
 

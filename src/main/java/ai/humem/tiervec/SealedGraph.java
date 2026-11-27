@@ -5,6 +5,7 @@ import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLongArray;
+import java.util.function.IntPredicate;
 import java.util.function.LongPredicate;
 
 /**
@@ -122,10 +123,20 @@ public final class SealedGraph implements VecIndex {
 
     /** {@link #search(float[], int, LongPredicate, int, double)} for a caller that polls a {@link SearchContext}; {@code poll} null: no context */
     Hit[] search(float[] q, int k, LongPredicate allow, int ef, double scanBelow, Poll poll) {
+        return search(q, k, allow, null, ef, scanBelow, poll);
+    }
+
+    /**
+     * The same for a caller that hides rows of its own: {@code rows} says which rows may be returned (null: all of them). A search with
+     * {@code rows} plans and walks like a filtered search, and the predicate of the caller, {@code allow}, is asked about the rows that
+     * {@code rows} lets through only.
+     */
+    Hit[] search(float[] q, int k, LongPredicate allow, IntPredicate rows, int ef, double scanBelow, Poll poll) {
         FilterPlan.check(scanBelow);
         if (k <= 0 || n == 0) return new Hit[0];
         Sc s = prepare(q); ef = Math.max(ef, k);
-        if (FilterPlan.smallByHint(allow, ef)) return scanExact(s, k, allow, poll);
+        if (FilterPlan.smallByHint(allow, ef)) return scanExact(s, k, allow, rows, poll);
+        boolean filtered = allow != null || rows != null;
         boolean q8 = codes != null && params.sq8();
         if (poll != null) poll.before(1);
         int cur = entryRow; float curD = dist(s, cur, q8);
@@ -141,20 +152,30 @@ public final class SealedGraph implements VecIndex {
             }
         }
         s.prep(n);
-        if (allow != null && scanBelow > 0) {
+        if (filtered && scanBelow > 0) {
             if (poll != null) poll.before(Math.min(FilterPlan.SAMPLE, Poll.INTERVAL)); // the predicate calls of the sample
-            if (FilterPlan.scanFirst(scanBelow, n, r -> !isDead(r), r -> ids[r], allow)) return scanExact(s, k, allow, poll);
+            if (FilterPlan.scanFirst(scanBelow, n, r -> !isDead(r), r -> passes(r, allow, rows))) return scanExact(s, k, allow, rows, poll);
         }
-        int budget = allow == null ? 0 : Math.max(50 * ef, n / 20);
-        beam(s, cur, curD, ef, allow, q8, budget, poll);
-        if (allow != null && s.exhausted && s.outCount < ef) return scanExact(s, k, allow, poll);
+        int budget = filtered ? Math.max(50 * ef, n / 20) : 0;
+        beam(s, cur, curD, ef, allow, rows, q8, budget, poll);
+        if (filtered && s.exhausted && s.outCount < ef) return scanExact(s, k, allow, rows, poll);
         return collect(s, k, q8, poll);
     }
 
     /** the exact top {@code k} of the live rows that pass {@code allow} (not null), without a walk */
     Hit[] scan(float[] q, int k, LongPredicate allow, Poll poll) {
+        return scan(q, k, allow, null, poll);
+    }
+
+    /** the same among the rows that {@code rows} lets through (null: all of them), see {@link #search(float[], int, LongPredicate, IntPredicate, int, double, Poll)} */
+    Hit[] scan(float[] q, int k, LongPredicate allow, IntPredicate rows, Poll poll) {
         if (k <= 0 || n == 0) return new Hit[0];
-        return scanExact(prepare(q), k, allow, poll);
+        return scanExact(prepare(q), k, allow, rows, poll);
+    }
+
+    /** whether a row may be returned: the rows of the caller first, then its predicate over ids (either may be null) */
+    private boolean passes(int r, LongPredicate allow, IntPredicate rows) {
+        return (rows == null || rows.test(r)) && (allow == null || allow.test(ids[r]));
     }
 
     /** the scratch state of this thread with the query in it, normalized for COSINE */
@@ -168,12 +189,12 @@ public final class SealedGraph implements VecIndex {
         return s;
     }
 
-    private void beam(Sc s,int entryNode, float entryDist, int ef, LongPredicate allow, boolean q8, int budget, Poll poll) {
+    private void beam(Sc s,int entryNode, float entryDist, int ef, LongPredicate allow, IntPredicate rows, boolean q8, int budget, Poll poll) {
         Heap cand = s.cand, res = s.res; cand.clear(); res.clear(); s.exhausted = false; int visited = 0;
         s.stamp[entryNode] = s.gen;
         cand.push(entryDist, entryNode);
         if (poll != null) poll.before(1);
-        if (!isDead(entryNode) && (allow == null || allow.test(ids[entryNode]))) res.push(-entryDist, entryNode);
+        if (!isDead(entryNode) && passes(entryNode, allow, rows)) res.push(-entryDist, entryNode);
         while (cand.n > 0) {
             float cd = cand.topKey(); int c = cand.topVal(); cand.pop();
             if (res.n >= ef && cd > -res.topKey()) break;
@@ -186,7 +207,7 @@ public final class SealedGraph implements VecIndex {
                 float d = dist(s, x, q8);
                 if (res.n < ef || d < -res.topKey()) {
                     cand.push(d, x);
-                    if (!isDead(x) && (allow == null || allow.test(ids[x]))) { res.push(-d, x); if (res.n > ef) res.pop(); }
+                    if (!isDead(x) && passes(x, allow, rows)) { res.push(-d, x); if (res.n > ef) res.pop(); }
                 }
             }
         }
@@ -210,13 +231,13 @@ public final class SealedGraph implements VecIndex {
         return c == out.length ? out : Arrays.copyOf(out, c);
     }
 
-    private Hit[] scanExact(Sc s, int k, LongPredicate allow, Poll poll) {
+    private Hit[] scanExact(Sc s, int k, LongPredicate allow, IntPredicate rows, Poll poll) {
         Heap h = s.res; h.clear();
         for (int from = 0; from < n; from += 64) { // counted by the block: a count per row costs more than a cheap predicate
             int to = Math.min(n, from + 64);
             if (poll != null) poll.before(to - from);
             for (int r = from; r < to; r++) {
-                if (isDead(r) || !allow.test(ids[r])) continue;
+                if (isDead(r) || !passes(r, allow, rows)) continue;
                 float d = distFp(s, r);
                 if (h.n < k) h.push(-d, r); else if (d < -h.topKey()) { h.pop(); h.push(-d, r); }
             }

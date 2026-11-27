@@ -37,14 +37,19 @@ final class FilterPlan {
      * with a regular pattern of ids. When no sampled slot is live the answer is false (the walk handles an empty index).
      */
     static boolean scanFirst(double below, int slots, IntPredicate live, IntToLongFunction idOf, LongPredicate allow) {
-        if (below <= 0 || allow == null || slots <= 0) return false;
+        return allow != null && scanFirst(below, slots, live, o -> allow.test(idOf.applyAsLong(o)));
+    }
+
+    /** the same for a caller that decides by the slot whether it passes */
+    static boolean scanFirst(double below, int slots, IntPredicate live, IntPredicate passes) {
+        if (below <= 0 || slots <= 0) return false;
         int m = Math.min(SAMPLE, slots);
         int seen = 0, pass = 0;
         for (int j = 0; j < m; j++) {
             int o = m == slots ? j : Math.min(slots - 1, (int) (((j + 0.5) * PHI % 1.0) * slots));
             if (!live.test(o)) continue;
             seen++;
-            if (allow.test(idOf.applyAsLong(o))) pass++;
+            if (passes.test(o)) pass++;
         }
         return seen > 0 && pass <= below * seen;
     }

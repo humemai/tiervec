@@ -96,12 +96,14 @@ final class RidReuseRig {
     record Mutation(String name, String anchor, String replacement, String what) {}
 
     static final Mutation X0 = new Mutation("X0", null, null, "no change: the control, must pass like the real class");
-    static final Mutation M1 = new Mutation("M1", "if (p.phys() || p.inFrozen()) floor.put(id, ver);", "if (p.phys() || p.inFrozen()) floor.remove(id);",
-            "add removes the floor entry of the id instead of raising it");
-    static final Mutation M2 = new Mutation("M2", "if (p.phys() || p.inFrozen()) floor.put(id, ++counter);", "if (p.phys() || p.inFrozen()) ++counter;",
-            "delete takes a version but writes no floor entry");
-    static final Mutation M3 = new Mutation("M3", "if (!needed) floor.remove(e.getKey());", "floor.remove(e.getKey());",
-            "cleanupFloor drops every floor entry after a merge, needed or not");
+    static final Mutation M1 = new Mutation("M1", "boolean inSegment = hideInSegments(vw, id, ver);", "boolean inSegment = visibleInSegments(vw, id);",
+            "add leaves the older copies in the segments visible");
+    static final Mutation M2 = new Mutation("M2", "hideInSegments(vw, id, ver); // a delete hides every copy in the segments", ";",
+            "delete takes a version but marks no copy in a segment");
+    static final Mutation M3 = new Mutation("M3", "carryOver(picked, seenDead, merged); // the rows that were hidden while the merge ran", ";",
+            "a merge does not carry the marks that were set while it ran onto its segment");
+    static final Mutation M4 = new Mutation("M4", "for (Mark m : frozen.late) seg.hideOlder(m.id(), m.ver()); // the rows that were hidden while the build ran", ";",
+            "a seal does not mark the rows of its segment that were hidden while it ran");
 
     /** with no compiler (a JRE) the mutant tests cannot run: skip with a message, except on CI, where a JDK is a given and a skip would hide a broken setup */
     static void requireCompiler() {
@@ -276,5 +278,11 @@ final class RidReuseRig {
         assertReachedAndSound(what, r, cases, strict);
         assertTrue(n(r, "case_c2_delete_in_merge") > 0, () -> what + ": M3 (" + M3.what() + ") must give a violation in case c2_delete_in_merge" + describe(r));
         assertTrue(n(r, "exact") > 0, () -> what + ": M3 must show a wrong answer, not only a coverage or worker counter" + describe(r));
+    }
+
+    static void assertCaughtM4(String what, Map<String, Object> r, List<String> cases, boolean strict) {
+        assertReachedAndSound(what, r, cases, strict);
+        assertTrue(n(r, "case_s_seal_window") > 0, () -> what + ": M4 (" + M4.what() + ") must give a violation in case s_seal_window" + describe(r));
+        assertTrue(n(r, "exact") > 0, () -> what + ": M4 must show a wrong answer, not only a coverage or worker counter" + describe(r));
     }
 }

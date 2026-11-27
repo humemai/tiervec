@@ -243,6 +243,60 @@ run heap target/bench/segment.tvs HEAP
 run heap target/bench/segment.tvs MAPPED
 ```
 
+### A run with the reader of the library
+
+[CI run 46011877820](https://github.com/humemai/tiervec/actions/runs/46011877820), the pull request that added the reader ([#156](https://github.com/humemai/tiervec/pull/156), head `ff1f894047`), on two shared GitHub runners. The two JDK jobs ran on different CPUs, so the JDKs cannot be compared. The two tables of each job are the output of `MappedRows summary`.
+
+In these tables a distance on a mapped row was slower in every row, and an fp32 walk was slower on mapped vectors in three of the four rows and faster in one (50,000 of dimension 768 on JDK 21). An earlier run with a mapped reader inside the harness gave 1.13 to 1.37 for the fp32 walk ([issue #27](https://github.com/humemai/tiervec/issues/27)). From the two runs I would not promise a factor on other hardware.
+
+Java 21.0.13.1+2-LTS, 8 float lanes. Ratios are the time divided by the time on the heap: median of the JVMs (smallest to largest).
+
+| Rows x dim | Case | JVMs | On the heap | Heap, row copied first | Mapped file, row copied first |
+| --- | --- | --- | --- | --- | --- |
+| 200000 x 128 | `distance-random` | 5 | 147.340 ns per distance | 1.34 (1.33 to 1.34) | 1.37 (1.34 to 1.43) |
+| 200000 x 128 | `distance-in-order` | 5 | 30.650 ns per distance | 1.28 (1.25 to 1.53) | 1.41 (1.29 to 1.79) |
+| 200000 x 128 | `walk-fp32` | 5 | 0.562 ms per query | not measured | 1.08 (1.05 to 1.09) |
+| 200000 x 128 | `walk-sq8` | 5 | 0.501 ms per query | not measured | 1.01 (0.99 to 1.01) |
+| 200000 x 128 | `exact-scan` | 5 | 7.894 ms per query | not measured | 1.10 (1.06 to 1.14) |
+| 50000 x 768 | `distance-random` | 5 | 342.450 ns per distance | 1.11 (1.10 to 1.12) | 1.18 (1.11 to 1.19) |
+| 50000 x 768 | `distance-in-order` | 5 | 164.910 ns per distance | 1.67 (1.53 to 1.72) | 1.96 (1.91 to 1.99) |
+| 50000 x 768 | `walk-fp32` | 5 | 1.217 ms per query | not measured | 0.92 (0.84 to 0.93) |
+| 50000 x 768 | `walk-sq8` | 5 | 0.928 ms per query | not measured | 0.99 (0.98 to 1.01) |
+| 50000 x 768 | `exact-scan` | 5 | 9.291 ms per query | not measured | 1.46 (1.41 to 1.57) |
+
+Heap that stays used after the file is opened, one JVM for each reader, in MiB (1,048,576 bytes).
+
+| Rows x dim | Vector section | Used heap, `HEAP` | Used heap, `MAPPED` | `bytesHeld`, `HEAP` | `bytesHeld`, `MAPPED` | Mapped, `MAPPED` |
+| --- | --- | --- | --- | --- | --- | --- |
+| 200000 x 128 | 97.7 | 153.8 | 55.8 | 149.7 | 52.1 | 97.7 |
+| 50000 x 768 | 146.5 | 194.2 | 46.3 | 190.0 | 43.5 | 146.5 |
+
+Runner: AMD EPYC 7763 64-Core Processor, 4 processors.
+
+Java 25.0.5+8-LTS, 16 float lanes. Ratios are the time divided by the time on the heap: median of the JVMs (smallest to largest).
+
+| Rows x dim | Case | JVMs | On the heap | Heap, row copied first | Mapped file, row copied first |
+| --- | --- | --- | --- | --- | --- |
+| 200000 x 128 | `distance-random` | 5 | 103.660 ns per distance | 1.14 (1.11 to 1.14) | 1.14 (1.12 to 1.26) |
+| 200000 x 128 | `distance-in-order` | 5 | 19.990 ns per distance | 1.57 (1.54 to 2.01) | 1.60 (1.57 to 2.08) |
+| 200000 x 128 | `walk-fp32` | 5 | 0.456 ms per query | not measured | 1.40 (1.36 to 1.41) |
+| 200000 x 128 | `walk-sq8` | 5 | 0.390 ms per query | not measured | 1.03 (1.02 to 1.08) |
+| 200000 x 128 | `exact-scan` | 5 | 5.118 ms per query | not measured | 1.54 (1.45 to 1.59) |
+| 50000 x 768 | `distance-random` | 5 | 295.790 ns per distance | 1.27 (1.26 to 1.27) | 1.21 (1.21 to 1.22) |
+| 50000 x 768 | `distance-in-order` | 5 | 95.430 ns per distance | 1.34 (1.25 to 1.56) | 1.43 (1.38 to 1.66) |
+| 50000 x 768 | `walk-fp32` | 5 | 1.063 ms per query | not measured | 1.20 (1.15 to 1.21) |
+| 50000 x 768 | `walk-sq8` | 5 | 0.606 ms per query | not measured | 1.01 (1.00 to 1.02) |
+| 50000 x 768 | `exact-scan` | 5 | 4.712 ms per query | not measured | 1.37 (1.31 to 1.57) |
+
+Heap that stays used after the file is opened, one JVM for each reader, in MiB (1,048,576 bytes).
+
+| Rows x dim | Vector section | Used heap, `HEAP` | Used heap, `MAPPED` | `bytesHeld`, `HEAP` | `bytesHeld`, `MAPPED` | Mapped, `MAPPED` |
+| --- | --- | --- | --- | --- | --- | --- |
+| 200000 x 128 | 97.7 | 153.7 | 55.8 | 149.7 | 52.1 | 97.7 |
+| 50000 x 768 | 146.5 | 194.2 | 46.3 | 190.0 | 43.5 | 146.5 |
+
+Runner: AMD EPYC 9V74 80-Core Processor, 4 processors.
+
 ## The CI smoke
 
 The job `bench smoke (JDK 21)` and `(JDK 25)` compiles the harness with the library and runs it at n = 10,000 and dimension 768, with 100 queries, one extra beam width (32), shares 0.1 and 0.01, and 15 seconds of the concurrent phase. It is not a required check, and it runs beside the fast tests. It proves that the harness runs, that its answers agree with its own exact scan, and that the checks above hold on a small tier. It prints timings and has no speed bar: the runner is shared, so a timing is only a ratio inside one run.

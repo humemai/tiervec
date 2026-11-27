@@ -39,7 +39,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  * The mapped reader of the vector section (#27): rows over one and over several mappings, a scratch array per thread, a tier that opens
  * mapped and goes on working, a refused file, and a segment file that is retired while it is mapped. The round-trip and corruption tests of
  * the heap reader run with the mapped one in the {@code Mapped...Test} subclasses. This class runs on every platform; it leaves its
- * temporary directory behind, because Windows does not delete a mapped file.
+ * temporary directory behind, because a file can still be mapped when a test ends, and Windows can refuse to delete it then.
  */
 class MappedVectorsTest {
     private static final TieredIndex.VectorStorage MAPPED = TieredIndex.VectorStorage.MAPPED;
@@ -191,7 +191,7 @@ class MappedVectorsTest {
         Files.write(f, raw);
         CorruptException e = assertThrows(CorruptException.class, () -> SegmentReader.readFull(f, true, MAPPED));
         assertEquals(SegmentFormat.sectionName(id), e.section());
-        Files.delete(f); // Windows refuses this while a file is mapped
+        Files.delete(f); // nothing was mapped, so no platform has a reason to refuse this
     }
 
     /** opens the directory mapped, merges its two segments into one, and publishes that, which retires the files of the two */

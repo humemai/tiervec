@@ -100,7 +100,7 @@ interface SealedVectors {
      *
      * <p>Nothing here unmaps. A search can still read a segment that the tier has replaced or that belongs to a closed tier, and a read of an
      * unmapped page ends the JVM. The JVM unmaps a piece some time after the garbage collector has found its buffer unreachable. Until then
-     * Windows refuses to delete the file ({@link Manifest#gc} leaves it for a later call), and on other systems a deleted file keeps its disk
+     * Windows can refuse to delete the file ({@link Manifest#gc} leaves it for a later call), and a file that is deleted can keep its disk
      * space. The file must not change while it is mapped: the checksum of the section is checked before it is mapped, not at a read.
      */
     final class Mapped implements SealedVectors {

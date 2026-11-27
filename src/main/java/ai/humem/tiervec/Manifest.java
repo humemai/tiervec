@@ -225,7 +225,7 @@ public record Manifest(long generation, long epoch, long hwm, long versionCounte
      * <p>Before the first delete the directory is flushed, so that the rename of {@code live} is durable before anything that it replaced is
      * gone. {@link #publish} has done that already; an open after a process was killed between the rename and its flush has not (#125).
      *
-     * <p>Windows refuses to delete a file while it is mapped ({@link TieredIndex.VectorStorage#MAPPED}), and a mapping lasts until the
+     * <p>Windows can refuse to delete a file while it is mapped ({@link TieredIndex.VectorStorage#MAPPED}), and a mapping lasts until the
      * garbage collector has released it. So once this process has mapped a segment, a segment file that Windows does not delete stays, is
      * not counted, and a later call tries again.
      */

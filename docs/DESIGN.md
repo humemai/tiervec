@@ -149,7 +149,7 @@ A scalar result and a vector result of the same float kernel can differ by round
 | `buildThreads` | `max(1, min(4, cpus - 1))` | Threads of one seal or merge build. |
 | `splitBeam` | false | When true and more than one segment is searched, segment `s` gets the beam `max(k, ceil(ef * rows(s) / rows of all searched segments))` instead of the full `ef`. |
 | `mergeTriggerRatio` | 0.0 | Size-ratio merge trigger, off at 0. See below. |
-| `vectorStorage` | `HEAP` | Where a segment that `open` reads keeps its fp32 vectors. `HEAP` copies them into the heap. `MAPPED` leaves them in the mapped segment file: less heap, slower fp32 distances ([SEGMENT-FORMAT.md](SEGMENT-FORMAT.md#mapped-vectors)). |
+| `vectorStorage` | `HEAP` | Where a segment that `open` reads keeps its fp32 vectors. `HEAP` copies them into the heap. `MAPPED` leaves them in the mapped segment file: less heap, slower fp32 distances as measured ([SEGMENT-FORMAT.md](SEGMENT-FORMAT.md#mapped-vectors)). |
 
 With `mergeTriggerRatio` X above 0, the segment with the most live rows is the big one. When the live rows of all the other segments together exceed X times the live rows of the big one, all segments are merged into one. Otherwise, if `maxSegments` is at least 2 and the count exceeds it, the count rule picks among the small segments only, so the big one is rewritten only by the ratio rule. With `maxSegments` 1 the count rule includes the big one and a merge happens at every seal. A merge into the big segment rewrites about (1 + X) / X vectors per inserted vector, on top of the small-segment merges.
 

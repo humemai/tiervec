@@ -148,12 +148,12 @@ public final class TieredIndex implements VecIndex {
      * graph, the ids and the SQ8 codes are heap arrays with both, and the checks of {@code open} are the same, the checksum of every section
      * included. The hits and scores are the same.
      *
-     * <p>MAPPED saves heap and costs time: a search that walks fp32 vectors was measured slower than on the heap (docs/BENCHMARKS.md, "The
-     * cost of a row copy"). It covers only what {@code open} reads: a segment that a seal, a merge, or a rebuild builds keeps its vectors on
+     * <p>MAPPED saves heap and costs time: distances on mapped rows were measured slower than on the heap, and so were searches that walk fp32
+     * vectors in most runs (docs/BENCHMARKS.md, "The cost of a row copy"). It covers only what {@code open} reads: a segment that a seal, a merge, or a rebuild builds keeps its vectors on
      * the heap until a later {@code open} reads it from a file. {@code bytesHeld} leaves the mapped vectors out; the operating system's page
      * cache holds the pages that are in use. A mapping lasts until the garbage collector releases it, also after {@code close}, and the
-     * library never unmaps: until then Windows does not delete a retired segment file (a later checkpoint or open does), and other systems
-     * keep the disk space of a deleted one. Nothing may change the files while they are mapped: damage after the open is not detected, and a
+     * library never unmaps: until then Windows can refuse to delete a retired segment file (which then stays for a later checkpoint or
+     * open), and a deleted file can keep its disk space. Nothing may change the files while they are mapped: damage after the open is not detected, and a
      * file that is cut short or cannot be read can end a search with an {@code InternalError} or end the JVM. Details:
      * docs/SEGMENT-FORMAT.md, "Mapped vectors".
      */

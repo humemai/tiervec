@@ -36,9 +36,10 @@ import org.junit.jupiter.params.provider.ValueSource;
  * CRC or a length check covers. The only bytes whose damage is not detected are the zero fill that no CRC covers (the rest of the header
  * block and the gaps between sections), and a test below shows that damage there changes nothing a reader serves.
  *
- * <p>The code reads files with plain {@code FileChannel} reads into heap arrays (no memory mapping and no native memory in this version),
- * so a damaged file cannot take the JVM down; what the tests rule out is every other uncontrolled failure: an exception that is not one of
- * the two named ones, an out-of-memory error from a length read out of the file, or a graph that is returned.
+ * <p>The reader checks a file with plain {@code FileChannel} reads into heap buffers, and the mapped reader
+ * ({@link MappedSegmentCorruptionTest}) maps the vectors only after every check has passed, so a damaged file cannot take the JVM down at
+ * a load; what the tests rule out is every other uncontrolled failure: an exception that is not one of the two named ones, an out-of-memory
+ * error from a length read out of the file, or a graph that is returned.
  */
 class SegmentCorruptionTest {
     private static final int N = 300, DIM = 4;
@@ -222,7 +223,7 @@ class SegmentCorruptionTest {
         try (FileChannel ch = FileChannel.open(scratch, StandardOpenOption.WRITE)) {
             flip(ch, (int) (vec.offset() + 5), 3);
         }
-        SegmentReader.read(scratch, false); // loads: the flip is in a float of the vectors
+        TestReaders.read(scratch, false); // loads: the flip is in a float of the vectors
         assertEquals("VEC", assertInstanceOf(CorruptException.class, refused(scratch, "bit in VEC")).section());
         assertEquals("VEC", assertInstanceOf(CorruptException.class, assertThrowsIo(() -> SealedGraph.load(scratch), "SealedGraph.load")).section());
     }
@@ -249,7 +250,7 @@ class SegmentCorruptionTest {
                     if (pos < g[0] || pos >= g[1]) continue;
                     for (int bit : new int[] {0, 7}) {
                         flip(ch, pos, bit);
-                        SealedGraph h = SealedGraph.load(scratch);
+                        SealedGraph h = TestReaders.read(scratch, true);
                         assertArrayEquals(orig.ids, h.ids, "zero fill byte " + pos);
                         assertArrayEquals(vectorsOf(orig), vectorsOf(h), "zero fill byte " + pos);
                         for (float[] q : qs) assertArrayEquals(orig.search(q, 10, null), h.search(q, 10, null), "zero fill byte " + pos);

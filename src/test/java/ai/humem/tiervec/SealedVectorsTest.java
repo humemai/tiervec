@@ -21,8 +21,9 @@ import org.junit.jupiter.params.provider.CsvSource;
 
 /**
  * A sealed graph whose vectors are not a heap array searches, writes, and re-inflates like the same graph on the heap (#27). The stand-in
- * keeps the rows in a direct little-endian buffer and copies a row for every distance. The graph has no vector array of its own, so what
- * this checks is that {@link SealedVectors} is enough for every reader of a sealed segment's vectors.
+ * keeps the rows in a direct little-endian buffer and copies a row into the scratch array of the caller for every distance. The graph has no
+ * vector array of its own, so what this checks is that {@link SealedVectors} is enough for every reader of a sealed segment's vectors. The
+ * mapped reader of the library is checked in {@link MappedVectorsTest}.
  */
 class SealedVectorsTest {
     @TempDir
@@ -39,13 +40,20 @@ class SealedVectorsTest {
         }
 
         @Override
-        public float l2(float[] q, int row) {
-            return Kern.l2(q, 0, row(row), 0, dim);
+        public float l2(float[] q, int row, float[] scratch) {
+            copy(row, scratch, 0);
+            return Kern.l2(q, 0, scratch, 0, dim);
         }
 
         @Override
-        public float dot(float[] q, int row) {
-            return Kern.dot(q, 0, row(row), 0, dim);
+        public float dot(float[] q, int row, float[] scratch) {
+            copy(row, scratch, 0);
+            return Kern.dot(q, 0, scratch, 0, dim);
+        }
+
+        @Override
+        public float[] newScratch() {
+            return new float[dim];
         }
 
         @Override

@@ -61,7 +61,7 @@ class SegmentForgedFileTest {
     }
 
     private void assertServedLikeTheOriginal(Path p) throws IOException {
-        SealedGraph h = SealedGraph.load(p);
+        SealedGraph h = TestReaders.read(p, true);
         assertArrayEquals(orig.ids, h.ids);
         assertArrayEquals(vectorsOf(orig), vectorsOf(h));
         assertArrayEquals(orig.level, h.level);
@@ -410,7 +410,7 @@ class SegmentForgedFileTest {
         forge.entries.remove(forge.entry(SegmentFormat.S_SQ8_PARAMS));
         forge.entries.remove(forge.entry(SegmentFormat.S_VERS));
         Files.write(f, forge.build());
-        SegmentReader.Loaded l = SegmentReader.readFull(f, true);
+        SegmentReader.Loaded l = TestReaders.readFull(f, true);
         assertEquals(null, l.vers());
         assertEquals(null, l.graph().codes);
         assertArrayEquals(orig.ids, l.graph().ids);

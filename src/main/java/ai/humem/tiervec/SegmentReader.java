@@ -14,12 +14,14 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.zip.CRC32C;
 
 /**
- * Reads a segment file written by {@link SegmentWriter}. The read is copy-based: every section is read into the heap arrays that
- * {@link SealedGraph} already uses (no memory mapping in this version). The graph gets the VEC array wrapped as
- * {@code SealedVectors.OnHeap}.
+ * Reads a segment file written by {@link SegmentWriter}. By default the read is copy-based: every section is read into the heap arrays that
+ * {@link SealedGraph} uses. With {@link TieredIndex.VectorStorage#MAPPED} the VEC section stays in the file and is mapped
+ * ({@code SealedVectors.Mapped}); every other section is read into the heap as before. The checks are the same with both, the section CRCs
+ * included, and the section is mapped only after every check has passed, so a file that is refused is not mapped.
  *
  * <p>{@link #inspect} reads the header block, the locator and the footer only: a constant amount of work whatever the file size. A file that is
  * cut short, has bytes appended, or has a damaged header, footer or locator fails there, before any section is read. {@link #read} then
@@ -49,9 +51,20 @@ public final class SegmentReader {
 
     /** like {@link #read} but also returns the per-row versions and the file's metadata */
     public static Loaded readFull(Path file, boolean verifyAll) throws IOException {
+        return readFull(file, verifyAll, TieredIndex.VectorStorage.HEAP);
+    }
+
+    /** like {@link #readFull(Path, boolean)} with the vectors where {@code storage} says */
+    public static Loaded readFull(Path file, boolean verifyAll, TieredIndex.VectorStorage storage) throws IOException {
+        return readFull(file, verifyAll, storage, Integer.MAX_VALUE);
+    }
+
+    /** the same with a limit on the bytes of one mapping, which the tests lower so that a small file needs several */
+    static Loaded readFull(Path file, boolean verifyAll, TieredIndex.VectorStorage storage, int maxPieceBytes) throws IOException {
+        Objects.requireNonNull(storage, "storage");
         try (FileChannel ch = FileChannel.open(file, StandardOpenOption.READ)) {
             SegmentInfo info = inspect(ch, file);
-            return load(ch, info, verifyAll);
+            return load(ch, info, verifyAll, storage, maxPieceBytes);
         }
     }
 
@@ -211,13 +224,17 @@ public final class SegmentReader {
         }
     }
 
-    private static Loaded load(FileChannel ch, SegmentInfo info, boolean verify) throws IOException {
+    private static Loaded load(FileChannel ch, SegmentInfo info, boolean verify, TieredIndex.VectorStorage storage, int maxPieceBytes)
+            throws IOException {
         Src src = new Src(ch, verify);
         final int n = info.n();
         long[] ids = src.longs(info.section(S_IDS));
         long[] vers = info.section(S_VERS) != null ? src.longs(info.section(S_VERS)) : null;
         int[] byId = src.ints(info.section(S_BYID));
-        float[] vec = src.floats(info.section(S_VEC));
+        final SegmentInfo.Section vecSection = info.section(S_VEC);
+        float[] vec = null; // stays null for a mapped section, which is checksummed here and mapped at the end
+        if (storage == TieredIndex.VectorStorage.HEAP) vec = src.floats(vecSection);
+        else src.checkOnly(vecSection);
         byte[] level = src.bytes(info.section(S_LEVEL));
         int[] off0 = src.ints(info.section(S_L0_OFF));
         int[] edges0 = src.ints(info.section(S_L0_EDGES));
@@ -240,7 +257,10 @@ public final class SegmentReader {
             if (r < 0 || r >= n) throw new CorruptException("row " + r + " out of range", "BYID");
             if (i > 0 && ids[r] <= ids[byId[i - 1]]) throw new CorruptException("rows are not in strictly increasing id order", "BYID");
         }
-        SealedGraph g = new SealedGraph(info.dim(), info.metric(), info.params(), n, new SealedVectors.OnHeap(vec, info.dim()), codes, qbase, qdelta,
+        // the mapping comes last: a file that fails a check above is never mapped
+        final SealedVectors vectors = vec != null ? new SealedVectors.OnHeap(vec, info.dim())
+                : SealedVectors.Mapped.map(ch, vecSection.offset(), n, info.dim(), maxPieceBytes);
+        SealedGraph g = new SealedGraph(info.dim(), info.metric(), info.params(), n, vectors, codes, qbase, qdelta,
                 qnorm, ids, level, off0, edges0, upIdx, upOff, upEdges, info.entryRow(), info.maxLevel(), byId);
         return new Loaded(g, vers, info);
     }
@@ -273,6 +293,18 @@ public final class SegmentReader {
 
         private void check(SegmentInfo.Section s) throws CorruptException {
             if (verify && (int) crc.getValue() != s.crc()) throw new CorruptException("CRC32C mismatch", sectionName(s.id()));
+        }
+
+        /** checksums a section that is not read into an array; reads nothing when the CRCs are not verified */
+        void checkOnly(SegmentInfo.Section s) throws IOException {
+            if (!verify) return;
+            crc.reset();
+            for (long done = 0; done < s.length(); ) {
+                int c = (int) Math.min(buf.capacity(), s.length() - done);
+                fill(s.offset() + done, c);
+                done += c;
+            }
+            check(s);
         }
 
         long[] longs(SegmentInfo.Section s) throws IOException {

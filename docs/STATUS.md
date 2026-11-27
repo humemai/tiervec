@@ -77,7 +77,7 @@ The threaded program (`GraphConcurrencyTest`) therefore checks read-your-writes 
 
 ## What does not exist yet
 
-- Serialization of IVF and of the flat tail. `FlatIndex` has its own `serialize` and `load`. The graph segments and a tier with an empty tail have the first cut ([SEGMENT-FORMAT.md](SEGMENT-FORMAT.md)): copy-based reads, no memory mapping, no persisted tail (`checkpoint` refuses a tier with a tail), every section verified at open. When `open` fails, the host falls back to `rebuildFrom`.
+- Serialization of IVF and of the flat tail. `FlatIndex` has its own `serialize` and `load`. The graph segments and a tier with an empty tail have the first cut ([SEGMENT-FORMAT.md](SEGMENT-FORMAT.md)): reads copy into the heap by default and only the vector section can be memory-mapped ([Mapped vectors](SEGMENT-FORMAT.md#mapped-vectors)), no persisted tail (`checkpoint` refuses a tier with a tail), every section verified at open. When `open` fails, the host falls back to `rebuildFrom`.
 - Engine integration. Nothing here is wired into ArcadeDB or any other engine.
 - IVF as a segment type of the tier. `IvfIndex` is standalone.
 - Native-image coverage beyond the smoke job. The program does not write or read segment files (`checkpoint`, `open`), does not call `rebuildFrom`, and uses no concurrent writers; the image is built on Linux (x86-64 and arm64) and on macOS arm64 in CI, and on Windows x64 in the vector job only (there is no scalar image job on Windows), and it is not published.

@@ -52,7 +52,7 @@ class HostContractTest {
     /** a configuration in which every component differs from the default */
     private static TieredIndex.Config unusual() {
         return new TieredIndex.Config(123, -1L, 7, 3, 5, 1.5, -1, 6, Quant.SQ8, new GraphIndex.Params(12, 77, 55, 1.2f, true, -9L), 17, true, 0.125,
-                TieredIndex.MergeMode.INSERT);
+                TieredIndex.MergeMode.INSERT, TieredIndex.VectorStorage.MAPPED);
     }
 
     private static void await(BooleanSupplier done, String what) throws InterruptedException {
@@ -84,6 +84,18 @@ class HostContractTest {
     }
 
     @Test
+    void everyWithMethodKeepsTheOtherComponents() {
+        assertEquals(TieredIndex.VectorStorage.HEAP, TieredIndex.Config.defaults().vectorStorage());
+        assertEquals(TieredIndex.VectorStorage.HEAP, quiet().vectorStorage(), "a constructor without the component means HEAP");
+        TieredIndex.Config c = unusual(); // every component differs from the default, so a method that drops one shows
+        assertEquals(c, c.withTail(c.tailLimit(), c.smallLimit()).withMaxSegments(c.maxSegments()).withTailQuant(c.tailQuant()));
+        assertEquals(c, c.withGraph(c.graph()).withBuildThreads(c.buildThreads()).withMergeRate(c.mergeRatePerSec()));
+        assertEquals(c, c.withMergeFan(c.mergeFan()).withSplitBeam(c.splitBeam()).withMergeTriggerRatio(c.mergeTriggerRatio()));
+        assertEquals(c, c.withMergeMode(c.mergeMode()).withVectorStorage(c.vectorStorage()));
+        assertEquals(TieredIndex.VectorStorage.HEAP, c.withVectorStorage(TieredIndex.VectorStorage.HEAP).vectorStorage());
+    }
+
+    @Test
     void anUnknownKeyIsRefusedAtCreationAndIgnoredAtLoad() {
         Map<String, String> m = new LinkedHashMap<>(unusual().toMap());
         m.put("graph.colour", "blue");
@@ -100,7 +112,7 @@ class HostContractTest {
     void aValueThatCannotBeUsedIsRefusedWithItsKey() {
         String[][] bad = {{"tailLimit", "0"}, {"tailLimit", "many"}, {"smallLimit", "-1"}, {"maxSegments", "0"}, {"mergeFan", "1"},
                 {"hardTailFactor", "1"}, {"buildThreads", "0"}, {"deadFraction", "NaN"}, {"mergeTriggerRatio", "-0.1"}, {"mergeTriggerRatio", "Infinity"},
-                {"tailQuant", "BINARY"}, {"tailQuant", "sq8"}, {"mergeMode", "COPY"}, {"splitBeam", "yes"}, {"graph.M", "1"},
+                {"tailQuant", "BINARY"}, {"tailQuant", "sq8"}, {"mergeMode", "COPY"}, {"vectorStorage", "mapped"}, {"splitBeam", "yes"}, {"graph.M", "1"},
                 {"graph.efConstruction", "0"}, {"graph.efSearch", "-1"}, {"graph.alpha", "0"}, {"graph.sq8", "TRUE"}, {"graph.seed", "1.5"}};
         for (String[] kv : bad) {
             Map<String, String> m = Map.of(kv[0], kv[1]);
@@ -176,7 +188,7 @@ class HostContractTest {
         assertFalse(new ContractVersion(1, 9).accepts(new ContractVersion(2, 0)));
         assertThrows(IllegalArgumentException.class, () -> new ContractVersion(-1, 0));
         for (Capability c : List.of(Capability.ATOMIC_BATCH, Capability.DEFERRED_APPLY, Capability.SEARCH_CONTEXT, Capability.PERSISTENCE,
-                Capability.SNAPSHOT_REBUILD)) {
+                Capability.SNAPSHOT_REBUILD, Capability.MAPPED_VECTORS)) {
             assertTrue(TieredIndex.capabilities().contains(c), c.name());
         }
         assertThrows(UnsupportedOperationException.class, () -> TieredIndex.capabilities().clear());

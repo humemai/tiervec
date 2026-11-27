@@ -90,11 +90,11 @@ class SegmentFormatTest {
         Path f = file("a.tvs");
         SegmentInfo wrote = SegmentWriter.write(g, vers, f);
         assertEquals(wrote, SegmentReader.inspect(f));
-        SegmentReader.Loaded l = SegmentReader.readFull(f, true);
+        SegmentReader.Loaded l = TestReaders.readFull(f, true);
         assertEquals(wrote, l.info());
         assertArrayEquals(vers, l.vers());
         assertSameArrays(g, l.graph());
-        assertEquals(g.bytesHeld(), l.graph().bytesHeld());
+        assertEquals(g.bytesHeld() - TestReaders.mappedBytes(n, dim), l.graph().bytesHeld());
 
         float[][] qs = vectors(200, dim, 99);
         int sameSets = 0;
@@ -119,7 +119,7 @@ class SegmentFormatTest {
         SealedGraph h = SealedGraph.load(f);
         assertSameArrays(g, h);
         assertEquals(g.size(), h.size());
-        assertNull(SegmentReader.readFull(f, true).vers(), "a standalone graph file has no version section");
+        assertNull(TestReaders.readFull(f, true).vers(), "a standalone graph file has no version section");
         // the id lookup built from the stored order works: a delete finds its row
         long id = g.idAt(5);
         assertTrue(h.delete(id));
@@ -181,14 +181,14 @@ class SegmentFormatTest {
         flipped[(int) (sec.offset() + sec.length() / 2)] ^= 0x10;
         Path fp = write(flipped);
         SegmentReader.inspect(fp);
-        CorruptException e = assertThrows(CorruptException.class, () -> SegmentReader.read(fp, true));
+        CorruptException e = assertThrows(CorruptException.class, () -> TestReaders.read(fp, true));
         assertEquals(name, e.section());
 
         // the file cut in the middle of the section, and one byte before its end
         for (long cut : new long[] {sec.offset() + sec.length() / 2, sec.offset() + sec.length() - 1}) {
             Path tp = write(Arrays.copyOf(bytes, (int) cut));
             assertThrows(CorruptException.class, () -> SegmentReader.inspect(tp));
-            assertThrows(CorruptException.class, () -> SegmentReader.read(tp, false));
+            assertThrows(CorruptException.class, () -> TestReaders.read(tp, false));
         }
     }
 
@@ -213,7 +213,7 @@ class SegmentFormatTest {
             b[at] ^= 0x01;
             Path p = write(b);
             assertThrows(IOException.class, () -> SegmentReader.inspect(p), "bit flip at byte " + at);
-            assertThrows(IOException.class, () -> SegmentReader.read(p, false), "bit flip at byte " + at);
+            assertThrows(IOException.class, () -> TestReaders.read(p, false), "bit flip at byte " + at);
         }
 
         // the footer is covered by its own CRC, the locator by its magic and the lengths it states
@@ -232,11 +232,11 @@ class SegmentFormatTest {
         for (int cut : new int[] {0, 5, 100, SegmentFormat.HEADER_BLOCK, SegmentFormat.HEADER_BLOCK + 100, size - 33, size - 1}) {
             Path p = write(Arrays.copyOf(bytes, cut));
             assertThrows(IOException.class, () -> SegmentReader.inspect(p), "cut at " + cut);
-            assertThrows(IOException.class, () -> SegmentReader.read(p, false), "cut at " + cut);
+            assertThrows(IOException.class, () -> TestReaders.read(p, false), "cut at " + cut);
         }
         // control: the undamaged file passes the same calls
         assertEquals(info, SegmentReader.inspect(good));
-        SegmentReader.read(good, false);
+        TestReaders.read(good, false);
     }
 
     // ---- versioning ----
@@ -261,13 +261,13 @@ class SegmentFormatTest {
         // a larger major is refused
         Path major = file("major2.tvs");
         SegmentWriter.write(g, vers, major, 2, 0, List.of());
-        assertThrows(UnsupportedException.class, () -> SegmentReader.read(major, true));
+        assertThrows(UnsupportedException.class, () -> TestReaders.read(major, true));
 
         // a larger minor opens
         Path minor = file("minor7.tvs");
         SegmentWriter.write(g, vers, minor, SegmentFormat.MAJOR, 7, List.of());
         assertEquals(7, SegmentReader.inspect(minor).minor());
-        assertSameArrays(g, SegmentReader.read(minor, true));
+        assertSameArrays(g, TestReaders.read(minor, true));
 
         // a larger minor with a section this reader does not know: ignored when optional
         Path optional = file("optional.tvs");
@@ -275,7 +275,7 @@ class SegmentFormatTest {
         SegmentInfo oi = SegmentReader.inspect(optional);
         assertNotNull(oi.section(900));
         assertFalse(oi.section(900).required());
-        assertSameArrays(g, SegmentReader.read(optional, true));
+        assertSameArrays(g, TestReaders.read(optional, true));
 
         // refused when it is marked required
         Path required = file("required.tvs");
@@ -291,6 +291,6 @@ class SegmentFormatTest {
         assertThrows(UnsupportedException.class, () -> SegmentReader.inspect(swapped));
 
         // control: the file all of these were made from opens
-        assertSameArrays(g, SegmentReader.read(ok, true));
+        assertSameArrays(g, TestReaders.read(ok, true));
     }
 }

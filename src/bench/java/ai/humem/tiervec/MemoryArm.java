@@ -41,6 +41,12 @@ interface MemoryArm extends AutoCloseable {
     /** a failure of the maintenance, or null */
     default String failure() { return null; }
 
+    /** what the arm runs, for the result file, or null */
+    default String about() { return null; }
+
+    /** counts of the arm's own work, for the result file */
+    default Map<String, Long> counters() { return Map.of(); }
+
     @Override void close();
 
     /**
@@ -108,8 +114,21 @@ interface MemoryArm extends AutoCloseable {
                     if (!(at >= 0)) throw new IllegalArgumentException("consolidateAt must be 0 or more");
                     yield new Graph(dim, p, at);
                 }
-                default -> throw new IllegalArgumentException("unknown arm '" + arm + "' of the variant " + name + " (exact, tier, graph)");
+                case "jvector" -> external("ai.humem.tiervec.JVectorMemoryArm", dim);
+                default -> throw new IllegalArgumentException("unknown arm '" + arm + "' of the variant " + name + " (exact, tier, graph, jvector)");
             };
+        }
+
+        /** an arm that needs the jars of the profile {@code bench}, reached by reflection so that the rest compiles without them */
+        private MemoryArm external(String type, int dim) {
+            try {
+                return (MemoryArm) Class.forName(type).getDeclaredConstructor(int.class, Map.class).newInstance(dim, settings);
+            } catch (java.lang.reflect.InvocationTargetException e) {
+                if (e.getCause() instanceof RuntimeException r) throw r; // a wrong setting
+                throw new IllegalStateException("the arm " + arm + " did not open", e.getCause());
+            } catch (ReflectiveOperationException | LinkageError e) {
+                throw new IllegalArgumentException("the arm " + arm + " needs the jars of the profile bench and src/bench/" + arm + " on the class path: " + e);
+            }
         }
 
         private String value(String key, Object otherwise) { return settings.getOrDefault(key, String.valueOf(otherwise)); }

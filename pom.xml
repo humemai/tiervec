@@ -66,6 +66,10 @@
              is a release candidate (checked 2026-11-25: the newest release on Maven Central is 4.0.2). The int8 arm (issue #118) needs the
              byte-vector support that 4.1.0 adds. Move to 4.1.0 and delete this note when it is released. -->
         <jvector.version>4.1.0-rc.1</jvector.version>
+        <!-- Profile "bench" only too: lucene-core, for the Lucene arm of the agent-memory benchmark (issue #160). It needs JDK 21 or later and
+             has no dependency of its own. 10.6.0 was the newest release on Maven Central on 2026-11-28. src/bench/lucene uses the vector codec
+             classes of this minor version (Lucene99 and Lucene104), so a newer version may need a change there. -->
+        <lucene.version>10.6.0</lucene.version>
         <maven-dependency-plugin.version>3.11.0</maven-dependency-plugin.version>
 
         <!-- Release profile (-Prelease): the newest stable versions on Maven Central when they were pinned (2026-11-12).
@@ -222,11 +226,12 @@
     </build>
 
     <profiles>
-        <!-- mvn -B -ntp -Pbench dependency:copy-dependencies -DoutputDirectory=target/bench/lib -DincludeScope=runtime : fetches JVector and
-             its four dependencies (commons-math3, agrona, slf4j-api, snakeyaml) for the benchmark harness, and builds nothing. The scope is
-             runtime on purpose: the sources of src/main cannot see the jar, the library jar does not contain it (nothing is shaded), and the
-             profile is off by default, so "ai.humem:tiervec" keeps no run-time dependency. src/bench/jvector is compiled by hand against
-             target/bench/lib, as the rest of src/bench is compiled by hand (docs/BENCHMARKS.md). -->
+        <!-- mvn -B -ntp -Pbench dependency:copy-dependencies -DoutputDirectory=target/bench/lib -DincludeScope=runtime : fetches JVector, its
+             four dependencies (commons-math3, agrona, slf4j-api, snakeyaml), and lucene-core for the benchmarks, and builds nothing. The
+             scope is runtime on purpose: the sources of src/main cannot see the jars, the library jar does not contain them (nothing is
+             shaded), and the profile is off by default, so "ai.humem:tiervec" keeps no run-time dependency. src/bench/jvector and
+             src/bench/lucene are compiled by hand against target/bench/lib, as the rest of src/bench is compiled by hand
+             (docs/BENCHMARKS.md, docs/AGENT-MEMORY-BENCHMARK.md). -->
         <profile>
             <id>bench</id>
             <dependencies>
@@ -234,6 +239,12 @@
                     <groupId>io.github.jbellis</groupId>
                     <artifactId>jvector</artifactId>
                     <version>${jvector.version}</version>
+                    <scope>runtime</scope>
+                </dependency>
+                <dependency>
+                    <groupId>org.apache.lucene</groupId>
+                    <artifactId>lucene-core</artifactId>
+                    <version>${lucene.version}</version>
                     <scope>runtime</scope>
                 </dependency>
             </dependencies>

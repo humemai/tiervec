@@ -95,13 +95,14 @@ jobs:
           find src/main/java src/bench/java -name '*.java' > target/bench/sources.txt
           javac -d target/bench/classes --add-modules jdk.incubator.vector @target/bench/sources.txt
       # The libraries of the other arms (profile bench), on the benchmark class path only: the JVector arm of the harness (issue #108), and the
-      # JVector arm of the agent-memory benchmark with its checks (issue #160)
+      # JVector and Lucene arms of the agent-memory benchmark with their checks (issue #160)
       - name: Fetch the libraries of the other arms (profile bench) and compile their arms
         run: |
           mvn -B -ntp -Pbench dependency:copy-dependencies -DoutputDirectory=target/bench/lib -DincludeScope=runtime
           ls -l target/bench/lib
           ls target/bench/lib | grep -q '^jvector-'
-          find src/bench/jvector -name '*.java' > target/bench/other-sources.txt
+          ls target/bench/lib | grep -q '^lucene-core-'
+          find src/bench/jvector src/bench/lucene -name '*.java' > target/bench/other-sources.txt
           javac -d target/bench/classes --add-modules jdk.incubator.vector -cp 'target/bench/classes:target/bench/lib/*' @target/bench/other-sources.txt
       - name: Run the smoke
         run: |
@@ -182,6 +183,24 @@ jobs:
           echo "jvector arm without the jars, exit code: $code"
           test "$code" -eq 2
           grep -q 'needs the jars of the profile bench' target/bench/agent-memory-nojar.log
+      # issue #160: first the checks of the Lucene arm that a replay does not make (a write that is seen only after a refresh, an empty match
+      # set, searches beside batches, 1,536 dimensions), then the two smoke shapes replayed into the float32 and the 8-bit format. The arm has
+      # atomic batches and promises k ids, so no violation of any kind is expected. A write not seen would mean a search without a refresh.
+      - name: The Lucene arm of the agent-memory benchmark at a smoke size
+        run: |
+          run() { timeout 600 java -Xmx2g --add-modules jdk.incubator.vector -cp 'target/bench/classes:target/bench/lib/*' "$@"; }
+          run ai.humem.tiervec.LuceneMemoryArmCheck
+          start=$(date +%s)
+          run ai.humem.tiervec.AgentMemory --variants 'lucene lucene; lucene-int8 lucene quant=int8' --min-recall 0.9 --out target/bench/agent-memory-lucene
+          echo "agent-memory smoke, Lucene: $(( $(date +%s) - start )) s"
+          r=target/bench/agent-memory-lucene/result.txt
+          grep -E '^(ABOUT|COUNTERS|RESULT) ' "$r"
+          grep -q '^SUMMARY status=OK failures=0' "$r"
+          # 2 shapes and 2 variants
+          test "$(grep -c '^RESULT .* violations=0 writeNotSeen=0 deletedReturned=0 oldScore=0 partOfBatch=0 tooFewHits=0 ' "$r")" -eq 4
+          test "$(grep -c '^ABOUT .* library=lucene-core-10\.[0-9.]*\.jar version=10\.[0-9.]* scorer=Lucene99MemorySegmentFlatVectorsScorer ' "$r")" -eq 4
+          # on the 3,000 rows of one collection, flushes and merges built graphs
+          test "$(grep -c '^COUNTERS shape=smoke .* flushes=[1-9][0-9]* merges=[1-9][0-9]* graphs=[1-9][0-9]*$' "$r")" -eq 2
       - name: Set up uv
         uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
         with:
@@ -192,14 +211,17 @@ jobs:
         run: |
           uv run --no-project --python 3.12 scripts/instrument_distances.py src/main/java target/agent-memory/src
           mkdir -p target/agent-memory/classes
-          find target/agent-memory/src src/bench/java src/bench/jvector -name '*.java' > target/agent-memory/sources.txt
+          find target/agent-memory/src src/bench/java src/bench/jvector src/bench/lucene -name '*.java' > target/agent-memory/sources.txt
           javac -d target/agent-memory/classes --add-modules jdk.incubator.vector -cp 'target/bench/lib/*' @target/agent-memory/sources.txt
           run() { timeout 600 java -Xmx2g --add-modules jdk.incubator.vector -Djvector.vectorization_provider=panama -cp 'target/agent-memory/classes:target/bench/lib/*' \
             ai.humem.tiervec.AgentMemory --preset screen "$@"; }
           start=$(date +%s)
           run --shapes p20 --out target/agent-memory/default
           v='exact exact; tier-small tier tailLimit=50 smallLimit=20 maxSegments=3; graph-a12 graph graph.alpha=1.2; rebuild rebuild; jvector jvector'
+          v="$v; lucene lucene; lucene-int8 lucene quant=int8"
           for i in 1 2; do run --shapes p20,p200 --variants "$v" --dim 64 --latent 16 --out "target/agent-memory/screen$i"; done
+          # Lucene gives a segment a graph only from about 650 vectors, so its graphs need a larger shape: the 3,000 rows of the smoke shape
+          run --shapes smoke --variants 'lucene lucene; lucene-int8 lucene quant=int8' --dim 64 --latent 16 --out target/agent-memory/lucene
           echo "agent-memory screen: $(( $(date +%s) - start )) s"
           cat target/agent-memory/default/summary.md
           r=target/agent-memory/screen1/result.txt
@@ -216,10 +238,17 @@ jobs:
           grep -E '^RESULT shape=p200 variant=tier-small ' "$r" | grep -q -v ' rowsRebuiltPerWrite=0.000 '
           # the distances of JVector are counted in its score functions, in searches and in writes
           grep -q -E '^RESULT shape=p200 variant=jvector .* distancesPerSearch=[1-9][0-9.]* quantizedPerSearch=0\.0 distancesPerRowWritten=[1-9]' "$r"
+          # the distances of Lucene are counted in its scorers: none while collections of 200 rows are written, because no segment gets a graph;
+          # on the smoke shape in writes (graphs, built by writes and by the refreshes before searches) and in searches, 8-bit ones for int8
+          test "$(grep -c -E '^RESULT shape=p200 variant=lucene(-int8)? .* distancesPerRowWritten=0\.0 ' "$r")" -eq 2
+          l=target/agent-memory/lucene/result.txt
+          grep -E '^(COUNTERS|RESULT) ' "$l"
+          grep -q -E '^RESULT shape=smoke variant=lucene .* distancesPerSearch=[1-9][0-9.]* quantizedPerSearch=0\.0 distancesPerRowWritten=[1-9]' "$l"
+          grep -q -E '^RESULT shape=smoke variant=lucene-int8 .* distancesPerSearch=[1-9][0-9.]* quantizedPerSearch=[1-9][0-9.]* distancesPerRowWritten=[1-9]' "$l"
           # No column but the last one, the heap, depends on the run, except in the JVector arm: its removal picks neighbors at random for a node
           # that has no candidate left, so its rows are left out of the comparison.
           for i in 1 2; do cut -f1-20 "target/agent-memory/screen$i/results.tsv" > "target/agent-memory/screen$i.rows"; done
-          test "$(wc -l < target/agent-memory/screen1.rows)" -eq 11
+          test "$(wc -l < target/agent-memory/screen1.rows)" -eq 15
           same() { diff <(grep -v -w jvector "$1") <(grep -v -w jvector "$2"); }
           same target/agent-memory/screen1.rows target/agent-memory/screen2.rows
           same target/agent-memory/screen1/curve.tsv target/agent-memory/screen2/curve.tsv
@@ -249,7 +278,7 @@ jobs:
           mvn -B -ntp dependency:list -DincludeScope=runtime -DoutputFile=target/bench/default-runtime-deps.txt
           test -f target/bench/default-runtime-deps.txt
           cat target/bench/default-runtime-deps.txt
-          if grep -qi jvector target/bench/default-runtime-deps.txt; then echo "JVector is in the default dependency set"; exit 1; fi
+          if grep -qi -E 'jvector|lucene' target/bench/default-runtime-deps.txt; then echo "JVector or Lucene is in the default dependency set"; exit 1; fi
       - name: Run both arms on the data set
         run: |
           common=(--data target/bench/smoke-data --queries 100 --reps 3 --ef-sweep 32 --min-recall 0.85 --host-label github-runner)

@@ -11,3 +11,7 @@ graph-a12 graph graph.alpha=1.2
 # JVector's graph, updated in place (issue #160): at the alpha of 1.2 of its tuning page, and at 1.0. Needs the jars of the profile bench
 jvector jvector
 jvector-a10 jvector alpha=1.0
+# Lucene's segments (issue #160), refreshed before every search: its float32 HNSW format, and its 8-bit format with a float32 rescore.
+# Needs the jars of the profile bench
+lucene lucene
+lucene-int8 lucene quant=int8

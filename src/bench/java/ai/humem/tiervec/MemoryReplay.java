@@ -7,7 +7,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.LongPredicate;
 import java.util.function.Supplier;
 
 /**
@@ -99,7 +101,8 @@ final class MemoryReplay {
         long rowsBuilt, rowsRebuilt, bytesHeld, liveRows;
         /**
          * Distance computations, see {@link DistanceCount} (0 in a build that does not count): in the searches of the checkpoints, the
-         * quantized ones among them, and in the writes with their maintenance. Probes are in neither.
+         * quantized ones among them, and in the writes with their maintenance and the refreshes that make them visible
+         * ({@link MemoryArm#refresh}). The searches of probes are in neither.
          */
         long searchDistances, searchQuantized, writeDistances;
         /** the searches of the checkpoints */
@@ -201,7 +204,7 @@ final class MemoryReplay {
                 where = name + " operation " + i + " (" + op.kind() + ")";
                 switch (op.kind()) {
                     case SEARCH -> {
-                        r.violations.searchAnswer(live, op.vec(), arm.search(op.vec(), K, null), K, where);
+                        r.violations.searchAnswer(live, op.vec(), search(op.vec(), K, null), K, where);
                         r.searches++;
                     }
                     case CHECKPOINT -> checkpoint(op.queries());
@@ -220,6 +223,7 @@ final class MemoryReplay {
             arm.describe(r.shapes[checkpoint], centres);
             for (int i = 0; i < queries.length; i++) {
                 float[] q = queries[i];
+                refresh();
                 long full = DistanceCount.fullSoFar(), quantized = DistanceCount.quantizedSoFar();
                 Hit[] hits = arm.checkpointSearch(q, K);
                 quantized = DistanceCount.quantizedSoFar() - quantized;
@@ -251,6 +255,19 @@ final class MemoryReplay {
             r.writeDistances += DistanceCount.soFar() - before;
         }
 
+        /** {@link MemoryArm#refresh}, with what it computes counted as write work: it is what a write leaves to the next search */
+        private void refresh() {
+            long before = DistanceCount.soFar();
+            arm.refresh();
+            r.writeDistances += DistanceCount.soFar() - before;
+        }
+
+        /** a search outside the checkpoints, which must see every write before it */
+        private Hit[] search(float[] q, int k, LongPredicate allow) {
+            refresh();
+            return arm.search(q, k, allow);
+        }
+
         private void single(Runbook.Op w) {
             float[] old = live.vector(w.id());
             write(w);
@@ -261,7 +278,7 @@ final class MemoryReplay {
         }
 
         private void probe(float[] q, long[] ids) {
-            r.violations.probeAnswer(live, q, ids, arm.search(q, ids.length, Violations.only(ids)), where + " probe");
+            r.violations.probeAnswer(live, q, ids, search(q, ids.length, Violations.only(ids)), where + " probe");
             r.probes++;
         }
 
@@ -287,7 +304,7 @@ final class MemoryReplay {
                 SizedIdFilter only = Violations.only(ids);
                 for (int i = 0; i < n; i++) {
                     write(writes.get(i));
-                    if (i < n - 1) part |= Violations.showsPart(q, ids, before, after, arm.search(q, n, only));
+                    if (i < n - 1) part |= Violations.showsPart(q, ids, before, after, search(q, n, only));
                 }
             }
             maintain();
@@ -303,9 +320,13 @@ final class MemoryReplay {
             AtomicReference<Throwable> error = new AtomicReference<>();
             CountDownLatch started = new CountDownLatch(1);
             SizedIdFilter only = Violations.only(ids);
+            AtomicLong refreshed = new AtomicLong(); // what the refreshes of the watching thread computed
             Thread watcher = new Thread(() -> {
                 try {
                     do {
+                        long counted = DistanceCount.soFar(); // of the watching thread
+                        arm.refresh();
+                        refreshed.addAndGet(DistanceCount.soFar() - counted);
                         if (Violations.showsPart(q, ids, before, after, arm.search(q, ids.length, only))) part.set(true);
                         started.countDown();
                     } while (!done.get());
@@ -319,12 +340,13 @@ final class MemoryReplay {
             try {
                 started.await();
                 try {
-                    long counted = DistanceCount.soFar(); // of this thread only, so the watching thread is not counted
+                    long counted = DistanceCount.soFar(); // of this thread only, so the searches of the watching thread are not counted
                     arm.applyBatch(writes);
                     r.writeDistances += DistanceCount.soFar() - counted;
                 } finally {
                     done.set(true);
                     watcher.join();
+                    r.writeDistances += refreshed.get();
                 }
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();

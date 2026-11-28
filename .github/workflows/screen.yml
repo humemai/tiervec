@@ -93,7 +93,7 @@ jobs:
         run: |
           uv run --no-project --python 3.12 scripts/instrument_distances.py src/main/java target/agent-memory/src
           mkdir -p target/agent-memory/classes
-          find target/agent-memory/src src/bench/java src/bench/jvector -name '*.java' > target/agent-memory/sources.txt
+          find target/agent-memory/src src/bench/java src/bench/jvector src/bench/lucene -name '*.java' > target/agent-memory/sources.txt
           javac -d target/agent-memory/classes --add-modules jdk.incubator.vector -cp 'target/bench/lib/*' @target/agent-memory/sources.txt
       # the inputs reach the shell as environment variables, never as part of the script
       - name: Run the screen

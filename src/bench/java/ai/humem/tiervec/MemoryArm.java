@@ -9,8 +9,8 @@ import java.util.function.LongPredicate;
 
 /**
  * One design under test in the agent-memory benchmark (docs/AGENT-MEMORY-BENCHMARK.md, issue #159): an index of this library, driven the way
- * a host drives it. All maintenance runs on the calling thread at a point that the writes alone decide, so that a replay of one runbook gives
- * the same index every time.
+ * a host drives it. All maintenance runs on the calling thread at a point that the runbook alone decides (a write, or on an arm with
+ * {@link #refresh} the search that follows writes), so that a replay of one runbook gives the same index every time.
  */
 interface MemoryArm extends AutoCloseable {
     /** a create, an update, or a reuse: the id has this vector now */
@@ -26,6 +26,12 @@ interface MemoryArm extends AutoCloseable {
 
     /** the maintenance that is due after a write or a batch */
     default void maintain() {}
+
+    /**
+     * Makes the writes so far visible to the next search, on an arm whose searches do not see a write at once. The replay calls it before
+     * every search, on the thread that searches, and counts what it computes as write work.
+     */
+    default void refresh() {}
 
     Hit[] search(float[] q, int k, LongPredicate allow);
 
@@ -66,7 +72,7 @@ interface MemoryArm extends AutoCloseable {
 
     /**
      * A named variant: an arm and its settings, written {@code name arm key=value ...}. The arms are {@code exact}, {@code tier},
-     * {@code graph}, {@code rebuild}, and {@code jvector}.
+     * {@code graph}, {@code rebuild}, {@code jvector}, and {@code lucene}.
      */
     record Variant(String name, String arm, Map<String, String> settings) {
         /** the settings of a tier that would make a replay depend on timing or on thread scheduling, with the values that the benchmark fixes */
@@ -129,7 +135,9 @@ interface MemoryArm extends AutoCloseable {
                     yield new Rebuild(dim, graphParams());
                 }
                 case "jvector" -> external("ai.humem.tiervec.JVectorMemoryArm", dim);
-                default -> throw new IllegalArgumentException("unknown arm '" + arm + "' of the variant " + name + " (exact, tier, graph, rebuild, jvector)");
+                case "lucene" -> external("ai.humem.tiervec.LuceneMemoryArm", dim);
+                default -> throw new IllegalArgumentException(
+                        "unknown arm '" + arm + "' of the variant " + name + " (exact, tier, graph, rebuild, jvector, lucene)");
             };
         }
 

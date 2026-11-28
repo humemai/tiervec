@@ -98,6 +98,8 @@ final class MemoryReplay {
         long checkpointSearches;
         /** the heap that closing and dropping the arms gave back after a full collection; small collections put it below the noise */
         long heapBytes;
+        /** by checkpoint: the shape of the graphs, summed over the collections; no graphs in an arm that has none */
+        GraphShape[] shapes;
 
         double recall(int checkpoint) { return recallCount[checkpoint] == 0 ? 0 : recallSum[checkpoint] / recallCount[checkpoint]; }
 
@@ -126,6 +128,8 @@ final class MemoryReplay {
         Result r = new Result();
         r.recallSum = new double[answers.checkpoints];
         r.recallCount = new long[answers.checkpoints];
+        r.shapes = new GraphShape[answers.checkpoints];
+        for (int i = 0; i < r.shapes.length; i++) r.shapes[i] = new GraphShape();
         List<MemoryArm> arms = new ArrayList<>();
         try {
             replayAll(runbook, answers, open, probeEvery, r, arms);
@@ -145,7 +149,7 @@ final class MemoryReplay {
             MemoryArm arm = open.get();
             arms.add(arm);
             r.atomicBatches = arm.atomicBatches();
-            new Replayed(arm, r, answers.tops.get(c), probeEvery, "collection " + c).replay(runbook.collections.get(c));
+            new Replayed(arm, r, answers.tops.get(c), Runbook.centres(runbook.params, c), probeEvery, "collection " + c).replay(runbook.collections.get(c));
             if (arm.failure() != null) r.failures.add("collection " + c + ": the maintenance failed: " + arm.failure());
             r.rowsBuilt += arm.rowsBuilt();
             r.rowsRebuilt += arm.rowsRebuilt();
@@ -163,6 +167,7 @@ final class MemoryReplay {
         private final MemoryArm arm;
         private final Result r;
         private final List<LiveRows.Top[]> tops;
+        private final float[][] centres;
         private final int probeEvery;
         private final String name;
         private final LiveRows live = new LiveRows();
@@ -170,10 +175,11 @@ final class MemoryReplay {
         private int checkpoint;
         private String where;
 
-        Replayed(MemoryArm arm, Result r, List<LiveRows.Top[]> tops, int probeEvery, String name) {
+        Replayed(MemoryArm arm, Result r, List<LiveRows.Top[]> tops, float[][] centres, int probeEvery, String name) {
             this.arm = arm;
             this.r = r;
             this.tops = tops;
+            this.centres = centres;
             this.probeEvery = probeEvery;
             this.name = name;
         }
@@ -197,10 +203,14 @@ final class MemoryReplay {
 
         private void checkpoint(float[][] queries) {
             maintain();
+            long before = DistanceCount.soFar();
+            arm.beforeCheckpoint();
+            r.writeDistances += DistanceCount.soFar() - before;
+            arm.describe(r.shapes[checkpoint], centres);
             for (int i = 0; i < queries.length; i++) {
                 float[] q = queries[i];
                 long full = DistanceCount.fullSoFar(), quantized = DistanceCount.quantizedSoFar();
-                Hit[] hits = arm.search(q, K, null);
+                Hit[] hits = arm.checkpointSearch(q, K);
                 quantized = DistanceCount.quantizedSoFar() - quantized;
                 r.searchDistances += DistanceCount.fullSoFar() - full + quantized;
                 r.searchQuantized += quantized;

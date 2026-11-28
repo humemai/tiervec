@@ -58,6 +58,7 @@ public final class AgentMemory {
     private final List<String> lines = new ArrayList<>();
     private final List<String> table = new ArrayList<>();
     private final List<String> curve = new ArrayList<>();
+    private final List<String> graphs = new ArrayList<>();
     private final List<String> summary = new ArrayList<>();
     private final boolean counted = DistanceCount.active();
     private int failures;
@@ -131,6 +132,7 @@ public final class AgentMemory {
                 "partOfBatch", "tooFewHits", "recallFinal", "recallLowest", "recallChurnMean", "distancesPerSearch", "quantizedPerSearch", "distancesPerRowWritten",
                 "rowsBuiltPerRowWritten", "rowsRebuiltPerRowWritten", "bytesHeldPerRow", "heapBytesPerRow"));
         run.curve.add(String.join("\t", "shape", "variant", "checkpoint", "recall"));
+        run.graphs.add(String.join("\t", "shape", "variant", "checkpoint", GraphShape.HEADER));
         run.summary.add("## Agent-memory benchmark, preset " + o.get("preset"));
         run.summary.add("");
         run.summary.add("Seed " + o.get("seed") + ", " + o.get("dim") + " dimensions, " + o.get("mix") + " mix, generated data with latent "
@@ -143,6 +145,7 @@ public final class AgentMemory {
         Files.write(out.resolve("result.txt"), run.lines);
         Files.write(out.resolve("results.tsv"), run.table);
         Files.write(out.resolve("curve.tsv"), run.curve);
+        Files.write(out.resolve("graph.tsv"), run.graphs);
         Files.write(out.resolve("summary.md"), run.summary);
         System.exit(run.failures == 0 ? 0 : 1);
     }
@@ -169,13 +172,25 @@ public final class AgentMemory {
         for (MemoryArm.Variant v : variants) {
             String who = "shape=" + shape.name() + " variant=" + v.name();
             try {
+                PruneCount.reset();
                 MemoryReplay.Result r = MemoryReplay.run(read.runbook(), answers, () -> v.open(params.dim()), shape.probeEvery());
                 report(shape.name(), who, v, r, floor);
+                pruning(who);
             } catch (RuntimeException | OutOfMemoryError e) {
                 e.printStackTrace();
                 failure(who + " the replay stopped: " + e);
                 summary.add("| " + v.name() + " | the replay stopped | | | | | | | | | |");
             }
+        }
+    }
+
+    /** what the neighbour selection did in the replay of one variant; no line in a build that does not count, or an arm without graphs */
+    private void pruning(String who) {
+        for (int s = 0; s < PruneCount.SITES.length; s++) {
+            if (PruneCount.count(s, 0) == 0) continue;
+            StringBuilder b = new StringBuilder("PRUNE " + who + " site=" + PruneCount.SITES[s]);
+            for (int c = 0; c < PruneCount.COUNTS.length; c++) b.append(' ').append(PruneCount.COUNTS[c]).append('=').append(PruneCount.count(s, c));
+            line(b.toString());
         }
     }
 
@@ -187,6 +202,7 @@ public final class AgentMemory {
         for (int i = 0; i < r.recallSum.length; i++) {
             line(Bench.f("CHECKPOINT %s n=%d recall=%.4f", who, i, r.recall(i)));
             curve.add(Bench.f("%s\t%s\t%d\t%.4f", shape, v.name(), i, r.recall(i)));
+            if (r.shapes[i].graphs > 0) graphs.add(shape + "\t" + v.name() + "\t" + i + "\t" + r.shapes[i].row());
         }
         StringBuilder counts = new StringBuilder(), cells = new StringBuilder();
         for (Violations.Kind k : Violations.Kind.values()) {

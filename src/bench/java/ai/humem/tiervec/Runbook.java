@@ -109,6 +109,9 @@ final class Runbook {
         return new Runbook(p, all);
     }
 
+    /** the cluster centres of one collection, as the generator draws them; the shape of a graph is measured against them ({@link GraphShape}) */
+    static float[][] centres(Params p, int collection) { return new Generator(p, collection).centres; }
+
     // ---- the file ----
 
     /** writes the runbook and returns the SHA-256 of the file */

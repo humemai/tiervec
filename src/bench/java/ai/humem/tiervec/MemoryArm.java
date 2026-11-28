@@ -29,6 +29,15 @@ interface MemoryArm extends AutoCloseable {
 
     Hit[] search(float[] q, int k, LongPredicate allow);
 
+    /** what an arm does only for a checkpoint, before its graphs are read and its searches are scored */
+    default void beforeCheckpoint() {}
+
+    /** the search of a checkpoint, which an arm may answer from what it built for the checkpoint */
+    default Hit[] checkpointSearch(float[] q, int k) { return search(q, k, null); }
+
+    /** adds the graphs of this arm, as they are at a checkpoint, to the counts of their shape */
+    default void describe(GraphShape shape, float[][] centres) {}
+
     /** the rows that have been put into a graph, first builds and rebuilds */
     default long rowsBuilt() { return 0; }
 
@@ -44,8 +53,8 @@ interface MemoryArm extends AutoCloseable {
     @Override void close();
 
     /**
-     * A named variant: an arm and its settings, written {@code name arm key=value ...}. The arms are {@code exact}, {@code tier}, and
-     * {@code graph}.
+     * A named variant: an arm and its settings, written {@code name arm key=value ...}. The arms are {@code exact}, {@code tier},
+     * {@code graph}, and {@code rebuild}.
      */
     record Variant(String name, String arm, Map<String, String> settings) {
         /** the settings of a tier that would make a replay depend on timing or on thread scheduling, with the values that the benchmark fixes */
@@ -98,18 +107,25 @@ interface MemoryArm extends AutoCloseable {
                 case "tier" -> new Tier(dim, tierConfig(settings));
                 case "graph" -> {
                     refuse(settings, List.of("graph.M", "graph.efConstruction", "graph.efSearch", "graph.alpha", "graph.sq8", "consolidateAt"));
-                    GraphIndex.Params d = GraphIndex.Params.defaults();
-                    String sq8 = value("graph.sq8", d.sq8());
-                    if (!sq8.equals("true") && !sq8.equals("false")) throw new IllegalArgumentException("graph.sq8 must be true or false");
-                    GraphIndex.Params p = new GraphIndex.Params(Integer.parseInt(value("graph.M", d.M())),
-                            Integer.parseInt(value("graph.efConstruction", d.efConstruction())), Integer.parseInt(value("graph.efSearch", d.efSearch())),
-                            Float.parseFloat(value("graph.alpha", d.alpha())), sq8.equals("true"), d.seed());
+                    GraphIndex.Params p = graphParams();
                     double at = Double.parseDouble(value("consolidateAt", 0.2));
                     if (!(at >= 0)) throw new IllegalArgumentException("consolidateAt must be 0 or more");
                     yield new Graph(dim, p, at);
                 }
-                default -> throw new IllegalArgumentException("unknown arm '" + arm + "' of the variant " + name + " (exact, tier, graph)");
+                case "rebuild" -> {
+                    refuse(settings, List.of("graph.M", "graph.efConstruction", "graph.efSearch", "graph.alpha", "graph.sq8"));
+                    yield new Rebuild(dim, graphParams());
+                }
+                default -> throw new IllegalArgumentException("unknown arm '" + arm + "' of the variant " + name + " (exact, tier, graph, rebuild)");
             };
+        }
+
+        private GraphIndex.Params graphParams() {
+            GraphIndex.Params d = GraphIndex.Params.defaults();
+            String sq8 = value("graph.sq8", d.sq8());
+            if (!sq8.equals("true") && !sq8.equals("false")) throw new IllegalArgumentException("graph.sq8 must be true or false");
+            return new GraphIndex.Params(Integer.parseInt(value("graph.M", d.M())), Integer.parseInt(value("graph.efConstruction", d.efConstruction())),
+                    Integer.parseInt(value("graph.efSearch", d.efSearch())), Float.parseFloat(value("graph.alpha", d.alpha())), sq8.equals("true"), d.seed());
         }
 
         private String value(String key, Object otherwise) { return settings.getOrDefault(key, String.valueOf(otherwise)); }
@@ -183,6 +199,7 @@ interface MemoryArm extends AutoCloseable {
         }
 
         @Override public long rowsRebuilt() { return index.stats().mergedVectors(); }
+        @Override public void describe(GraphShape shape, float[][] centres) { shape.add(index, centres); }
         @Override public long bytesHeld() { return index.bytesHeld(); }
         @Override public String failure() { return index.lastError() == null ? null : index.lastError().toString(); }
         @Override public void close() { index.close(); }
@@ -215,8 +232,60 @@ interface MemoryArm extends AutoCloseable {
         }
 
         @Override public Hit[] search(float[] q, int k, LongPredicate allow) { return index.search(q, k, allow); }
+        @Override public void describe(GraphShape shape, float[][] centres) { shape.add(index, centres); }
         @Override public long rowsBuilt() { return added; }
         @Override public long bytesHeld() { return index.bytesHeld(); }
         @Override public void close() { index.close(); }
+    }
+
+    /**
+     * The control of the graphs that live through changes (issue #161): at every checkpoint a new {@link GraphIndex} is built from the live
+     * rows, in the order of their last write, and the checkpoint is searched in it. Between the checkpoints every search is exact, so this
+     * arm says nothing about searches under writes.
+     */
+    final class Rebuild implements MemoryArm {
+        private final int dim;
+        private final GraphIndex.Params params;
+        private final FlatIndex exact;
+        private final LinkedHashMap<Long, float[]> rows = new LinkedHashMap<>();
+        private GraphIndex built;
+        private long builtRows;
+
+        Rebuild(int dim, GraphIndex.Params params) {
+            this.dim = dim;
+            this.params = params;
+            this.exact = new FlatIndex(dim, Metric.COSINE);
+        }
+
+        @Override public void put(long id, float[] v) {
+            exact.add(id, v);
+            rows.remove(id);
+            rows.put(id, v);
+        }
+
+        @Override public void delete(long id) {
+            exact.delete(id);
+            rows.remove(id);
+        }
+
+        @Override public void maintain() { exact.compactIfNeeded(); }
+
+        @Override public void beforeCheckpoint() {
+            if (built != null) built.close();
+            built = new GraphIndex(dim, Metric.COSINE, params);
+            rows.forEach(built::add);
+            builtRows += rows.size();
+        }
+
+        @Override public Hit[] search(float[] q, int k, LongPredicate allow) { return exact.search(q, k, allow); }
+        @Override public Hit[] checkpointSearch(float[] q, int k) { return built.search(q, k, null); }
+        @Override public void describe(GraphShape shape, float[][] centres) { shape.add(built, centres); }
+        @Override public long rowsBuilt() { return builtRows; }
+        @Override public long bytesHeld() { return built == null ? 0 : built.bytesHeld(); }
+
+        @Override public void close() {
+            if (built != null) built.close();
+            exact.close();
+        }
     }
 }

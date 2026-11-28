@@ -156,7 +156,7 @@ jobs:
           run() { timeout 600 java -Xmx2g --add-modules jdk.incubator.vector -cp target/agent-memory/classes ai.humem.tiervec.AgentMemory --preset screen "$@"; }
           start=$(date +%s)
           run --shapes p20 --out target/agent-memory/default
-          v='exact exact; tier-small tier tailLimit=50 smallLimit=20 maxSegments=3; graph-a12 graph graph.alpha=1.2'
+          v='exact exact; tier-small tier tailLimit=50 smallLimit=20 maxSegments=3; graph-a12 graph graph.alpha=1.2; rebuild rebuild'
           for i in 1 2; do run --shapes p20,p200 --variants "$v" --dim 64 --latent 16 --out "target/agent-memory/screen$i"; done
           echo "agent-memory screen: $(( $(date +%s) - start )) s"
           cat target/agent-memory/default/summary.md
@@ -174,9 +174,15 @@ jobs:
           grep -E '^RESULT shape=p200 variant=tier-small ' "$r" | grep -q -v ' rowsRebuiltPerWrite=0.000 '
           # no column but the last one, the heap, depends on the run
           for i in 1 2; do cut -f1-20 "target/agent-memory/screen$i/results.tsv" > "target/agent-memory/screen$i.rows"; done
-          test "$(wc -l < target/agent-memory/screen1.rows)" -eq 7
+          test "$(wc -l < target/agent-memory/screen1.rows)" -eq 9
           diff target/agent-memory/screen1.rows target/agent-memory/screen2.rows
           diff target/agent-memory/screen1/curve.tsv target/agent-memory/screen2/curve.tsv
+          # the shape of the graphs (issue #161): rows for the arms that have graphs, the same in both runs, and the counts of the selection
+          grep -q -E '^p200[[:space:]]graph-a12[[:space:]]10[[:space:]]' target/agent-memory/screen1/graph.tsv
+          grep -q -E '^p200[[:space:]]rebuild[[:space:]]10[[:space:]]' target/agent-memory/screen1/graph.tsv
+          diff target/agent-memory/screen1/graph.tsv target/agent-memory/screen2/graph.tsv
+          grep -q -E '^PRUNE shape=p200 variant=graph-a12 site=insert calls=[1-9]' "$r"
+          grep -q -E '^PRUNE shape=p200 variant=graph-a12 site=reverse calls=[1-9]' "$r"
           # the screen refuses a build that does not count distances
           code=0
           timeout 300 java -Xmx1g --add-modules jdk.incubator.vector -cp target/bench/classes ai.humem.tiervec.AgentMemory --preset screen --shapes p20 \

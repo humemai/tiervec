@@ -56,6 +56,14 @@ on:
         options:
           - write
           - read
+      program:
+        description: "agent-memory: the screen of the agent-memory benchmark. filtered-walk: the filter screen, seeds 1, 2, 3; it reads no other input"
+        required: false
+        default: "agent-memory"
+        type: choice
+        options:
+          - agent-memory
+          - filtered-walk
 
 permissions:
   contents: read
@@ -63,6 +71,7 @@ permissions:
 jobs:
   screen:
     name: agent-memory screen (JDK 25)
+    if: ${{ inputs.program != 'filtered-walk' }}
     runs-on: ubuntu-latest
     timeout-minutes: 360
     steps:
@@ -125,4 +134,54 @@ jobs:
             target/agent-memory/screen/curve.tsv
             target/agent-memory/screen/graph.tsv
             target/agent-memory/screen/summary.md
+          if-no-files-found: ignore
+
+  # The filter screen (docs/SCREEN-IDEAS.md, "The filter screen", issue #162): gh workflow run screen.yml --ref <branch> -f program=filtered-walk
+  # One job per registered seed, with the registered settings, which are the defaults of the program. The result files are the artifacts
+  # "filtered-walk-results-seed-<seed>". A hit that a filter does not allow makes the job red.
+  filtered:
+    name: filter screen, seed ${{ matrix.seed }} (JDK 25)
+    if: ${{ inputs.program == 'filtered-walk' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        seed: ["1", "2", "3"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
+        with:
+          distribution: temurin
+          java-version: "25"
+      - name: Set up uv
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+        with:
+          version: "0.13.4"
+      - name: Compile the benchmark with the copy of the library that counts distances
+        run: |
+          uv run --no-project --python 3.12 scripts/instrument_distances.py src/main/java target/filtered-walk/src
+          mkdir -p target/filtered-walk/classes
+          find target/filtered-walk/src src/bench/java -name '*.java' > target/filtered-walk/sources.txt
+          javac -d target/filtered-walk/classes --add-modules jdk.incubator.vector @target/filtered-walk/sources.txt
+      - name: Run the filter screen
+        env:
+          SEED: ${{ matrix.seed }}
+        run: |
+          java -Xmx10g --add-modules jdk.incubator.vector -cp target/filtered-walk/classes ai.humem.tiervec.FilterScreen \
+            --seed "$SEED" --out target/filtered-walk/out
+      - name: Summary
+        if: always()
+        run: cat target/filtered-walk/out/summary.md >> "$GITHUB_STEP_SUMMARY" || true
+      - name: Upload the result files
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: filtered-walk-results-seed-${{ matrix.seed }}
+          path: |
+            target/filtered-walk/out/result.txt
+            target/filtered-walk/out/filter.tsv
+            target/filtered-walk/out/summary.md
           if-no-files-found: ignore

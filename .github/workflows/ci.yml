@@ -423,6 +423,31 @@ jobs:
           for f in target/bench/data-tiervec.txt target/bench/data-jvector.txt; do
             { echo '```'; cat "$f"; echo '```'; } >> "$GITHUB_STEP_SUMMARY" || true
           done
+      # issue #162: the checks of the filter-aware walks of the benchmark (docs/SCREEN-IDEAS.md, "The filter screen"), then the filter screen at
+      # a smoke size, with the copy of the library that counts distances. The smoke has no recall bar: it checks that every cell and arm is
+      # reported, that no filter is broken, and that the program refuses a build that counts nothing.
+      - name: The filter-aware walks and the filter screen at a smoke size
+        run: |
+          timeout 300 java -Xmx1g --add-modules jdk.incubator.vector -cp target/bench/classes ai.humem.tiervec.FilterWalkCheck
+          uv run --no-project --python 3.12 scripts/instrument_distances.py src/main/java target/filtered-walk/src
+          mkdir -p target/filtered-walk/classes
+          find target/filtered-walk/src src/bench/java -name '*.java' > target/filtered-walk/sources.txt
+          javac -d target/filtered-walk/classes --add-modules jdk.incubator.vector @target/filtered-walk/sources.txt
+          timeout 300 java -Xmx2g --add-modules jdk.incubator.vector -cp target/filtered-walk/classes ai.humem.tiervec.FilterScreen \
+            --rows 12000 --dim 32 --queries 20 --out target/filtered-walk/smoke
+          r=target/filtered-walk/smoke/filter.tsv
+          cat "$r"
+          # a header and 3 filters x 4 shares x 4 arms
+          test "$(wc -l < "$r")" -eq 49
+          grep -q '^SUMMARY status=OK failures=0' target/filtered-walk/smoke/result.txt
+          # every distance count is above 0, and the scan-first plan scans every query and is exact
+          awk -F'\t' 'NR > 1 && $7 + 0 <= 0 { bad = 1 } NR > 1 && $5 == "scanfirst" && ($9 != "1.0000" || $6 != "1.0000") { bad = 1 } END { exit bad }' "$r"
+          code=0
+          timeout 300 java -Xmx1g --add-modules jdk.incubator.vector -cp target/bench/classes ai.humem.tiervec.FilterScreen \
+            --rows 12000 --dim 32 --queries 1 --out target/filtered-walk/uncounted > target/filtered-walk/uncounted.log 2>&1 || code=$?
+          echo "filter screen without the counter, exit code: $code"
+          test "$code" -eq 2
+          grep -q 'the filter screen reports distance computations' target/filtered-walk/uncounted.log
 
   # The same fast tests on arm64 (NEON for the Vector API kernels). These jobs are not required checks; their names differ from the required
   # "fast tests (JDK 21)" and "fast tests (JDK 25)". Runner labels: ubuntu-24.04-arm is Linux arm64 and macos-15 is macOS arm64 (M1), both

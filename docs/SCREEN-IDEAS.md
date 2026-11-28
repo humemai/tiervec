@@ -46,6 +46,18 @@ All three ran on `a10k`, seed 1, on commit `d342987` ([#176](https://github.com/
 
 The lowest recall of `graph-a10` and `tier-m1` is at the first checkpoint, right after the load, which puts all rows into half of the clusters. A bar on `recallLowest` would so judge the load and not the churn. `results.tsv` has a new column, `recallChurnMean`, the mean recall of the ten checkpoints after the load, and the bars below use it.
 
+## When segments lose on a shape
+
+This is the rule for the comparison with one graph that is updated in place ([#160](https://github.com/humemai/tiervec/issues/160)). It was written on 2026-11-28, before any run of a JVector or Lucene arm. The numbers of the live graph on `a10k` were already known then ([S1](#s1-results)).
+
+The tier here is the variant `tier`, its default settings. The challengers are `graph-a10` and `graph-a12` (the live graph), `jvector` and `jvector-a10`, and the two Lucene variants once their arm exists, `lucene` and `lucene-int8`. Tier and challengers run in the screen preset on its data above, in the same run and on one commit, with each of the seeds 1, 2, and 3.
+
+- The rule judges a shape only if `tier` built graphs on it (`rowsBuiltPerRowWritten` above 0). Where it built none, the exact tail answers, and there are no segments to judge.
+- Segments lose to a challenger on a shape if, with each of the three seeds, the challenger has 0 violations that fail a run and no search with fewer than `k` ids (`tooFewHits`, which does not fail the run of the JVector arm; this condition was added on 2026-11-28, after a CI smoke on other data showed such searches, and before any run of the arm on the data of the screen), a `recallChurnMean` that is at most 0.005 below that of `tier`, a `distancesPerSearch` that is at most that of `tier`, and a `distancesPerRowWritten` that is below that of `tier`.
+- Segments lose on a shape if they lose to at least one challenger there. Every other outcome is reported as its numbers: a challenger can be better in one column and worse in another, and this rule does not rank that.
+- A distance computation is not a time. A computation on quantized codes counts as one, each library runs its own kernels, and the arms run at fixed settings, not at matched recall. The write cost of Lucene includes the refresh that the replay asks for before every search, which on a shape that probes every write is one refresh per write.
+- A shape that segments lose goes to a timed run, under rules written before that run. A screen changes no default.
+
 ## How to add an idea
 
 1. Add a row below with its source, hypothesis, and pass bar, and the status `not run`. The bar names a shape, a column of `results.tsv`, and a number.

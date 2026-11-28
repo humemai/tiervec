@@ -2,7 +2,9 @@ package ai.humem.tiervec;
 
 import java.lang.management.ManagementFactory;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
@@ -83,6 +85,12 @@ final class MemoryReplay {
         final Violations violations = new Violations();
         final List<String> failures = new ArrayList<>();
         boolean atomicBatches;
+        /** {@link MemoryArm#fullAnswers} */
+        boolean fullAnswers;
+        /** what the arm says it runs ({@link MemoryArm#about}), or null */
+        String about;
+        /** the counts of the arm's own work ({@link MemoryArm#counters}), summed over the collections */
+        final Map<String, Long> counters = new LinkedHashMap<>();
         /** rows added or replaced (creates, updates, and reuses), deletes, batches, searches of the runbook, and probes */
         long added, deleted, batches, searches, probes;
         /** by checkpoint: the sum of recall over the queries, and their number */
@@ -149,11 +157,14 @@ final class MemoryReplay {
             MemoryArm arm = open.get();
             arms.add(arm);
             r.atomicBatches = arm.atomicBatches();
+            r.fullAnswers = arm.fullAnswers();
             new Replayed(arm, r, answers.tops.get(c), Runbook.centres(runbook.params, c), probeEvery, "collection " + c).replay(runbook.collections.get(c));
             if (arm.failure() != null) r.failures.add("collection " + c + ": the maintenance failed: " + arm.failure());
             r.rowsBuilt += arm.rowsBuilt();
             r.rowsRebuilt += arm.rowsRebuilt();
             r.bytesHeld += arm.bytesHeld();
+            r.about = arm.about();
+            arm.counters().forEach((key, value) -> r.counters.merge(key, value, Long::sum));
         }
     }
 

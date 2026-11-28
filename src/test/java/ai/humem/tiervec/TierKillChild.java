@@ -41,8 +41,12 @@ public final class TierKillChild {
         final float[][] qs = SegmentTestSupport.vectors(QUERIES, TierHaltTest.DIM, 5);
         final Manifest found = Files.isDirectory(dir) ? Manifest.readLatest(dir) : null;
         final TieredIndex t = found == null ? new TieredIndex(TierHaltTest.DIM, Metric.L2, TierReopenTest.cfg()) : TieredIndex.open(dir, TierReopenTest.cfg());
+        // g is the generation that the next checkpoint publishes: one above every manifest, tombstone, and tail file in the directory. After an
+        // open these are the files of the live generation only. A kill during the first publish leaves such files and no manifest, no open
+        // removes them, and so the first generation of the next child is not 1.
+        final long first = (Files.isDirectory(dir) ? Manifest.highestOnDisk(dir)[0] : 0) + 1;
         say("ready");
-        for (long g = (found == null ? 0 : found.generation()) + 1; System.nanoTime() - start < LIFE_NANOS; g++) {
+        for (long g = first; System.nanoTime() - start < LIFE_NANOS; g++) {
             float[][] rows = SegmentTestSupport.vectors(ROWS, TierHaltTest.DIM, 1000 + g);
             for (int i = 0; i < ROWS; i++) t.add(id(g, i), rows[i]);
             t.sealNow();

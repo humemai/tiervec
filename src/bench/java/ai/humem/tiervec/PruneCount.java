@@ -20,16 +20,22 @@ final class PruneCount {
     static void site(int s) { site = s; }
 
     /**
-     * One selection, after its pass with the diversity rule and before its fill: of {@code n} candidates in increasing distance the rule kept
-     * {@code m}, those marked in {@code taken}, with room for {@code limit}. The pass stops when the list is full; then the candidates after
-     * the last kept one were never looked at.
+     * One selection, after the passes of the diversity rule and before its fill: of {@code n} candidates in increasing distance the rule kept
+     * {@code m}, those marked in {@code taken}, with room for {@code limit}. {@code later} marks the candidates that the first pass left to the
+     * second one (alpha above 1). The first pass stops when the list is full; then the candidates after the last kept one were never looked
+     * at. If the second pass kept any, the first one did not fill the list, so it looked at every candidate.
      */
-    static void selected(boolean[] taken, int n, int m, int limit, boolean fill) {
+    static void selected(boolean[] taken, boolean[] later, int n, int m, int limit, boolean fill) {
         int examined = n;
         if (m >= limit) {
             int last = -1;
-            for (int i = 0; i < n; i++) if (taken[i]) last = i;
-            examined = last + 1;
+            boolean second = false;
+            for (int i = 0; i < n; i++) {
+                if (!taken[i]) continue;
+                last = i;
+                second |= later[i];
+            }
+            if (!second) examined = last + 1;
         }
         long[] t = TOTAL[site];
         t[0]++;

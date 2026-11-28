@@ -45,7 +45,7 @@ SELECTION = {
     "int m = select(s, s.cn, s.cd, n, maxDeg, true, s.sel);": "PruneCount.site(1); int m = select(s, s.cn, s.cd, n, maxDeg, true, s.sel);",
     "else m = select(s, s.cn, s.cd, n, maxDeg, true, s.sel);": "else { PruneCount.site(2); m = select(s, s.cn, s.cd, n, maxDeg, true, s.sel); }",
     "if (fill) for (int i = 0; i < n && m < maxM; i++) if (!s.taken[i]) out[m++] = cn[i];": (
-        "PruneCount.selected(s.taken, n, m, maxM, fill); if (fill) for (int i = 0; i < n && m < maxM; i++) if (!s.taken[i]) out[m++] = cn[i];"
+        "PruneCount.selected(s.taken, s.later, n, m, maxM, fill); if (fill) for (int i = 0; i < n && m < maxM; i++) if (!s.taken[i]) out[m++] = cn[i];"
     ),
 }
 # methods of Kern and Kernels that the rest of the library may call and that are not distances

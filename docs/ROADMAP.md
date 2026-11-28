@@ -51,7 +51,7 @@ Library work that follows from the items above. CI already runs the fast and the
 - [#18](https://github.com/humemai/tiervec/issues/18): Configuration map, fingerprint, capability bits, and contract version. `Config.toMap`, `fromMap`, `fingerprint`, `reconfigure`, `contractVersion`, `capabilities`, `metrics`, `health`, and the unchecked exceptions are built, see [DESIGN.md](DESIGN.md#configuration-as-a-map).
 - [#14](https://github.com/humemai/tiervec/issues/14): Scalar twin of the graph kernel. `Kern` follows the same once-per-JVM switch as the flat kernels, so the graph and the tier also run without the Vector API module.
 - [#15](https://github.com/humemai/tiervec/issues/15): Native-image build and smoke test in CI. The job `native image smoke` builds an image of the library with a small program that covers the flat, IVF, graph, and tiered indexes without the Vector API and compares every answer with an exact scan; the jobs `native image smoke (vector, ...)` do the same with the fp32 dot and squared L2 ([#44](https://github.com/humemai/tiervec/issues/44)) and the int8, SQ8, and block16 kernels ([#48](https://github.com/humemai/tiervec/issues/48)) on the Vector API. Segment files and concurrent writers are not in it.
-- [#16](https://github.com/humemai/tiervec/issues/16): Merge by insertion into the largest segment
+- [#16](https://github.com/humemai/tiervec/issues/16): Merge by insertion into the largest segment. `MergeMode.INSERT` is built and was measured; `REBUILD` stays the default, see [BENCHMARKS.md](BENCHMARKS.md#the-study-at-100000-rows).
 - [#17](https://github.com/humemai/tiervec/issues/17): Crash and corruption tests for the segment format
 
 ## Later

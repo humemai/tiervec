@@ -193,6 +193,33 @@ java -Xms6g -Xmx6g -Xlog:gc:file=gc.log:uptimemillis,level,tags --add-modules jd
 
 A `GEN` line per generation has the seconds of the seal and of the merge, the uptime of the JVM around the merge and around the collection forced before and after it (to match the lines of the GC log), the rows the merge built, and recall at `--ef` against exact search over the live rows. The exact answers are kept up to date with the harness's own scalar dot product, and the `TRUTH-CHECK` line compares them with a full scan at the end. The `SEARCH-FINAL` line has p50, p99 and the mean of one search thread after the last generation. The vectors are held outside the heap, so the heap holds the tier, the queries and the exact answers. The run fails when a merge did not take the path of its mode (an insert merge builds the added rows only, a rebuild builds every live row), when a count is wrong, when an answer is malformed or holds a deleted id, or when recall is below `--min-recall`. The options and their defaults are the method `MergeGenerations.defaults()`.
 
+### The study at 100,000 rows
+
+`REBUILD` stays the default. The question was whether `MergeMode.INSERT` can replace it, and the answer had to be yes on every judged figure in every cell. The [rules, pins, and checksums](https://github.com/humemai/tiervec/issues/16#issuecomment-7211257104) were written before the first run, and the numbers below are those of the [result comment](https://github.com/humemai/tiervec/issues/16#issuecomment-7237049465). The run files are not in `results/`.
+
+| What | Pin |
+|---|---|
+| tiervec | commit `96f56d9c08a6c6e3c92446ca2e28e4f35123f1ce` |
+| JDK and heap | Temurin 25.0.5, Vector API module on, `-Xms6g -Xmx6g -Xmn512m -XX:+UseG1GC -XX:+AlwaysPreTouch` |
+| Host | i9-12900HK, turbo off, governor `powersave`, cores 0 and 2, 2 build threads |
+| Data | the [real data set](#real-data) of DBpedia embeddings, 768 dimensions, cosine |
+| Graph | `M` 16, `efConstruction` 200, float32 |
+| Cells | 100,000 rows built with one `rebuildFrom`, then 10 generations that each add 1% or 10% of that count and delete 0% or 10% of the live rows |
+| Runs | 45 timed runs in 5 rounds, each in a fresh JVM, none unclean. A/A (rebuild again over rebuild): p50 1.0024, merge time 1.0063, peak heap 1.0000, all inside their bands |
+
+Each figure is `INSERT` against `REBUILD`, as the median ratio over rounds with its 95% interval. Search p50 is taken after generation 10, at `ef` 100 with one search thread. Recall is `INSERT` minus `REBUILD` at `ef` 100. Bounds: p50 at most 1.05, merge time (judged with 10% added) at most 0.50, peak heap at most 1.00, recall at least -0.01. GRAY means that the interval holds the bound, and counts as not shown.
+
+| Writes per generation | Search p50 | Merge time | Peak heap | Recall, worst generation |
+| --- | --- | --- | --- | --- |
+| 1% added | 1.02 (0.9903, 1.1570) GRAY | not judged | 0.94 (0.9391, 0.9421) PASS | -0.0018 PASS |
+| 1% added, 10% deleted | 1.09 (1.0885, 1.1041) FAIL | not judged | 0.73 (0.7319, 0.7479) PASS | -0.0009 PASS |
+| 10% added | 1.00 (0.9914, 1.1562) GRAY | 0.07 (0.0724, 0.0957) PASS | 0.99 (0.9841, 1.0814) GRAY | -0.0019 PASS |
+| 10% added, 10% deleted | 1.07 (1.0585, 1.0750) FAIL | 0.27 (0.2029, 0.3403) PASS | 1.02 (0.7532, 1.3589) GRAY | -0.0010 PASS |
+
+`INSERT` missed the latency bound in both cells with deletes, while its merges took much less time with 10% added and its recall held in all four cells. By the rules, a fail at 100,000 rows ends the question, so the stage at 999,000 rows was not run. Some runs had a p50 more than 5% above the median of their arm, which widens the intervals behind the p50 GRAY words; the two FAIL intervals are narrow.
+
+The result covers one real data set, 100,000 base rows, one search thread, merges that the harness called and the merge policy did not pick, no writes or searches during a merge, and the heap only: the rows stay outside the heap, and process memory was not judged.
+
 ## Paced writes
 
 `PacedWrites`, in `src/bench`, writes into one tier at a fixed rate while searches run at a fixed rate, to compare merge policies ([issue #4](https://github.com/humemai/tiervec/issues/4)). It reads a [real data set](#real-data), cosine or l2, builds the first `--base` rows with one `rebuildFrom`, searches the idle index for `--idle-seconds`, adds the next `--inserts` rows at `--rate` per second, waits until no seal or merge is due, searches the idle index again, and then measures the layout that the policy left against exact answers that it computes itself. The policy is set with `--max-segments`, `--merge-fan`, `--merge-trigger-ratio`, and `--tail-limit`. The tail is not sealed by age. `--split-beam both` alternates the full and the split beam during the paced searches and measures both at the end. `--sealed true` builds all `base + inserts` rows into one graph with no stream, the reference a policy is compared with.

@@ -84,7 +84,7 @@ Two conclusions follow, both *(inference)*. A conversational memory per user is 
 
 **Sources say.** Lucene reuses an existing graph when it merges segments and has made merges faster by joining the other graphs into the base graph (GITHUB#14331). It has also worked on the cost of searching many segment graphs (GITHUB#12962, GITHUB#13121; the method was not read). FreshDiskANN's merge costs in proportion to the change.
 
-**tiervec today.** The default merge builds a new graph from the live vectors of its inputs, which keeps graph quality and pays for the whole result. A search visits every segment with the full beam, one segment after the other, unless `splitBeam` is on. In single runs at 100,000 vectors the default layout of 6 segments answered at 1.70 (sift128) and 2.33 (dbpedia768) times the median latency of one graph at equal recall ([#4](https://github.com/humemai/tiervec/issues/4)).
+**tiervec today.** The default merge builds a new graph from the live vectors of its inputs, which keeps graph quality and pays for the whole result. A merge by insertion into the largest graph is an option and not the default ([study](BENCHMARKS.md#the-study-at-100000-rows)). A search visits every segment with the full beam, one segment after the other, unless `splitBeam` is on. In single runs at 100,000 vectors the default layout of 6 segments answered at 1.70 (sift128) and 2.33 (dbpedia768) times the median latency of one graph at equal recall ([#4](https://github.com/humemai/tiervec/issues/4)).
 
 **Verdict.** Rebuild merges: **behind** on write cost. The default policy: **unproven**, with a candidate and a registered study in [#4](https://github.com/humemai/tiervec/issues/4). Sharing a search bound between segments is an idea to test there.
 

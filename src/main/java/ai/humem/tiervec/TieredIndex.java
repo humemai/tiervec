@@ -140,7 +140,9 @@ public final class TieredIndex implements VecIndex {
      * INSERT: a copy of the graph of the largest segment, without its hidden rows, into which the valid vectors of the other inputs are
      * inserted; the cost of the graph work then follows what changed and not the size of the largest segment. A merge rebuilds in both modes
      * when it does not take the largest segment, when it takes one segment only, or when the hidden share of the largest segment is above
-     * {@code deadFraction}. The graph of repeated INSERT merges is not the graph that a rebuild makes, and its cost has not been measured.
+     * {@code deadFraction}. The graph of repeated INSERT merges is not the graph that a rebuild makes. In a study at 100,000 rows (issue 16)
+     * with 10% added per generation, the inserting merges took less time, and in both of its cells with deletes the searches after ten
+     * generations were slower than after rebuilds, so REBUILD stays the default.
      */
     public enum MergeMode { REBUILD, INSERT }
 

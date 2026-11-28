@@ -1,0 +1,161 @@
+package ai.humem.tiervec;
+
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.SplittableRandom;
+import java.util.concurrent.atomic.AtomicReference;
+
+/**
+ * The checks of the JVector arm of the agent-memory benchmark that a replay on one thread cannot make (issue #160): a write waits while a
+ * removal holds its lock and the wait is counted, and writes and searches of several threads beside removals leave exactly the live rows. The CI
+ * job "bench smoke" compiles it with the arm and runs it. Exit code 1 when a check failed.
+ */
+public final class JVectorMemoryArmCheck {
+    private static final int DIM = 16, THREADS = 4, IDS = 200, WRITES = 1500;
+
+    private static int checks, failures;
+
+    private static synchronized void check(boolean ok, String what) {
+        checks++;
+        if (!ok && failures++ < 20) System.out.println("SELFCHECK-FAILURE " + what);
+    }
+
+    private static float[] unit(SplittableRandom r) {
+        float[] v = new float[DIM];
+        double n = 0;
+        for (int i = 0; i < DIM; i++) {
+            v[i] = (float) (r.nextDouble() - 0.5);
+            n += v[i] * v[i];
+        }
+        for (int i = 0; i < DIM; i++) v[i] /= (float) Math.sqrt(n);
+        return v;
+    }
+
+    public static void main(String[] args) throws Exception {
+        waitIsCounted();
+        writersAndSearchersBesideRemovals();
+        shortAnswers();
+        System.out.println("SELFCHECK-SUMMARY jvector checks=" + checks + " failures=" + failures);
+        System.exit(failures == 0 && checks > 0 ? 0 : 1);
+    }
+
+    /**
+     * Evidence for the short answers of collections of 20 rows, printed and not a check: updates whose vectors move from cluster to cluster,
+     * and for the first search with fewer than 10 of the 20 live ids, the base layer as a walk from the entry node finds it.
+     */
+    private static void shortAnswers() {
+        for (String removeAt : new String[] {"0.2", "0.05"}) {
+            long searches = 0, shortOnes = 0;
+            String first = null;
+            for (int seed = 0; seed < 20; seed++) {
+                SplittableRandom r = new SplittableRandom(seed);
+                float[][] centres = {unit(r), unit(r), unit(r), unit(r)};
+                try (JVectorMemoryArm arm = new JVectorMemoryArm(DIM, Map.of("removeAt", removeAt))) {
+                    for (int i = 0; i < 420; i++) {
+                        float[] v = unit(r), centre = centres[(i / 40) % centres.length];
+                        double n = 0;
+                        for (int d = 0; d < DIM; d++) {
+                            v[d] = centre[d] + 0.3f * v[d];
+                            n += v[d] * v[d];
+                        }
+                        for (int d = 0; d < DIM; d++) v[d] /= (float) Math.sqrt(n);
+                        arm.put(i < 20 ? i : r.nextInt(20), v);
+                        arm.maintain();
+                        if (i < 20) continue;
+                        int hits = arm.search(unit(r), 10, null).length;
+                        searches++;
+                        if (hits < 10 && shortOnes++ == 0) first = "seed=" + seed + " write=" + i + " hits=" + hits + " " + arm.reachability();
+                    }
+                }
+            }
+            System.out.println("jvector short answers removeAt=" + removeAt + " searches=" + searches + " short=" + shortOnes
+                    + (first == null ? "" : " first: " + first));
+        }
+    }
+
+    private static void waitIsCounted() throws InterruptedException {
+        SplittableRandom r = new SplittableRandom(1);
+        try (JVectorMemoryArm arm = new JVectorMemoryArm(DIM, Map.of())) {
+            for (int i = 0; i < 100; i++) arm.put(i, unit(r));
+            check(arm.writerWaits() == 0, "no write waits while no removal runs");
+            Thread writer = new Thread(() -> arm.put(1000, unit(new SplittableRandom(2))));
+            arm.writeLockOfRemoval().writeLock().lock();
+            try {
+                writer.start();
+                long deadline = System.nanoTime() + 30_000_000_000L;
+                while (!arm.writeLockOfRemoval().hasQueuedThread(writer) && System.nanoTime() < deadline) Thread.onSpinWait();
+                check(arm.writeLockOfRemoval().hasQueuedThread(writer), "a write waits while a removal holds the lock");
+            } finally {
+                arm.writeLockOfRemoval().writeLock().unlock();
+            }
+            writer.join(30_000);
+            check(!writer.isAlive() && arm.writerWaits() == 1 && arm.writerWaitNanos() > 0, "the wait is counted: " + arm.writerWaits());
+        }
+    }
+
+    private static void writersAndSearchersBesideRemovals() throws InterruptedException {
+        AtomicReference<Throwable> error = new AtomicReference<>();
+        List<Map<Long, float[]>> live = new ArrayList<>();
+        try (JVectorMemoryArm arm = new JVectorMemoryArm(DIM, Map.of("removeAt", "0.05"))) {
+            List<Thread> threads = new ArrayList<>();
+            for (int t = 0; t < THREADS; t++) {
+                int thread = t;
+                Map<Long, float[]> mine = new HashMap<>();
+                live.add(mine);
+                threads.add(new Thread(() -> {
+                    SplittableRandom r = new SplittableRandom(100 + thread);
+                    try {
+                        for (int i = 0; i < WRITES; i++) {
+                            long id = (long) thread * IDS + r.nextInt(IDS); // the ids of one thread, so no two writes of an id run together
+                            if (mine.containsKey(id) && r.nextInt(3) == 0) {
+                                arm.delete(id);
+                                mine.remove(id);
+                            } else {
+                                float[] v = unit(r);
+                                arm.put(id, v);
+                                mine.put(id, v);
+                            }
+                            arm.maintain();
+                            if (i % 10 == 0) {
+                                float[] q = unit(r);
+                                arm.search(q, 10, null);
+                                long[] one = {id};
+                                Hit[] hits = arm.search(q, 1, Violations.only(one));
+                                check(mine.containsKey(id) ? hits.length == 1 && Math.abs(hits[0].score() - LiveRows.cosine(q, mine.get(id))) < 1e-4
+                                        : hits.length == 0, "a thread reads its own write of the id " + id);
+                            }
+                        }
+                    } catch (Throwable e) {
+                        error.compareAndSet(null, e);
+                    }
+                }));
+            }
+            threads.forEach(Thread::start);
+            for (Thread t : threads) t.join(120_000);
+            check(threads.stream().noneMatch(Thread::isAlive), "every thread ended");
+            if (error.get() != null) error.get().printStackTrace();
+            check(error.get() == null, "no thread failed: " + error.get());
+
+            Map<Long, float[]> all = new HashMap<>();
+            live.forEach(all::putAll);
+            SplittableRandom r = new SplittableRandom(7);
+            for (Map.Entry<Long, float[]> e : all.entrySet()) {
+                float[] q = unit(r);
+                Hit[] hits = arm.search(q, 1, Violations.only(new long[] {e.getKey()}));
+                check(hits.length == 1 && Math.abs(hits[0].score() - LiveRows.cosine(q, e.getValue())) < 1e-4, "the live id " + e.getKey() + " is held");
+            }
+            for (int i = 0; i < 200; i++) {
+                float[] q = unit(r);
+                Hit[] hits = arm.search(q, 10, null);
+                check(hits.length == Math.min(10, all.size()), "ten hits: " + hits.length);
+                for (Hit h : hits) {
+                    check(all.containsKey(h.id()) && Math.abs(h.score() - LiveRows.cosine(q, all.get(h.id()))) < 1e-4, "a live id with its score: " + h);
+                }
+            }
+            check(arm.counters().get("removals") > 0, "removals ran: " + arm.counters());
+            System.out.println("jvector concurrent check " + arm.counters() + " live=" + all.size());
+        }
+    }
+}

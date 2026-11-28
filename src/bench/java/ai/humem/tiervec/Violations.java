@@ -40,10 +40,16 @@ final class Violations {
         if (counts[kind.ordinal()]++ < EXAMPLES_PER_KIND) examples.add(kind.key + ": " + what);
     }
 
-    /** the violations that fail a run of an arm */
-    long failing(boolean atomicBatches) {
+    /** the violations that fail a run of an arm that promises {@code k} ids */
+    long failing(boolean atomicBatches) { return failing(atomicBatches, true); }
+
+    /** the violations that fail a run of an arm, by the guarantees that it gives */
+    long failing(boolean atomicBatches, boolean fullAnswers) {
         long n = 0;
-        for (Kind k : Kind.values()) if (k != Kind.PART_OF_BATCH || atomicBatches) n += counts[k.ordinal()];
+        for (Kind k : Kind.values()) {
+            boolean promised = (k != Kind.PART_OF_BATCH || atomicBatches) && (k != Kind.TOO_FEW_HITS || fullAnswers);
+            if (promised) n += counts[k.ordinal()];
+        }
         return n;
     }
 

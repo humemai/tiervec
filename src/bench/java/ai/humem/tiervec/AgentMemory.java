@@ -137,7 +137,8 @@ public final class AgentMemory {
         run.summary.add("");
         run.summary.add("Seed " + o.get("seed") + ", " + o.get("dim") + " dimensions, " + o.get("mix") + " mix, generated data with latent "
                 + o.get("latent") + ". " + machine.replace(" ", ", ")
-                + ". No timing. A `*` marks an arm without atomic batches, whose batches in part do not fail the run.");
+                + ". No timing. A `*` marks an arm without atomic batches, whose batches in part do not fail the run. A `†` marks an arm that does not"
+                + " promise `k` ids, whose shorter answers do not fail the run.");
         for (int i = 0; i < shapes.size(); i++) run.shape(shapes.get(i), params.get(i), variants, floor, out);
         run.line("SUMMARY status=" + (run.failures == 0 ? "OK" : "FAILED") + " failures=" + run.failures);
         run.summary.add("");
@@ -198,7 +199,13 @@ public final class AgentMemory {
     private String per(long distances, long things) { return counted ? Bench.f("%.1f", (double) distances / things) : "-"; }
 
     private void report(String shape, String who, MemoryArm.Variant v, MemoryReplay.Result r, double floor) {
-        line("VARIANT " + who + " arm=" + v.arm() + " atomicBatches=" + r.atomicBatches + " settings=" + v.describe());
+        line("VARIANT " + who + " arm=" + v.arm() + " atomicBatches=" + r.atomicBatches + " fullAnswers=" + r.fullAnswers + " settings=" + v.describe());
+        if (r.about != null) line("ABOUT " + who + " " + r.about);
+        if (!r.counters.isEmpty()) {
+            StringBuilder own = new StringBuilder("COUNTERS " + who);
+            r.counters.forEach((key, value) -> own.append(' ').append(key).append('=').append(value));
+            line(own.toString());
+        }
         for (int i = 0; i < r.recallSum.length; i++) {
             line(Bench.f("CHECKPOINT %s n=%d recall=%.4f", who, i, r.recall(i)));
             curve.add(Bench.f("%s\t%s\t%d\t%.4f", shape, v.name(), i, r.recall(i)));
@@ -209,7 +216,7 @@ public final class AgentMemory {
             counts.append(' ').append(k.key).append('=').append(r.violations.count(k));
             cells.append('\t').append(r.violations.count(k));
         }
-        long failing = r.violations.failing(r.atomicBatches);
+        long failing = r.violations.failing(r.atomicBatches, r.fullAnswers);
         String recallFinal = Bench.f("%.4f", r.finalRecall()), recallLowest = Bench.f("%.4f", r.lowestRecall());
         String recallChurnMean = Bench.f("%.4f", r.churnMeanRecall());
         String perSearch = per(r.searchDistances, r.checkpointSearches), quantized = per(r.searchQuantized, r.checkpointSearches);
@@ -222,7 +229,7 @@ public final class AgentMemory {
                 + " quantizedPerSearch=" + quantized + " distancesPerRowWritten=" + perWrite + " heapBytesPerRow=" + heap);
         table.add(String.join("\t", shape, v.name(), v.arm(), v.describe(), String.valueOf(r.atomicBatches), String.valueOf(failing)) + cells + "\t"
                 + String.join("\t", recallFinal, recallLowest, recallChurnMean, perSearch, quantized, perWrite, built, rebuilt, held, heap));
-        summary.add("| " + String.join(" | ", v.name() + (r.atomicBatches ? "" : " \\*"), String.valueOf(failing),
+        summary.add("| " + String.join(" | ", v.name() + (r.atomicBatches ? "" : " \\*") + (r.fullAnswers ? "" : " †"), String.valueOf(failing),
                 String.valueOf(r.violations.count(Violations.Kind.PART_OF_BATCH)), recallLowest, recallChurnMean, recallFinal, perSearch, built, perWrite,
                 held, heap) + " |");
         for (String x : r.violations.examples) line("EXAMPLE " + who + " " + x);

@@ -39,7 +39,7 @@ A quantized search scans the codes, keeps the best `rerankFactor * k` candidates
 
 ### Graph index
 
-A multi-layer HNSW graph, with the alpha robust prune of DiskANN (Vamana) as a parameter (`alpha = 1` is the HNSW neighbor heuristic). Nodes live in fixed-size chunks and never move. Neighbor lists are copy-on-write arrays published with release and acquire `VarHandle` stores, so readers take no lock and always see a complete list. Writers take a striped monitor of the owning node, one at a time.
+A multi-layer HNSW graph, with the alpha robust prune of DiskANN (Vamana) as a parameter (`alpha = 1` is the HNSW neighbor heuristic). Nodes live in fixed-size chunks and never move. Neighbor lists are copy-on-write arrays published with release and acquire `VarHandle` stores, so readers take no lock and always see a complete list. Writers take a striped monitor of the owning node, one at a time. With `alpha` above 1 the neighbor selection runs in two passes, as `occlude_list` of [DiskANN's code](https://github.com/microsoft/DiskANN/blob/cpp_main/src/index.cpp) does: the first keeps what the rule keeps at `alpha` 1, and only the room that is left goes to candidates that pass at the configured `alpha` ([why](SCREEN-IDEAS.md#why-alpha-12-failed), [results](SCREEN-IDEAS.md#s4-results)).
 
 - `add` publishes the node's own links, then marks it live, then adds the reverse links, then updates the entry point. A node is returnable only when live, and reachable only through published links.
 - `delete` marks a node deleted at once. Deleted nodes are still traversed. `consolidate()` repairs the neighbor lists that hold a tombstone, waits (never blocking a reader) until searches that started earlier are done, and then recycles the slots.

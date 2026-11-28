@@ -446,9 +446,12 @@ public final class AgentMemorySelfCheck {
     private static void selectionCounts() {
         PruneCount.reset();
         PruneCount.site(1);
-        PruneCount.selected(new boolean[] {true, false, true, false, false}, 5, 2, 2, false); // full after the third candidate
-        PruneCount.selected(new boolean[] {true, false, true, false, false}, 5, 2, 4, true);  // looked at all five, filled two
-        long[] want = {2, 10, 8, 4, 2, 1};
+        boolean[] none = new boolean[5]; // no candidate is left to a second pass, as at alpha 1
+        PruneCount.selected(new boolean[] {true, false, true, false, false}, none, 5, 2, 2, false); // full after the third candidate
+        PruneCount.selected(new boolean[] {true, false, true, false, false}, none, 5, 2, 4, true);  // looked at all five, filled two
+        // the second pass filled the list with the second candidate, so the first pass had looked at all five
+        PruneCount.selected(new boolean[] {true, true, false, false, false}, new boolean[] {false, true, false, false, false}, 5, 2, 2, false);
+        long[] want = {3, 15, 13, 6, 2, 1};
         for (int c = 0; c < want.length; c++) check(PruneCount.count(1, c) == want[c], PruneCount.COUNTS[c] + " " + PruneCount.count(1, c));
         check(PruneCount.count(0, 0) == 0, "the other callers counted nothing");
         PruneCount.reset();

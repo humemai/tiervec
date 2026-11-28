@@ -86,7 +86,7 @@ public final class GraphIndex implements VecIndex {
         // result arrays (ascending distance)
         int[] outN = new int[256]; float[] outD = new float[256]; int outCount;
         // selection scratch
-        int[] cn = new int[512]; float[] cd = new float[512]; int[] sel = new int[512]; boolean[] taken = new boolean[512];
+        int[] cn = new int[512]; float[] cd = new float[512]; int[] sel = new int[512]; boolean[] taken = new boolean[512], later = new boolean[512];
 
         boolean visit(int o) {
             if (o >= stamp.length) stamp = Arrays.copyOf(stamp, Math.max(o + 1, stamp.length * 2));
@@ -95,7 +95,7 @@ public final class GraphIndex implements VecIndex {
         }
         void newGen() { if (++gen == 0) { Arrays.fill(stamp, 0); gen = 1; } }
         void ensureSel(int n) {
-            if (cn.length < n) { cn = new int[n * 2]; cd = new float[n * 2]; sel = new int[n * 2]; taken = new boolean[n * 2]; }
+            if (cn.length < n) { cn = new int[n * 2]; cd = new float[n * 2]; sel = new int[n * 2]; taken = new boolean[n * 2]; later = new boolean[n * 2]; }
         }
         void ensureOut(int n) { if (outN.length < n) { outN = new int[n * 2]; outD = new float[n * 2]; } }
     }
@@ -328,13 +328,32 @@ public final class GraphIndex implements VecIndex {
         }
     }
 
-    /** HNSW neighbor-selection heuristic with the alpha robust prune; candidates ascending by distance to the base. */
+    /**
+     * HNSW neighbor-selection heuristic with the alpha robust prune; candidates ascending by distance to the base. With alpha above 1 it runs in
+     * two passes, as {@code occlude_list} of DiskANN does: the first pass keeps what the rule keeps at alpha 1, and only the room that is left
+     * goes to candidates that pass at the configured alpha. One pass at alpha above 1 can fill a list with the nearest candidates before it looks
+     * at the far ones, which lead to other parts of the graph.
+     */
     private int select(Scratch s, int[] cn, float[] cd, int n, int maxM, boolean fill, int[] out) {
         int m = 0;
+        boolean twoPasses = alphaEff > 1f;
         Arrays.fill(s.taken, 0, n, false);
+        Arrays.fill(s.later, 0, n, false);
         for (int i = 0; i < n && m < maxM; i++) {
-            int c = cn[i]; boolean ok = true;
+            int c = cn[i]; boolean ok = true, later = twoPasses;
             for (int j = 0; j < m; j++) {
+                float d = distNodes(c, out[j]);
+                if ((d >= 0 ? d * alphaEff : d) <= cd[i]) { ok = false; later = false; break; }
+                if (twoPasses && d <= cd[i]) ok = false; // dropped at alpha 1 only: the second pass may keep it
+            }
+            if (ok) { out[m++] = c; s.taken[i] = true; }
+            else s.later[i] = later;
+        }
+        // the second pass; a candidate of it has passed the rule at alpha against the nearer ones of the first pass
+        for (int i = 0, first = m; i < n && m < maxM; i++) {
+            if (!s.later[i]) continue;
+            int c = cn[i]; boolean ok = true;
+            for (int j = first; j < m; j++) {
                 float d = distNodes(c, out[j]);
                 if ((d >= 0 ? d * alphaEff : d) <= cd[i]) { ok = false; break; }
             }

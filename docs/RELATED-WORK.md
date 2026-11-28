@@ -15,8 +15,8 @@ tiervec cannot claim to be the best vector index for agent memory, and it cannot
 
 - Its overall shape is established practice: an exact buffer for new rows, immutable index segments, delete markers, background merges, and the host's rows as the source of truth.
 - It is behind on filtered search, on memory per vector, on the update rules of graphs that live through deletes, and on batch visibility under a steady stream of commits.
-- Nothing is measured under churn: no recall over a long stream of updates and deletes, no latency under writes against another library, and nothing about thousands of small collections.
-- The largest open design question is whether segments beat one graph that is updated in place. Published work argues both ways, and no measurement here compares them.
+- Under churn, only counts are measured so far: the [screen](SCREEN-IDEAS.md) scores recall and distance computations over streams of updates and deletes. There is no latency under writes against another library, and nothing about thousands of small collections.
+- The largest open design question is whether segments beat one graph that is updated in place. Published work argues both ways. A screen compares them by counts ([results](SCREEN-IDEAS.md#segments-against-one-graph-results)); no timed measurement does.
 
 | # | Design choice | Verdict | What settles it |
 |---|---|---|---|

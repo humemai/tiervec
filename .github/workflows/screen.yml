@@ -77,12 +77,15 @@ jobs:
         uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
         with:
           version: "0.13.4"
+      # the libraries of the other arms (profile bench of the pom), for the benchmark class path only
+      - name: Fetch the libraries of the other arms
+        run: mvn -B -ntp -Pbench dependency:copy-dependencies -DoutputDirectory=target/bench/lib -DincludeScope=runtime
       - name: Compile the benchmark with the copy of the library that counts distances
         run: |
           uv run --no-project --python 3.12 scripts/instrument_distances.py src/main/java target/agent-memory/src
           mkdir -p target/agent-memory/classes
-          find target/agent-memory/src src/bench/java -name '*.java' > target/agent-memory/sources.txt
-          javac -d target/agent-memory/classes --add-modules jdk.incubator.vector @target/agent-memory/sources.txt
+          find target/agent-memory/src src/bench/java src/bench/jvector -name '*.java' > target/agent-memory/sources.txt
+          javac -d target/agent-memory/classes --add-modules jdk.incubator.vector -cp 'target/bench/lib/*' @target/agent-memory/sources.txt
       # the inputs reach the shell as environment variables, never as part of the script
       - name: Run the screen
         env:
@@ -104,7 +107,9 @@ jobs:
           if [ -n "$CLUSTERS" ]; then args+=(--clusters "$CLUSTERS"); fi
           if [ -n "$SHAPES" ]; then args+=(--shapes "$SHAPES"); fi
           if [ -n "$VARIANTS" ]; then args+=(--variants "$VARIANTS"); fi
-          java -Xmx10g --add-modules jdk.incubator.vector -cp target/agent-memory/classes ai.humem.tiervec.AgentMemory "${args[@]}"
+          # JVector's Panama provider keeps its vectors on the heap, so they count in the heap column
+          java -Xmx10g --add-modules jdk.incubator.vector -Djvector.vectorization_provider=panama \
+            -cp 'target/agent-memory/classes:target/bench/lib/*' ai.humem.tiervec.AgentMemory "${args[@]}"
       - name: Summary
         if: always()
         run: cat target/agent-memory/screen/summary.md >> "$GITHUB_STEP_SUMMARY" || true

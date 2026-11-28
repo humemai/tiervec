@@ -50,11 +50,23 @@ interface MemoryArm extends AutoCloseable {
     /** a failure of the maintenance, or null */
     default String failure() { return null; }
 
+    /** what the arm runs, for the result file, or null */
+    default String about() { return null; }
+
+    /** counts of the arm's own work, for the result file */
+    default Map<String, Long> counters() { return Map.of(); }
+
+    /**
+     * Whether a search returns {@code k} ids whenever {@code k} rows are live. On an arm that does not promise it, the shorter answers are
+     * counted ({@code tooFewHits}) and do not fail the run.
+     */
+    default boolean fullAnswers() { return true; }
+
     @Override void close();
 
     /**
      * A named variant: an arm and its settings, written {@code name arm key=value ...}. The arms are {@code exact}, {@code tier},
-     * {@code graph}, and {@code rebuild}.
+     * {@code graph}, {@code rebuild}, and {@code jvector}.
      */
     record Variant(String name, String arm, Map<String, String> settings) {
         /** the settings of a tier that would make a replay depend on timing or on thread scheduling, with the values that the benchmark fixes */
@@ -116,8 +128,21 @@ interface MemoryArm extends AutoCloseable {
                     refuse(settings, List.of("graph.M", "graph.efConstruction", "graph.efSearch", "graph.alpha", "graph.sq8"));
                     yield new Rebuild(dim, graphParams());
                 }
-                default -> throw new IllegalArgumentException("unknown arm '" + arm + "' of the variant " + name + " (exact, tier, graph, rebuild)");
+                case "jvector" -> external("ai.humem.tiervec.JVectorMemoryArm", dim);
+                default -> throw new IllegalArgumentException("unknown arm '" + arm + "' of the variant " + name + " (exact, tier, graph, rebuild, jvector)");
             };
+        }
+
+        /** an arm that needs the jars of the profile {@code bench}, reached by reflection so that the rest compiles without them */
+        private MemoryArm external(String type, int dim) {
+            try {
+                return (MemoryArm) Class.forName(type).getDeclaredConstructor(int.class, Map.class).newInstance(dim, settings);
+            } catch (java.lang.reflect.InvocationTargetException e) {
+                if (e.getCause() instanceof RuntimeException r) throw r; // a wrong setting
+                throw new IllegalStateException("the arm " + arm + " did not open", e.getCause());
+            } catch (ReflectiveOperationException | LinkageError e) {
+                throw new IllegalArgumentException("the arm " + arm + " needs the jars of the profile bench and src/bench/" + arm + " on the class path: " + e);
+            }
         }
 
         private GraphIndex.Params graphParams() {

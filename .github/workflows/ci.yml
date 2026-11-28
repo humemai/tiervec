@@ -94,6 +94,15 @@ jobs:
           mkdir -p target/bench/classes
           find src/main/java src/bench/java -name '*.java' > target/bench/sources.txt
           javac -d target/bench/classes --add-modules jdk.incubator.vector @target/bench/sources.txt
+      # The libraries of the other arms (profile bench), on the benchmark class path only: the JVector arm of the harness (issue #108), and the
+      # JVector arm of the agent-memory benchmark with its checks (issue #160)
+      - name: Fetch the libraries of the other arms (profile bench) and compile their arms
+        run: |
+          mvn -B -ntp -Pbench dependency:copy-dependencies -DoutputDirectory=target/bench/lib -DincludeScope=runtime
+          ls -l target/bench/lib
+          ls target/bench/lib | grep -q '^jvector-'
+          find src/bench/jvector -name '*.java' > target/bench/other-sources.txt
+          javac -d target/bench/classes --add-modules jdk.incubator.vector -cp 'target/bench/classes:target/bench/lib/*' @target/bench/other-sources.txt
       - name: Run the smoke
         run: |
           start=$(date +%s)
@@ -141,6 +150,38 @@ jobs:
           run --variants 'a tier nothing=1' > target/bench/agent-memory-wrong.log 2>&1 || code=$?
           echo "wrong variant exit code: $code"
           test "$code" -eq 2
+      # issue #160: first the checks of the JVector arm that a replay on one thread cannot make (a write that waits during a removal, threads
+      # beside removals), then the runbooks of the step above replayed into the arm. It has no atomic batches, so batches are seen in part.
+      - name: The JVector arm of the agent-memory benchmark at a smoke size
+        run: |
+          run() { timeout 600 java -Xmx2g --add-modules jdk.incubator.vector -Djvector.vectorization_provider=panama -cp 'target/bench/classes:target/bench/lib/*' "$@"; }
+          run ai.humem.tiervec.JVectorMemoryArmCheck
+          start=$(date +%s)
+          v='jvector jvector; jvector-a10 jvector alpha=1.0 removeAt=0.05'
+          run ai.humem.tiervec.AgentMemory --shapes smoke --variants "$v" --min-recall 0.9 --out target/bench/agent-memory-jvector
+          # On collections of 20 rows the arm returns fewer ids than there are live rows in some searches. It does not promise that, so the
+          # replay counts those searches without failing, and this run has no recall floor.
+          run ai.humem.tiervec.AgentMemory --shapes p20 --variants "$v" --out target/bench/agent-memory-jvector-p20
+          echo "agent-memory smoke, JVector: $(( $(date +%s) - start )) s"
+          s=target/bench/agent-memory-jvector/result.txt
+          p=target/bench/agent-memory-jvector-p20/result.txt
+          grep -h -E '^(ABOUT|COUNTERS|RESULT) ' "$s" "$p"
+          grep -q '^SUMMARY status=OK failures=0' "$s"
+          grep -q '^SUMMARY status=OK failures=0' "$p"
+          # 1 shape and 2 variants in each file; a write not seen, a deleted id returned, and an old score fail the run
+          test "$(grep -h -c '^RESULT .* violations=0 writeNotSeen=0 deletedReturned=0 oldScore=0 partOfBatch=[1-9][0-9]* ' "$s" "$p" | paste -sd+ | bc)" -eq 4
+          # no short answer on the 3,000 rows
+          test "$(grep -c '^RESULT .* tooFewHits=0 ' "$s")" -eq 2
+          test "$(grep -h '^ABOUT .* library=jvector-[0-9].*\.jar provider=PanamaVectorizationProvider ' "$s" "$p" | wc -l)" -eq 4
+          # every replay removed marked nodes, and no write waited, because the replay writes on one thread
+          test "$(grep -h '^COUNTERS .* removals=[1-9][0-9]* nodesRemoved=[1-9][0-9]* writerWaits=0$' "$s" "$p" | wc -l)" -eq 4
+          # without the jars the arm is refused before any replay
+          code=0
+          timeout 300 java -Xmx1g --add-modules jdk.incubator.vector -cp target/bench/classes ai.humem.tiervec.AgentMemory \
+            --variants 'jvector jvector' --out target/bench/agent-memory-nojar > target/bench/agent-memory-nojar.log 2>&1 || code=$?
+          echo "jvector arm without the jars, exit code: $code"
+          test "$code" -eq 2
+          grep -q 'needs the jars of the profile bench' target/bench/agent-memory-nojar.log
       - name: Set up uv
         uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
         with:
@@ -151,12 +192,13 @@ jobs:
         run: |
           uv run --no-project --python 3.12 scripts/instrument_distances.py src/main/java target/agent-memory/src
           mkdir -p target/agent-memory/classes
-          find target/agent-memory/src src/bench/java -name '*.java' > target/agent-memory/sources.txt
-          javac -d target/agent-memory/classes --add-modules jdk.incubator.vector @target/agent-memory/sources.txt
-          run() { timeout 600 java -Xmx2g --add-modules jdk.incubator.vector -cp target/agent-memory/classes ai.humem.tiervec.AgentMemory --preset screen "$@"; }
+          find target/agent-memory/src src/bench/java src/bench/jvector -name '*.java' > target/agent-memory/sources.txt
+          javac -d target/agent-memory/classes --add-modules jdk.incubator.vector -cp 'target/bench/lib/*' @target/agent-memory/sources.txt
+          run() { timeout 600 java -Xmx2g --add-modules jdk.incubator.vector -Djvector.vectorization_provider=panama -cp 'target/agent-memory/classes:target/bench/lib/*' \
+            ai.humem.tiervec.AgentMemory --preset screen "$@"; }
           start=$(date +%s)
           run --shapes p20 --out target/agent-memory/default
-          v='exact exact; tier-small tier tailLimit=50 smallLimit=20 maxSegments=3; graph-a12 graph graph.alpha=1.2; rebuild rebuild'
+          v='exact exact; tier-small tier tailLimit=50 smallLimit=20 maxSegments=3; graph-a12 graph graph.alpha=1.2; rebuild rebuild; jvector jvector'
           for i in 1 2; do run --shapes p20,p200 --variants "$v" --dim 64 --latent 16 --out "target/agent-memory/screen$i"; done
           echo "agent-memory screen: $(( $(date +%s) - start )) s"
           cat target/agent-memory/default/summary.md
@@ -172,9 +214,11 @@ jobs:
           grep -q -E '^RESULT shape=p200 variant=graph-a12 .* distancesPerRowWritten=[1-9]' "$r"
           # this tier sealed and merged
           grep -E '^RESULT shape=p200 variant=tier-small ' "$r" | grep -q -v ' rowsRebuiltPerWrite=0.000 '
+          # the distances of JVector are counted in its score functions, in searches and in writes
+          grep -q -E '^RESULT shape=p200 variant=jvector .* distancesPerSearch=[1-9][0-9.]* quantizedPerSearch=0\.0 distancesPerRowWritten=[1-9]' "$r"
           # no column but the last one, the heap, depends on the run
           for i in 1 2; do cut -f1-20 "target/agent-memory/screen$i/results.tsv" > "target/agent-memory/screen$i.rows"; done
-          test "$(wc -l < target/agent-memory/screen1.rows)" -eq 9
+          test "$(wc -l < target/agent-memory/screen1.rows)" -eq 11
           diff target/agent-memory/screen1.rows target/agent-memory/screen2.rows
           diff target/agent-memory/screen1/curve.tsv target/agent-memory/screen2/curve.tsv
           # the shape of the graphs (issue #161): rows for the arms that have graphs, the same in both runs, and the counts of the selection
@@ -185,10 +229,11 @@ jobs:
           grep -q -E '^PRUNE shape=p200 variant=graph-a12 site=reverse calls=[1-9]' "$r"
           # the screen refuses a build that does not count distances
           code=0
-          timeout 300 java -Xmx1g --add-modules jdk.incubator.vector -cp target/bench/classes ai.humem.tiervec.AgentMemory --preset screen --shapes p20 \
-            --out target/agent-memory/uncounted > target/agent-memory/uncounted.log 2>&1 || code=$?
+          timeout 300 java -Xmx1g --add-modules jdk.incubator.vector -cp 'target/bench/classes:target/bench/lib/*' ai.humem.tiervec.AgentMemory \
+            --preset screen --shapes p20 --out target/agent-memory/uncounted > target/agent-memory/uncounted.log 2>&1 || code=$?
           echo "screen without the counter, exit code: $code"
           test "$code" -eq 2
+          grep -q 'the screen reports distance computations' target/agent-memory/uncounted.log
       - name: Prepare a small data set in the layout of the real one
         run: |
           uv run --python 3.12 .github/scripts/make-smoke-parquet.py target/bench/smoke-parquet 5100 64 3
@@ -197,13 +242,6 @@ jobs:
           ls -l target/bench/smoke-data
           grep -q '^count=5000$' target/bench/smoke-data/meta.properties
           grep -q '^queries=100$' target/bench/smoke-data/meta.properties
-      - name: Fetch JVector (profile bench) and compile the JVector arm
-        run: |
-          mvn -B -ntp -Pbench dependency:copy-dependencies -DoutputDirectory=target/bench/lib -DincludeScope=runtime
-          ls -l target/bench/lib
-          ls target/bench/lib | grep -q '^jvector-'
-          javac -d target/bench/classes --add-modules jdk.incubator.vector -cp 'target/bench/classes:target/bench/lib/*' \
-            src/bench/jvector/java/ai/humem/tiervec/JVectorArm.java
       - name: The library keeps no run-time dependency
         run: |
           mvn -B -ntp dependency:list -DincludeScope=runtime -DoutputFile=target/bench/default-runtime-deps.txt

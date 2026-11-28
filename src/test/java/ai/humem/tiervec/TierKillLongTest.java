@@ -2,6 +2,7 @@ package ai.humem.tiervec;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
@@ -18,6 +19,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -41,7 +43,8 @@ class TierKillLongTest {
     /** the longest wait on Windows for the lock of a killed child */
     static final long MAX_LOCK_WAIT_NANOS = 30_000_000_000L;
 
-    private long longestLockWaitNanos; // of one seed: JUnit makes an instance per test
+    private long longestLockWaitNanos; // of one test: JUnit makes an instance per test
+    private int duringCheckpoint;
 
     @TempDir
     Path dir;
@@ -53,38 +56,65 @@ class TierKillLongTest {
     @ValueSource(longs = {1L, 2L})
     void aKillAtARandomMomentLeavesThePublishedGenerationOrTheNextOne(long seed) throws Exception {
         Random r = new Random(seed);
-        float[][] qs = SegmentTestSupport.vectors(TierKillChild.QUERIES, TierHaltTest.DIM, 5);
         long live = 0; // the generation that the last open found, 0 for none
-        int duringCheckpoint = 0;
         for (int kill = 0; kill < KILLS; kill++) {
             List<String> out = kill % 2 == 0 ? runAndKill(0, r.nextInt(MAX_DELAY_MS) * 1_000_000L) : runAndKill(1 + r.nextInt(5), r.nextInt(MAX_AIMED_DELAY_NANOS));
-            long published = live, publishing = 0;
-            for (String line : out) {
-                if (line.startsWith("publishing ")) publishing = Long.parseLong(line.substring(11));
-                else if (line.matches("published \\d+")) published = Long.parseLong(line.substring(10));
-            }
-            if (publishing > published) duringCheckpoint++;
-            String what = "seed " + seed + ", kill " + kill + ", published " + published + ", publishing " + publishing;
-            try (TieredIndex u = openAfterKill()) {
-                Manifest m = Manifest.readLatest(dir);
-                // a line may be lost to the kill after the work it reports was done, never the other way round
-                assertTrue(m.generation() == published || (publishing > published && m.generation() == publishing),
-                        what + ": open found generation " + m.generation());
-                List<String> want = new ArrayList<>(Files.readAllLines(expect.resolve("gen-" + m.generation() + ".txt")));
-                assertEquals(Integer.parseInt(want.remove(0)), u.size(), what);
-                assertNull(u.openFallbackCause(), what);
-                TierHaltTest.assertSameAnswers(want, TierHaltTest.digest(u, qs), what);
-                assertEquals(expected(m), names(dir), what + ": open left exactly the files of the live generation");
-                live = m.generation();
-            } catch (NoSuchFileException e) {
-                assertEquals(0, published, what + ": " + e);
-                assertEquals(0, live, what + ": " + e);
-            }
+            live = openAndCompare(out, live, "seed " + seed + ", kill " + kill);
         }
         assertTrue(live >= KILLS / 6, "the children made progress: generation " + live);
         assertTrue(duringCheckpoint > 0, "no kill fell inside a checkpoint");
         System.out.println("KILL seed=" + seed + " kills=" + KILLS + " duringCheckpoint=" + duringCheckpoint + " lastGeneration=" + live
                 + " longestLockWaitMs=" + longestLockWaitNanos / 1_000_000L);
+    }
+
+    /**
+     * The state that a kill during the first publish leaves, made with a hook so that it does not depend on timing: files of generation 1 and
+     * no manifest. The next checkpoint publishes generation 2 above them, and the child has to number its generations in the same way (#194:
+     * it started at 1 again, so the parent compared each generation with the answers of the one after it).
+     */
+    @Test
+    void aKillAfterACutOffFirstPublishLeavesTheGenerationTheChildReported() throws Exception {
+        try (TieredIndex t = new TieredIndex(TierHaltTest.DIM, Metric.L2, TierReopenTest.cfg())) {
+            t.add(1L, SegmentTestSupport.vectors(1, TierHaltTest.DIM, 1)[0]);
+            assertThrows(IOException.class, () -> t.checkpoint(dir, step -> {
+                if (step == FaultHook.Step.MANIFEST_TMP_SYNCED) throw new IOException("cut off");
+            }));
+        }
+        assertThrows(NoSuchFileException.class, () -> TieredIndex.open(dir, TierReopenTest.cfg()));
+        // killed at the third announcement, so two generations have been published and compared against the child's numbering
+        long live = openAndCompare(runAndKill(3, 0), 0, "after a cut-off first publish");
+        assertTrue(live >= 3, "the leftovers raised the numbers: generation " + live);
+    }
+
+    /**
+     * Opens what a kill left and compares it with what the child wrote for that generation. {@code out} is what the child printed and
+     * {@code live} the generation that the open before this child found. Returns the generation found now, 0 for none.
+     */
+    private long openAndCompare(List<String> out, long live, String when) throws Exception {
+        float[][] qs = SegmentTestSupport.vectors(TierKillChild.QUERIES, TierHaltTest.DIM, 5);
+        long published = live, publishing = 0;
+        for (String line : out) {
+            if (line.startsWith("publishing ")) publishing = Long.parseLong(line.substring(11));
+            else if (line.matches("published \\d+")) published = Long.parseLong(line.substring(10));
+        }
+        if (publishing > published) duringCheckpoint++;
+        String what = when + ", published " + published + ", publishing " + publishing;
+        try (TieredIndex u = openAfterKill()) {
+            Manifest m = Manifest.readLatest(dir);
+            // a line may be lost to the kill after the work it reports was done, never the other way round
+            assertTrue(m.generation() == published || (publishing > published && m.generation() == publishing),
+                    what + ": open found generation " + m.generation());
+            List<String> want = new ArrayList<>(Files.readAllLines(expect.resolve("gen-" + m.generation() + ".txt")));
+            assertEquals(Integer.parseInt(want.remove(0)), u.size(), what);
+            assertNull(u.openFallbackCause(), what);
+            TierHaltTest.assertSameAnswers(want, TierHaltTest.digest(u, qs), what);
+            assertEquals(expected(m), names(dir), what + ": open left exactly the files of the live generation");
+            return m.generation();
+        } catch (NoSuchFileException e) {
+            assertEquals(0, published, what + ": " + e);
+            assertEquals(0, live, what + ": " + e);
+            return 0;
+        }
     }
 
     /**

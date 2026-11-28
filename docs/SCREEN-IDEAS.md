@@ -58,6 +58,8 @@ The tier here is the variant `tier`, its default settings. The challengers are `
 - A distance computation is not a time. A computation on quantized codes counts as one, each library runs its own kernels, and the arms run at fixed settings, not at matched recall. The write cost of Lucene includes the refresh that the replay asks for before every search, which on a shape that probes every write is one refresh per write.
 - A shape that segments lose goes to a timed run, under rules written before that run. A screen changes no default.
 
+The rule was applied to screen runs on 2026-11-28: segments lose on none of the shapes that it judges ([results](#segments-against-one-graph-results)).
+
 ## How to add an idea
 
 1. Add a row below with its source, hypothesis, and pass bar, and the status `not run`. The bar names a shape, a column of `results.tsv`, and a number.
@@ -77,7 +79,7 @@ The tier here is the variant `tier`, its default settings. The challengers are `
 | S6 | The [long churn](#the-long-churn) of the live graph and of the insert merge against a rebuild of the same live rows, the test that [#161](https://github.com/humemai/tiervec/issues/161) asks for. [FreshDiskANN](https://arxiv.org/abs/2105.09613) reports falling recall and degree over cycles at `alpha` 1; Lucene measured its decay over [100 generations](https://github.com/apache/lucene/issues/16552) | A graph that lives through 15 turnovers keeps the recall of a rebuild | On `a10k` with `--turnover 15 --checkpoints 15`, with each of the seeds 1, 2, and 3: for `graph-a10` against `rebuild`, and for `tier-m1-insert` against `tier-m1`, `recallChurnMean` is at least the control's minus 0.005 and `recallFinal` at least the control's minus 0.01; and `unreached` in `graph.tsv` is at most 10, 0.1% of the live rows, at every checkpoint | failed: `graph-a10` and `tier-m1-insert` missed the bound on unreached rows with every seed (up to 8,523 rows), and `graph-a10` also missed the mean-recall bound with seed 3; the final-recall bounds held ([results](#s6-results)) |
 | S7 | A filter-aware walk after Lucene's ACORN-1 based search: only rows that pass are scored, and neighbors that fail are expanded to their own neighbors. [ACORN](https://arxiv.org/abs/2403.04871) (section 5.3), Lucene's [`FilteredHnswGraphSearcher`](https://github.com/apache/lucene/blob/main/lucene/core/src/java/org/apache/lucene/util/hnsw/FilteredHnswGraphSearcher.java) ([apache/lucene#14160](https://github.com/apache/lucene/pull/14160)), arm `acorn`; [#162](https://github.com/humemai/tiervec/issues/162) | On the existing graph, where the shipped walk spends distances on rows that fail, this walk keeps its recall with fewer distance computations than both the walk and a scan | The three bars of the [filter screen](#the-filter-screen), with each of the seeds 1, 2, and 3 | failed: missed bar 1 at random 0.01 with every seed; missed bar 3 at positive 0.1 and negative 0.1 with every seed; bar 2 held ([results](#s7-and-s8-results)) |
 | S8 | The adaptive-local walk of [NaviX](https://arxiv.org/abs/2506.23397) (section 3): at each node, the share of its neighbors that pass picks one of three rules, arm `navix`; [#162](https://github.com/humemai/tiervec/issues/162) | As S7, and because the rule follows the share near each node, it holds when the filter is correlated with the query | The three bars of the [filter screen](#the-filter-screen), with each of the seeds 1, 2, and 3 | failed: missed bar 1 at random 0.01, positive 0.1, and negative 0.5 with every seed; missed bar 3 at negative 0.1 with every seed and at positive 0.1 with seed 3; bar 2 held ([results](#s7-and-s8-results)) |
-| S9 | The [long churn](#the-long-churn) of the live graph at `alpha` 1.2 in two passes ([S4](#s4-results)), [proposed on #161](https://github.com/humemai/tiervec/issues/161#issuecomment-7237301893) | A graph at `alpha` 1.2 in two passes lives through 15 turnovers with the recall of a rebuild. It is not expected to: at checkpoint 10 of S4 on `a10k` its share of edges between clusters was 0.0001 to 0.0003, below the 0.0004 to 0.0006 of `alpha` 1.0, which came apart in the long churn | The bar of S6 for the live graph, at `alpha` 1.2. On `a10k` with `--turnover 15 --checkpoints 15`, with each of the seeds 1, 2, and 3: for `graph-a12` against `rebuild`, `recallChurnMean` is at least the control's minus 0.005 and `recallFinal` at least the control's minus 0.01; and `unreached` of `graph-a12` in `graph.tsv` is at most 10 at every checkpoint. The insert merge is not judged, because the long churn runs it at the default `alpha` only | not run |
+| S9 | The [long churn](#the-long-churn) of the live graph at `alpha` 1.2 in two passes ([S4](#s4-results)), [proposed on #161](https://github.com/humemai/tiervec/issues/161#issuecomment-7237301893) | A graph at `alpha` 1.2 in two passes lives through 15 turnovers with the recall of a rebuild. It is not expected to: at checkpoint 10 of S4 on `a10k` its share of edges between clusters was 0.0001 to 0.0003, below the 0.0004 to 0.0006 of `alpha` 1.0, which came apart in the long churn | The bar of S6 for the live graph, at `alpha` 1.2. On `a10k` with `--turnover 15 --checkpoints 15`, with each of the seeds 1, 2, and 3: for `graph-a12` against `rebuild`, `recallChurnMean` is at least the control's minus 0.005 and `recallFinal` at least the control's minus 0.01; and `unreached` of `graph-a12` in `graph.tsv` is at most 10 at every checkpoint. The insert merge is not judged, because the long churn runs it at the default `alpha` only | failed: `graph-a12` missed the bound on unreached rows with every seed (up to 9,213 rows), and the mean-recall bound with seed 3 (0.0060 below `rebuild`); the final-recall bound held ([results](#s9-results)) |
 
 ### The long churn
 
@@ -241,7 +243,7 @@ Two passes passed with every seed. The runs are on commit `7995ddd`, once per se
 
 With one pass, in the runs of [S1](#s1-results), `recallChurnMean` of `graph-a12` was 0.9140 to 0.9508 on `a10k` and 0.7565 to 0.7694 on `p2000`; with two passes it was 0.9741 to 0.9771 and 0.9998 to 0.9999. At `alpha` 1.0 nothing moved: with every seed and on both shapes, `recallChurnMean`, `recallFinal`, `recallLowest`, `distancesPerSearch`, and `distancesPerRowWritten` of `graph-a10` equal those of the S1 runs on commit `9754ef8`.
 
-Two passes bring `alpha` 1.2 level with `alpha` 1.0 in recall, not clearly above it: the difference was -0.0004 to +0.0030 on `a10k` and +0.0002 to +0.0005 on `p2000`. The writes cost much more. A written row took 2.5 times the distance computations of `graph-a10` on `a10k` and 3.6 times on `p2000`, which is 1.19 to 1.23 and 1.29 to 1.30 times those of one pass at `alpha` 1.2. The default `alpha` stays 1.0. The runs cover three turnovers. At checkpoint 10 `graph-a12` had a smaller share of edges between clusters than `graph-a10` in every run and shape, and the [long churn](#the-long-churn), in which `graph-a10` came apart, has not been run with two passes. Nothing is timed. The library's fast tests passed on the same commit (run [46125748729](https://github.com/humemai/tiervec/actions/runs/46125748729)).
+Two passes bring `alpha` 1.2 level with `alpha` 1.0 in recall, not clearly above it: the difference was -0.0004 to +0.0030 on `a10k` and +0.0002 to +0.0005 on `p2000`. The writes cost much more. A written row took 2.5 times the distance computations of `graph-a10` on `a10k` and 3.6 times on `p2000`, which is 1.19 to 1.23 and 1.29 to 1.30 times those of one pass at `alpha` 1.2. The default `alpha` stays 1.0. The runs cover three turnovers. At checkpoint 10 `graph-a12` had a smaller share of edges between clusters than `graph-a10` in every run and shape, and the [long churn](#the-long-churn), in which `graph-a10` came apart, was not part of these runs; it ran with two passes afterwards ([S9](#s9-results)). Nothing is timed. The library's fast tests passed on the same commit (run [46125748729](https://github.com/humemai/tiervec/actions/runs/46125748729)).
 
 ### S6 results
 
@@ -371,3 +373,98 @@ What the cells show:
 - Filter calls are the price where no scan runs. With random filters at share 0.1, `walk` asked 2,288 to 2,295 times per query, `acorn` 8,100 to 8,108, and `navix` 10,613 to 10,631.
 
 Neither arm goes to a timed comparison as registered. A rule that uses a walk only where it gained here would be a new idea, with bars written before its run. The timed comparison and the adoption rule stay open on [#162](https://github.com/humemai/tiervec/issues/162), and the library is unchanged.
+
+### S9 results
+
+S9 failed. The runs are on commit `0191197` ([#188](https://github.com/humemai/tiervec/pull/188)), once per seed, all on runners with 16 vector lanes, and none has a failing violation. `graph-a12` selects in two passes here ([S4](#s4-results)) and is compared with `rebuild` in the same run. The columns for one pass come from the runs of [S6](#s6-results).
+
+| Seed | `recallChurnMean` `graph-a12` / `rebuild` | Difference (needs -0.005 or more) | `recallFinal` `graph-a12` / `rebuild` | Difference (needs -0.01 or more) | Most unreached rows at any checkpoint, `graph-a12` / `rebuild` (`graph-a12` at most 10) | Run |
+|---|---|---|---|---|---|---|
+| 1 | 0.9783 / 0.9799 | -0.0016 (holds) | 0.9800 / 0.9850 | -0.0050 (holds) | 9204 / 0 (fails) | [46134859212](https://github.com/humemai/tiervec/actions/runs/46134859212) |
+| 2 | 0.9769 / 0.9800 | -0.0031 (holds) | 0.9780 / 0.9730 | +0.0050 (holds) | 9213 / 2 (fails) | [46134861588](https://github.com/humemai/tiervec/actions/runs/46134861588) |
+| 3 | 0.9733 / 0.9793 | -0.0060 (fails) | 0.9770 / 0.9790 | -0.0020 (holds) | 9139 / 0 (fails) | [46134863884](https://github.com/humemai/tiervec/actions/runs/46134863884) |
+
+| Seed | First checkpoint with more than 10 unreached rows, two passes / one pass | Checkpoints above 10, two passes / one pass | Most unreached rows, two passes / one pass | Cross-cluster share at checkpoint 15, two passes / one pass / `rebuild` |
+|---|---|---|---|---|
+| 1 | 4 / 1 | 12 of 16 / 15 of 16 | 9204 / 9212 | 0.0003 / 0.0006 / 0.0142 |
+| 2 | 6 / 1 | 10 of 16 / 15 of 16 | 9213 / 9223 | 0.0000 / 0.0000 / 0.0153 |
+| 3 | 4 / 1 | 12 of 16 / 15 of 16 | 9139 / 9138 | 0.0000 / 0.0000 / 0.0148 |
+
+| Seed | `recallChurnMean` of `graph-a12`, two passes / one pass | `distancesPerSearch`, two passes over `rebuild` | over `graph-a10` | `distancesPerRowWritten`, two passes over `rebuild` | over `graph-a10` | over one pass |
+|---|---|---|---|---|---|---|
+| 1 | 0.9783 / 0.9313 | 1.140 | 1.041 | 7.236 | 2.460 | 1.357 |
+| 2 | 0.9769 / 0.9049 | 1.134 | 1.042 | 6.992 | 2.480 | 1.330 |
+| 3 | 0.9733 / 0.9345 | 1.129 | 1.039 | 7.246 | 2.678 | 1.360 |
+
+The bound on unreached rows failed with every seed: at its worst checkpoint `graph-a12` left 9,139 to 9,213 of 10,000 rows unreached at layer 0, and `rebuild` at most 2. The mean-recall bound failed with seed 3, and the final-recall bound held with every seed. The graph came apart, as was expected when the bar was registered. The default `alpha` stays 1.0.
+
+Two passes still did better than one. `recallChurnMean` was 0.0016 to 0.0060 below that of `rebuild`, against 0.0448 to 0.0751 with one pass, and more than 10 rows were first unreached at checkpoint 4 to 6, against checkpoint 1. The most unreached rows stayed about the same (9,138 to 9,223 with one pass). A written row took 1.33 to 1.36 times the distance computations of one pass, 2.46 to 2.68 times those of `graph-a10`, and 6.99 to 7.25 times those of `rebuild`.
+
+The other four variants repeat their runs of S6. With the seeds 2 and 3, every column of `results.tsv` but the heap and all of `graph.tsv` are equal. With seed 1, whose runner in S6 had 8 vector lanes, one `distancesPerRowWritten` differs by 0.1 and a few cells of `graph.tsv` differ, while the unreached rows are equal at every checkpoint.
+
+### Segments against one graph: results
+
+By the [rule](#when-segments-lose-on-a-shape), segments lose on no shape that it judges, so it sends no shape to a timed run. These are screen results on generated data: nothing is timed, and no default changes.
+
+The runs are on commit `86d0138` ([#187](https://github.com/humemai/tiervec/pull/187)), once per seed ([46135169572](https://github.com/humemai/tiervec/actions/runs/46135169572) with seed 1, [46135171683](https://github.com/humemai/tiervec/actions/runs/46135171683) with seed 2, [46135174329](https://github.com/humemai/tiervec/actions/runs/46135174329) with seed 3), all on runners with 16 vector lanes, and none has a failing violation. `tier` built no graph on `p20` and `p200` (`rowsBuiltPerRowWritten` 0.000 with every seed), so the rule judges neither; their numbers are in the summaries of the runs. It judges `p2000` and `a10k`.
+
+The cells of the first table say with how many of the three seeds a condition holds.
+
+| Shape | Challenger | No failing violation | No short search | `recallChurnMean` at most 0.005 below `tier` | `distancesPerSearch` at most that of `tier` | `distancesPerRowWritten` below that of `tier` | Segments lose to it |
+|---|---|---|---|---|---|---|---|
+| `p2000` | `graph-a10` | 3 of 3 | 3 of 3 | 3 of 3 | 3 of 3 | 0 of 3 | no |
+| `p2000` | `graph-a12` | 3 of 3 | 3 of 3 | 3 of 3 | 3 of 3 | 0 of 3 | no |
+| `p2000` | `jvector` | 3 of 3 | 3 of 3 | 0 of 3 | 3 of 3 | 0 of 3 | no |
+| `p2000` | `jvector-a10` | 3 of 3 | 3 of 3 | 0 of 3 | 3 of 3 | 0 of 3 | no |
+| `p2000` | `lucene` | 3 of 3 | 3 of 3 | 3 of 3 | 3 of 3 | 0 of 3 | no |
+| `p2000` | `lucene-int8` | 3 of 3 | 3 of 3 | 3 of 3 | 3 of 3 | 0 of 3 | no |
+| `a10k` | `graph-a10` | 3 of 3 | 3 of 3 | 0 of 3 | 3 of 3 | 0 of 3 | no |
+| `a10k` | `graph-a12` | 3 of 3 | 3 of 3 | 0 of 3 | 3 of 3 | 0 of 3 | no |
+| `a10k` | `jvector` | 3 of 3 | 3 of 3 | 0 of 3 | 3 of 3 | 0 of 3 | no |
+| `a10k` | `jvector-a10` | 3 of 3 | 3 of 3 | 0 of 3 | 3 of 3 | 3 of 3 | no |
+| `a10k` | `lucene` | 3 of 3 | 3 of 3 | 0 of 3 | 3 of 3 | 0 of 3 | no |
+| `a10k` | `lucene-int8` | 3 of 3 | 3 of 3 | 0 of 3 | 3 of 3 | 0 of 3 | no |
+
+| Shape | Challenger | Seed | Failing violations (0) | Short searches (0) | `recallChurnMean`, challenger / `tier` | Difference (needs -0.005 or more) | `distancesPerSearch`, challenger / `tier` | Ratio (at most 1) | `distancesPerRowWritten`, challenger / `tier` | Ratio (below 1) |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `p2000` | `graph-a10` | 1 | 0 (holds) | 0 (holds) | 0.9994 / 0.9999 | -0.0005 (holds) | 444.9 / 1559.1 | 0.285 (holds) | 2864.7 / 1388.6 | 2.063 (fails) |
+| `p2000` | `graph-a10` | 2 | 0 (holds) | 0 (holds) | 0.9994 / 0.9999 | -0.0005 (holds) | 448.6 / 1567.3 | 0.286 (holds) | 2863.4 / 1379.5 | 2.076 (fails) |
+| `p2000` | `graph-a10` | 3 | 0 (holds) | 0 (holds) | 0.9997 / 1.0000 | -0.0003 (holds) | 444.8 / 1570.2 | 0.283 (holds) | 2858.8 / 1390.0 | 2.057 (fails) |
+| `p2000` | `graph-a12` | 1 | 0 (holds) | 0 (holds) | 0.9998 / 0.9999 | -0.0001 (holds) | 442.2 / 1559.1 | 0.284 (holds) | 10294.9 / 1388.6 | 7.414 (fails) |
+| `p2000` | `graph-a12` | 2 | 0 (holds) | 0 (holds) | 0.9999 / 0.9999 | +0.0000 (holds) | 444.9 / 1567.3 | 0.284 (holds) | 10340.2 / 1379.5 | 7.496 (fails) |
+| `p2000` | `graph-a12` | 3 | 0 (holds) | 0 (holds) | 0.9999 / 1.0000 | -0.0001 (holds) | 440.3 / 1570.2 | 0.280 (holds) | 10332.0 / 1390.0 | 7.433 (fails) |
+| `p2000` | `jvector` | 1 | 0 (holds) | 0 (holds) | 0.9845 / 0.9999 | -0.0154 (fails) | 409.2 / 1559.1 | 0.262 (holds) | 5747.9 / 1388.6 | 4.139 (fails) |
+| `p2000` | `jvector` | 2 | 0 (holds) | 0 (holds) | 0.9904 / 0.9999 | -0.0095 (fails) | 411.5 / 1567.3 | 0.263 (holds) | 5781.8 / 1379.5 | 4.191 (fails) |
+| `p2000` | `jvector` | 3 | 0 (holds) | 0 (holds) | 0.9842 / 1.0000 | -0.0158 (fails) | 409.6 / 1570.2 | 0.261 (holds) | 5766.3 / 1390.0 | 4.148 (fails) |
+| `p2000` | `jvector-a10` | 1 | 0 (holds) | 0 (holds) | 0.9844 / 0.9999 | -0.0155 (fails) | 409.4 / 1559.1 | 0.263 (holds) | 1423.0 / 1388.6 | 1.025 (fails) |
+| `p2000` | `jvector-a10` | 2 | 0 (holds) | 0 (holds) | 0.9896 / 0.9999 | -0.0103 (fails) | 411.0 / 1567.3 | 0.262 (holds) | 1427.2 / 1379.5 | 1.035 (fails) |
+| `p2000` | `jvector-a10` | 3 | 0 (holds) | 0 (holds) | 0.9836 / 1.0000 | -0.0164 (fails) | 408.2 / 1570.2 | 0.260 (holds) | 1425.4 / 1390.0 | 1.025 (fails) |
+| `p2000` | `lucene` | 1 | 0 (holds) | 0 (holds) | 0.9999 / 0.9999 | +0.0000 (holds) | 763.7 / 1559.1 | 0.490 (holds) | 5793.7 / 1388.6 | 4.172 (fails) |
+| `p2000` | `lucene` | 2 | 0 (holds) | 0 (holds) | 0.9999 / 0.9999 | +0.0000 (holds) | 751.9 / 1567.3 | 0.480 (holds) | 5806.2 / 1379.5 | 4.209 (fails) |
+| `p2000` | `lucene` | 3 | 0 (holds) | 0 (holds) | 0.9999 / 1.0000 | -0.0001 (holds) | 759.2 / 1570.2 | 0.484 (holds) | 5780.2 / 1390.0 | 4.158 (fails) |
+| `p2000` | `lucene-int8` | 1 | 0 (holds) | 0 (holds) | 1.0000 / 0.9999 | +0.0001 (holds) | 819.6 / 1559.1 | 0.526 (holds) | 5922.4 / 1388.6 | 4.265 (fails) |
+| `p2000` | `lucene-int8` | 2 | 0 (holds) | 0 (holds) | 0.9999 / 0.9999 | +0.0000 (holds) | 842.2 / 1567.3 | 0.537 (holds) | 5908.0 / 1379.5 | 4.283 (fails) |
+| `p2000` | `lucene-int8` | 3 | 0 (holds) | 0 (holds) | 1.0000 / 1.0000 | +0.0000 (holds) | 834.3 / 1570.2 | 0.531 (holds) | 5835.5 / 1390.0 | 4.198 (fails) |
+| `a10k` | `graph-a10` | 1 | 0 (holds) | 0 (holds) | 0.9747 / 0.9991 | -0.0244 (fails) | 1218.4 / 5326.5 | 0.229 (holds) | 5256.9 / 3131.0 | 1.679 (fails) |
+| `a10k` | `graph-a10` | 2 | 0 (holds) | 0 (holds) | 0.9741 / 0.9993 | -0.0252 (fails) | 1228.9 / 5313.4 | 0.231 (holds) | 5214.7 / 3152.5 | 1.654 (fails) |
+| `a10k` | `graph-a10` | 3 | 0 (holds) | 0 (holds) | 0.9733 / 0.9991 | -0.0258 (fails) | 1231.0 / 5472.9 | 0.225 (holds) | 5264.8 / 3153.2 | 1.670 (fails) |
+| `a10k` | `graph-a12` | 1 | 0 (holds) | 0 (holds) | 0.9743 / 0.9991 | -0.0248 (fails) | 1261.1 / 5326.5 | 0.237 (holds) | 13228.3 / 3131.0 | 4.225 (fails) |
+| `a10k` | `graph-a12` | 2 | 0 (holds) | 0 (holds) | 0.9771 / 0.9993 | -0.0222 (fails) | 1269.1 / 5313.4 | 0.239 (holds) | 13145.2 / 3152.5 | 4.170 (fails) |
+| `a10k` | `graph-a12` | 3 | 0 (holds) | 0 (holds) | 0.9741 / 0.9991 | -0.0250 (fails) | 1271.8 / 5472.9 | 0.232 (holds) | 13238.5 / 3153.2 | 4.198 (fails) |
+| `a10k` | `jvector` | 1 | 0 (holds) | 0 (holds) | 0.9748 / 0.9991 | -0.0243 (fails) | 1279.0 / 5326.5 | 0.240 (holds) | 6728.0 / 3131.0 | 2.149 (fails) |
+| `a10k` | `jvector` | 2 | 0 (holds) | 0 (holds) | 0.9806 / 0.9993 | -0.0187 (fails) | 1284.9 / 5313.4 | 0.242 (holds) | 6725.5 / 3152.5 | 2.133 (fails) |
+| `a10k` | `jvector` | 3 | 0 (holds) | 0 (holds) | 0.9725 / 0.9991 | -0.0266 (fails) | 1290.8 / 5472.9 | 0.236 (holds) | 6742.1 / 3153.2 | 2.138 (fails) |
+| `a10k` | `jvector-a10` | 1 | 0 (holds) | 0 (holds) | 0.9732 / 0.9991 | -0.0259 (fails) | 1247.9 / 5326.5 | 0.234 (holds) | 3006.1 / 3131.0 | 0.960 (holds) |
+| `a10k` | `jvector-a10` | 2 | 0 (holds) | 0 (holds) | 0.9719 / 0.9993 | -0.0274 (fails) | 1255.8 / 5313.4 | 0.236 (holds) | 2995.8 / 3152.5 | 0.950 (holds) |
+| `a10k` | `jvector-a10` | 3 | 0 (holds) | 0 (holds) | 0.9649 / 0.9991 | -0.0342 (fails) | 1255.6 / 5472.9 | 0.229 (holds) | 3018.7 / 3153.2 | 0.957 (holds) |
+| `a10k` | `lucene` | 1 | 0 (holds) | 0 (holds) | 0.9926 / 0.9991 | -0.0065 (fails) | 1952.3 / 5326.5 | 0.367 (holds) | 9314.7 / 3131.0 | 2.975 (fails) |
+| `a10k` | `lucene` | 2 | 0 (holds) | 0 (holds) | 0.9861 / 0.9993 | -0.0132 (fails) | 1922.8 / 5313.4 | 0.362 (holds) | 9264.6 / 3152.5 | 2.939 (fails) |
+| `a10k` | `lucene` | 3 | 0 (holds) | 0 (holds) | 0.9872 / 0.9991 | -0.0119 (fails) | 1885.6 / 5472.9 | 0.345 (holds) | 9266.5 / 3153.2 | 2.939 (fails) |
+| `a10k` | `lucene-int8` | 1 | 0 (holds) | 0 (holds) | 0.9933 / 0.9991 | -0.0058 (fails) | 2002.6 / 5326.5 | 0.376 (holds) | 9237.0 / 3131.0 | 2.950 (fails) |
+| `a10k` | `lucene-int8` | 2 | 0 (holds) | 0 (holds) | 0.9903 / 0.9993 | -0.0090 (fails) | 2101.3 / 5313.4 | 0.395 (holds) | 9235.1 / 3152.5 | 2.929 (fails) |
+| `a10k` | `lucene-int8` | 3 | 0 (holds) | 0 (holds) | 0.9907 / 0.9991 | -0.0084 (fails) | 2090.6 / 5472.9 | 0.382 (holds) | 9218.1 / 3153.2 | 2.923 (fails) |
+
+- On `p2000`, `graph-a10`, `graph-a12`, `lucene`, and `lucene-int8` held the recall bound with every seed and computed 0.280 to 0.537 times the distances of `tier` per search, but 2.057 to 7.496 times per written row. `jvector` and `jvector-a10` missed the recall bound, 0.0095 to 0.0164 below `tier`, and computed 1.025 to 4.191 times the distances per written row. This shape probes every write, so the write cost of the Lucene arms includes one refresh per write.
+- On `a10k`, every challenger missed the recall bound with every seed, 0.0058 to 0.0342 below `tier`, and computed 0.225 to 0.395 times the distances per search. Only `jvector-a10` computed fewer distances per written row than `tier` (0.950 to 0.960 times); the others computed 1.654 to 4.225 times as many.
+
+This does not show that segments are better. Every challenger computed fewer distances per search than `tier` on both shapes, and the rule does not rank a trade between columns. A distance computation is not a time, and the arms ran at fixed settings, not at matched recall.

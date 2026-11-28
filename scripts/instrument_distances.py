@@ -7,6 +7,9 @@ one line added at the top of each distance kernel of Kern.java and Kernels.java,
 A dot product of a vector with itself is a norm and is not counted. The script fails when a kernel is not there exactly once, and when the
 library calls a kernel method that the script does not know, so that a count cannot go wrong without notice.
 
+It also makes the neighbor selection of GraphIndex.java count what it examines and keeps, into ai.humem.tiervec.PruneCount (src/bench): one
+call before the fill of select(), and the caller named at each of its three call sites. A line that is not there exactly once fails the script.
+
 usage: instrument_distances.py SRC OUT
     SRC is src/main/java. OUT is a new directory, or one that an earlier run of this script made, which is replaced.
 """
@@ -35,6 +38,15 @@ KERNELS = {
         "static void block16(float[] q, int qo, byte[] c, int base, int n, float[] out) {": "DistanceCount.quantized(16);",
         "static int hamming(long[] a, int ao, long[] b, int bo, int words) {": "DistanceCount.quantized(1);",
     },
+}
+# The neighbor selection of GraphIndex.java, for ai.humem.tiervec.PruneCount (src/bench, issue #161): the line -> what replaces it.
+SELECTION = {
+    "int k = select(s, s.cn, s.cd, m, M, false, s.sel);": "PruneCount.site(0); int k = select(s, s.cn, s.cd, m, M, false, s.sel);",
+    "int m = select(s, s.cn, s.cd, n, maxDeg, true, s.sel);": "PruneCount.site(1); int m = select(s, s.cn, s.cd, n, maxDeg, true, s.sel);",
+    "else m = select(s, s.cn, s.cd, n, maxDeg, true, s.sel);": "else { PruneCount.site(2); m = select(s, s.cn, s.cd, n, maxDeg, true, s.sel); }",
+    "if (fill) for (int i = 0; i < n && m < maxM; i++) if (!s.taken[i]) out[m++] = cn[i];": (
+        "PruneCount.selected(s.taken, n, m, maxM, fill); if (fill) for (int i = 0; i < n && m < maxM; i++) if (!s.taken[i]) out[m++] = cn[i];"
+    ),
 }
 # methods of Kern and Kernels that the rest of the library may call and that are not distances
 NOT_DISTANCES = {"sum", "lanes", "normalized"}
@@ -71,6 +83,17 @@ def instrument(path: Path, kernels: dict[str, str]) -> None:
     path.write_text("\n".join(lines), encoding="utf-8")
 
 
+def instrument_selection(path: Path) -> None:
+    lines = path.read_text(encoding="utf-8").split("\n")
+    for line, replacement in SELECTION.items():
+        at = [i for i, text in enumerate(lines) if text.strip() == line]
+        if len(at) != 1:
+            sys.exit(f"{path.name}: expected the line {line!r} once, found it {len(at)} times")
+        indent = lines[at[0]][: len(lines[at[0]]) - len(lines[at[0]].lstrip())]
+        lines[at[0]] = indent + replacement
+    path.write_text("\n".join(lines), encoding="utf-8")
+
+
 def main(argv: list[str]) -> None:
     if len(argv) != 3:
         sys.exit(__doc__)
@@ -91,7 +114,11 @@ def main(argv: list[str]) -> None:
         if len(found) != 1:
             sys.exit(f"expected one file {name} in {source}, found {len(found)}")
         instrument(found[0], kernels)
-    print(f"instrumented {sum(len(k) for k in KERNELS.values())} kernels in {out}")
+    graph = sorted(out.rglob("GraphIndex.java"))
+    if len(graph) != 1:
+        sys.exit(f"expected one file GraphIndex.java in {source}, found {len(graph)}")
+    instrument_selection(graph[0])
+    print(f"instrumented {sum(len(k) for k in KERNELS.values())} kernels and the neighbor selection in {out}")
 
 
 if __name__ == "__main__":

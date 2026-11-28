@@ -36,6 +36,8 @@ public final class AgentMemorySelfCheck {
         violationCounters();
         replayWithFaultyArms();
         variants();
+        graphShapes();
+        selectionCounts();
         System.out.println("SELFCHECK-SUMMARY checks=" + checks + " failures=" + failures);
         System.exit(failures == 0 && checks > 0 ? 0 : 1);
     }
@@ -411,7 +413,7 @@ public final class AgentMemorySelfCheck {
         List<MemoryArm.Variant> all = MemoryArm.Variant.parseAll("a exact; b tier tailLimit=50 mergeMode=INSERT\n# c is not read; d neither\ne graph graph.alpha=1.2");
         check(all.size() == 3 && all.get(1).describe().equals("tailLimit=50,mergeMode=INSERT") && all.get(2).arm().equals("graph"), "variants are read: " + all);
         for (String bad : List.of("", "a", "a other", "a exact x=1", "a tier nothing=1", "a tier buildThreads=4", "a graph alpha=1", "a graph graph.sq8=yes",
-                "a tier tailLimit", "a exact; a exact", "a b/c exact")) {
+                "a tier tailLimit", "a exact; a exact", "a b/c exact", "a rebuild consolidateAt=1")) {
             boolean refused = false;
             try {
                 MemoryArm.Variant.parseAll(bad);
@@ -420,5 +422,36 @@ public final class AgentMemorySelfCheck {
             }
             check(refused, "the variants '" + bad + "' are refused");
         }
+    }
+
+    /** the shape of a live graph, of the segments of a tier, and of the graphs that the rebuild arm makes at the checkpoints */
+    private static void graphShapes() {
+        Runbook rb = Runbook.generate(new Runbook.Params(11, 8, 100, 2, 2.0, 4, 0.5, 3, 5, 8));
+        MemoryReplay.Answers answers = new MemoryReplay.Answers(rb);
+        for (String text : List.of("g graph consolidateAt=0.1", "r rebuild", "t tier tailLimit=50 smallLimit=20 maxSegments=2 mergeMode=INSERT")) {
+            MemoryArm.Variant v = MemoryArm.Variant.parse(text);
+            MemoryReplay.Result r = MemoryReplay.run(rb, answers, () -> v.open(8), 1);
+            GraphShape s = r.shapes[r.shapes.length - 1];
+            String what = text + ": " + s.row();
+            check(r.violations.failing(r.atomicBatches) == 0 && r.failures.isEmpty(), "no violation in " + text + " " + r.violations.examples);
+            check(r.finalRecall() > 0.9, "recall of " + text + " " + r.finalRecall());
+            check(s.graphs >= 2 && s.nodes > 0 && s.nodes <= 200 && s.edges > 0 && s.edges <= s.listed && s.unreached <= s.nodes
+                    && s.listedByNone <= s.nodes && s.crossEdges <= s.edges, "the shape of " + what);
+            check(s.degreeAt(0) <= s.degreeAt(0.5) && s.degreeAt(0.5) <= s.degreeAt(1) && s.degreeAt(1) <= 33, "the degrees of " + what);
+            if (!v.arm().equals("tier")) check(s.graphs == 2 && s.nodes == 200 && s.unreached == 0, "a graph holds and reaches every live row of " + what);
+        }
+        check(GraphShape.cluster(new float[] {0.1f, 0.9f}, new float[][] {{1, 0}, {0, 1}}) == 1, "a row is of the nearest centre");
+    }
+
+    private static void selectionCounts() {
+        PruneCount.reset();
+        PruneCount.site(1);
+        PruneCount.selected(new boolean[] {true, false, true, false, false}, 5, 2, 2, false); // full after the third candidate
+        PruneCount.selected(new boolean[] {true, false, true, false, false}, 5, 2, 4, true);  // looked at all five, filled two
+        long[] want = {2, 10, 8, 4, 2, 1};
+        for (int c = 0; c < want.length; c++) check(PruneCount.count(1, c) == want[c], PruneCount.COUNTS[c] + " " + PruneCount.count(1, c));
+        check(PruneCount.count(0, 0) == 0, "the other callers counted nothing");
+        PruneCount.reset();
+        check(PruneCount.count(1, 0) == 0, "reset");
     }
 }

@@ -38,6 +38,16 @@ on:
         required: false
         default: ""
         type: string
+      turnover:
+        description: "Retired row versions per live row, so how long the churn lasts. Empty: the default of the program, 3"
+        required: false
+        default: ""
+        type: string
+      checkpoints:
+        description: "Checkpoints after the load. Empty: the default of the program, 10"
+        required: false
+        default: ""
+        type: string
       mix:
         description: "write: 1 search per 8 written rows; read: 4 searches per written row"
         required: false
@@ -83,8 +93,12 @@ jobs:
           LATENT: ${{ inputs.latent }}
           CLUSTERS: ${{ inputs.clusters }}
           MIX: ${{ inputs.mix }}
+          TURNOVER: ${{ inputs.turnover }}
+          CHECKPOINTS: ${{ inputs.checkpoints }}
         run: |
           args=(--preset screen --seed "$SEED" --mix "$MIX" --out target/agent-memory/screen)
+          if [ -n "$TURNOVER" ]; then args+=(--turnover "$TURNOVER"); fi
+          if [ -n "$CHECKPOINTS" ]; then args+=(--checkpoints "$CHECKPOINTS"); fi
           if [ -n "$DIM" ]; then args+=(--dim "$DIM"); fi
           if [ -n "$LATENT" ]; then args+=(--latent "$LATENT"); fi
           if [ -n "$CLUSTERS" ]; then args+=(--clusters "$CLUSTERS"); fi
@@ -104,5 +118,6 @@ jobs:
             target/agent-memory/screen/result.txt
             target/agent-memory/screen/results.tsv
             target/agent-memory/screen/curve.tsv
+            target/agent-memory/screen/graph.tsv
             target/agent-memory/screen/summary.md
           if-no-files-found: ignore

@@ -216,11 +216,13 @@ jobs:
           grep -E '^RESULT shape=p200 variant=tier-small ' "$r" | grep -q -v ' rowsRebuiltPerWrite=0.000 '
           # the distances of JVector are counted in its score functions, in searches and in writes
           grep -q -E '^RESULT shape=p200 variant=jvector .* distancesPerSearch=[1-9][0-9.]* quantizedPerSearch=0\.0 distancesPerRowWritten=[1-9]' "$r"
-          # no column but the last one, the heap, depends on the run
+          # No column but the last one, the heap, depends on the run, except in the JVector arm: its removal picks neighbors at random for a node
+          # that has no candidate left, so its rows are left out of the comparison.
           for i in 1 2; do cut -f1-20 "target/agent-memory/screen$i/results.tsv" > "target/agent-memory/screen$i.rows"; done
           test "$(wc -l < target/agent-memory/screen1.rows)" -eq 11
-          diff target/agent-memory/screen1.rows target/agent-memory/screen2.rows
-          diff target/agent-memory/screen1/curve.tsv target/agent-memory/screen2/curve.tsv
+          same() { diff <(grep -v -w jvector "$1") <(grep -v -w jvector "$2"); }
+          same target/agent-memory/screen1.rows target/agent-memory/screen2.rows
+          same target/agent-memory/screen1/curve.tsv target/agent-memory/screen2/curve.tsv
           # the shape of the graphs (issue #161): rows for the arms that have graphs, the same in both runs, and the counts of the selection
           grep -q -E '^p200[[:space:]]graph-a12[[:space:]]10[[:space:]]' target/agent-memory/screen1/graph.tsv
           grep -q -E '^p200[[:space:]]rebuild[[:space:]]10[[:space:]]' target/agent-memory/screen1/graph.tsv

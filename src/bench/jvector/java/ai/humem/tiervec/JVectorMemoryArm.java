@@ -70,7 +70,10 @@ final class JVectorMemoryArm implements MemoryArm {
     private final Store store;
     private final GraphIndexBuilder builder;
     private final ImmutableGraphIndex graph;
-    /** one worker, so that a removal does its work in one order and a replay of one runbook gives the same graph */
+    /**
+     * one worker, so that a removal does its work in one order. A replay of one runbook can still give another graph, likely because
+     * {@code removeDeletedNodes} picks neighbors with {@code ThreadLocalRandom} for a node with no replacement candidate
+     */
     private final ForkJoinPool pool = new ForkJoinPool(1);
     private final ConcurrentHashMap<Long, Integer> ordinalOf = new ConcurrentHashMap<>();
     private final ConcurrentLinkedQueue<Integer> marked = new ConcurrentLinkedQueue<>();

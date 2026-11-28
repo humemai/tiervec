@@ -75,6 +75,8 @@ The tier here is the variant `tier`, its default settings. The challengers are `
 | S4 | `alpha` above 1 in two passes over the candidates, as `occlude_list` of [DiskANN's code](https://github.com/microsoft/DiskANN/blob/cpp_main/src/index.cpp) does: the first pass keeps what the rule keeps at `alpha` 1, and only the room that is left goes to candidates that pass at the configured `alpha`. At `alpha` 1.0 nothing changes. [#161](https://github.com/humemai/tiervec/issues/161) | One pass at `alpha` 1.2 fills a list with the nearest candidates before it looks at the far ones ([measured](#why-alpha-12-failed)). Two passes keep the far ones, so the layer-0 graph stays connected under churn and recall at `alpha` 1.2 is no lower than at 1.0 | On the data of the screen, with each of the seeds 1, 2, and 3: on `a10k` and on `p2000`, `recallChurnMean` of `graph-a12` with the change is at least that of `graph-a10` minus 0.002, with at most 1.25 times its `distancesPerSearch`; and on `a10k`, `unreached` of `graph-a12` in `graph.tsv` is at most 10 at every checkpoint | passed: with every seed, `recallChurnMean` of `graph-a12` was within the bar of `graph-a10` on both shapes, and no checkpoint of `a10k` had more than 1 unreached row ([results](#s4-results)); the change is in the library |
 | S5 | Repair of low-degree nodes in `consolidate()`, after Lucene's [GITHUB#16552](https://github.com/apache/lucene/pull/16559): there, a node that lost a neighbor and fell below half of its limit searches from its neighbors, adds the candidates that the rule keeps beside them, and gets their reverse links. Here the loss is not asked for, because `consolidate()` already refills a list that lost a neighbor, and the low degrees measured here come from insertion: every live node with fewer than `M` layer-0 entries searches (beam `efConstruction`) and is repaired the same way | 21.6% of the rows of `graph-a10` have fewer than `M` live neighbors after the load. More ways in and out of them keep recall closer to a rebuild's over a long churn | The [long churn](#the-long-churn) with each of the seeds 1, 2, and 3: `recallChurnMean` of `graph-a10` with the repair is at least 0.005 above that of `graph-a10` without it, with at most 1.25 times its `distancesPerRowWritten` | not run: not built yet |
 | S6 | The [long churn](#the-long-churn) of the live graph and of the insert merge against a rebuild of the same live rows, the test that [#161](https://github.com/humemai/tiervec/issues/161) asks for. [FreshDiskANN](https://arxiv.org/abs/2105.09613) reports falling recall and degree over cycles at `alpha` 1; Lucene measured its decay over [100 generations](https://github.com/apache/lucene/issues/16552) | A graph that lives through 15 turnovers keeps the recall of a rebuild | On `a10k` with `--turnover 15 --checkpoints 15`, with each of the seeds 1, 2, and 3: for `graph-a10` against `rebuild`, and for `tier-m1-insert` against `tier-m1`, `recallChurnMean` is at least the control's minus 0.005 and `recallFinal` at least the control's minus 0.01; and `unreached` in `graph.tsv` is at most 10, 0.1% of the live rows, at every checkpoint | failed: `graph-a10` and `tier-m1-insert` missed the bound on unreached rows with every seed (up to 8,523 rows), and `graph-a10` also missed the mean-recall bound with seed 3; the final-recall bounds held ([results](#s6-results)) |
+| S7 | A filter-aware walk after Lucene's ACORN-1 based search: only rows that pass are scored, and neighbors that fail are expanded to their own neighbors. [ACORN](https://arxiv.org/abs/2403.04871) (section 5.3), Lucene's [`FilteredHnswGraphSearcher`](https://github.com/apache/lucene/blob/main/lucene/core/src/java/org/apache/lucene/util/hnsw/FilteredHnswGraphSearcher.java) ([apache/lucene#14160](https://github.com/apache/lucene/pull/14160)), arm `acorn`; [#162](https://github.com/humemai/tiervec/issues/162) | On the existing graph, where the shipped walk spends distances on rows that fail, this walk keeps its recall with fewer distance computations than both the walk and a scan | The three bars of the [filter screen](#the-filter-screen), with each of the seeds 1, 2, and 3 | failed: missed bar 1 at random 0.01 with every seed; missed bar 3 at positive 0.1 and negative 0.1 with every seed; bar 2 held ([results](#s7-and-s8-results)) |
+| S8 | The adaptive-local walk of [NaviX](https://arxiv.org/abs/2506.23397) (section 3): at each node, the share of its neighbors that pass picks one of three rules, arm `navix`; [#162](https://github.com/humemai/tiervec/issues/162) | As S7, and because the rule follows the share near each node, it holds when the filter is correlated with the query | The three bars of the [filter screen](#the-filter-screen), with each of the seeds 1, 2, and 3 | failed: missed bar 1 at random 0.01, positive 0.1, and negative 0.5 with every seed; missed bar 3 at negative 0.1 with every seed and at positive 0.1 with seed 3; bar 2 held ([results](#s7-and-s8-results)) |
 | S9 | The [long churn](#the-long-churn) of the live graph at `alpha` 1.2 in two passes ([S4](#s4-results)), [proposed on #161](https://github.com/humemai/tiervec/issues/161#issuecomment-7237301893) | A graph at `alpha` 1.2 in two passes lives through 15 turnovers with the recall of a rebuild. It is not expected to: at checkpoint 10 of S4 on `a10k` its share of edges between clusters was 0.0001 to 0.0003, below the 0.0004 to 0.0006 of `alpha` 1.0, which came apart in the long churn | The bar of S6 for the live graph, at `alpha` 1.2. On `a10k` with `--turnover 15 --checkpoints 15`, with each of the seeds 1, 2, and 3: for `graph-a12` against `rebuild`, `recallChurnMean` is at least the control's minus 0.005 and `recallFinal` at least the control's minus 0.01; and `unreached` of `graph-a12` in `graph.tsv` is at most 10 at every checkpoint. The insert merge is not judged, because the long churn runs it at the default `alpha` only | not run |
 
 ### The long churn
@@ -82,6 +84,59 @@ The tier here is the variant `tier`, its default settings. The challengers are `
 `--turnover 15 --checkpoints 15` on `a10k`: 150 rounds, each retiring a tenth of the rows, with a checkpoint every 10 rounds, on the data and the write mix of the screen. The rows that arrive come from one cluster after another, so the distribution goes around the 8 clusters many times. The control of the live graph is the arm `rebuild`, a new graph from the live rows at every checkpoint; the control of the insert merge is `tier-m1`, whose every merge rebuilds the same layout. The variants are `graph-a10`, `graph-a12`, `rebuild`, `tier-m1`, and `tier-m1-insert`. The bars of S4, S5, and S6 were written on 2026-11-28, before any run of them. The bar of S9 was written on 2026-11-28, after the runs of S4 and S6 and before any long churn with two passes.
 
 The bars of S1 and S2 were changed on 2026-11-28, before their first run on `a10k`. They named `recallLowest` (see [above](#the-data-of-the-screen)), one seed, and for S2 the default tier. At the default `maxSegments` of 8 the count rule merges the smallest segments, so by the code the largest one, which `MergeMode.INSERT` needs, is not among them under churn. S2 is so judged with `maxSegments` 1, where every merge takes the largest segment; `tier` and `tier-insert` still run, to show what the default layout does.
+
+### The filter screen
+
+The screen of S7 and S8. It replays no runbook: the program `FilterScreen` (in `src/bench/java`) builds one graph and searches it with filters. `gh workflow run screen.yml --ref <branch> -f program=filtered-walk` runs it once for each of the seeds 1, 2, and 3. The cells, the arms, and the bars were written on 2026-11-28, before the program or any run of it existed.
+
+**Data and graph.** 100,000 rows of 768 dimensions, cosine, drawn as the screen draws them (8 clusters, noise of length 0.8 in every dimension), except that each row takes one of all 8 clusters at random (the load of a runbook fills half of them). A query is a new row of a random cluster. No row is deleted. One `GraphIndex` with the default parameters (`M` 16, `efConstruction` 200, `alpha` 1.0, fp32) is built on one thread and sealed, so it is a `SealedGraph`, what a tier searches as a segment. All arms search that one graph with `k` 10 and `ef` 100, and the same 500 queries are used in every cell.
+
+**Cells.** The allowed shares 0.5, 0.1, 0.01, and 0.001 (50,000, 10,000, 1,000, and 100 rows), each with three filters:
+
+- `random`: a new uniform choice of rows for each query.
+- `positive`: the clusters in the order of the similarity of their centre to the query, the most similar first. Whole clusters are allowed in this order until the next one does not fit, and from that one a uniform choice fills the share.
+- `negative`: the same with the least similar cluster first.
+
+Each cell reports its correlation as [NaviX](https://arxiv.org/abs/2506.23397) measures it, here with 100 neighbors: the share of the 100 nearest of all rows that are allowed, divided by the allowed share. 1 means no correlation.
+
+**Arms.**
+
+- `walk`: the shipped filtered search with `filterScanBelow` 0. The walk traverses every neighbor and collects those that pass. When it has computed more than `max(50 * ef, rows / 20)` distances, 5,000 here, and has collected fewer than `ef`, an exact scan follows.
+- `scanfirst`: the shipped filtered search with `filterScanBelow` 1: the upper layers, the 256-row sample of the share, then the exact scan.
+- `acorn` (S7) and `navix` (S8): benchmark code only. The upper layers are searched as shipped, without the filter. On layer 0 the node reached there is a candidate whether it passes or not, and apart from it only rows that pass become candidates. A walk stops when its nearest candidate is farther than the worst of `ef` collected rows, or when it has computed more than 5,000 distances on layer 0. A walk that ends with fewer than `ef` rows collected, for either reason or because no candidate is left, is followed by the exact scan. The predicate is asked at most once per row in a walk; a scan asks it again.
+
+`acorn`, from the Lucene source above, with `r` the share of the rows of the 256-row sample that pass (Lucene knows the count of its filter) and `M` 16:
+
+- At `r` of 0.6 or more (Lucene's default threshold) the shipped walk is used.
+- The expansion multiplier is `round(min(1 / r, M / 2))`, and the minimum to find is `round(min(max(0, 1 / r - 2 * M), M))`.
+- At each candidate, the neighbors not seen before are split into passing and failing ones. The target is the degree of the candidate times `min(multiplier, 1 / (1 - f))`, rounded down, where `f` is the number of failing ones over the degree. If `f` is above 0.10 and fewer passing rows than the target were found, the neighbors of the failing ones are read in list order, until the target is reached or the rows looked at reach `2 * M * multiplier - 1`. A failing row of this second step is expanded as well while fewer passing rows than the minimum were found.
+- The passing rows found this way are then scored.
+
+`navix`, from section 3 of the paper, with `D` 32, the degree limit of layer 0 (the paper writes `M` for the limit that its rule counts to):
+
+- At each candidate, `s` is the share of all its layer-0 neighbors that pass.
+- `s` of 0.5 or more (`onehop-s`): score the passing neighbors.
+- Otherwise, if `s * (D + 1) * D` is below `3 * D` (`blind`): score the passing neighbors, then read the neighbor lists of all neighbors in list order and score passing rows from them, until `D` rows were scored at this candidate.
+- Otherwise (`directed`): compute the distance of every neighbor, passing or not, score the passing ones, then read the neighbor lists in the order of increasing distance of the neighbor and score passing rows from them, until `D` rows were scored at this candidate.
+- "Scored at this candidate" counts passing rows that were not scored before in this walk.
+
+**Figures.** Per seed, cell, and arm, in `filter.tsv`:
+
+- `recall`: recall@10 against a brute force scan of the allowed rows, made by the benchmark's own loop.
+- `distancesPerQuery`: distance computations of a query on all layers, a scan included, counted by the instrumented kernels. The brute force of the benchmark is not counted.
+- `filterCallsPerQuery`: calls of the predicate, with those of the share sample and of a scan.
+- `scanRate`: the share of the queries answered by an exact scan (1 for `scanfirst`).
+- `shortAnswers`: queries with fewer than 10 hits.
+
+A hit that the filter does not allow fails the run.
+
+**Pass bars**, judged for S7 and for S8 separately. Each holds with each of the seeds 1, 2, and 3, with the arm and `walk` from the same run:
+
+1. Recall: in each of the 12 cells, `recall` of the arm is at least that of `walk` minus 0.01.
+2. Cost: in each of the 12 cells, `distancesPerQuery` of the arm is at most 1.1 times that of `walk`.
+3. Gain: in each of the three cells with share 0.1, `distancesPerQuery` of the arm is at most 0.7 times the smaller of those of `walk` and `scanfirst`.
+
+An idea passes when all three hold. `filterCallsPerQuery` and `scanRate` have no bar: what a call costs depends on the predicate of the host, so the timed comparison has to weigh them. A screen times nothing. A pass only sends an arm to the timed comparison of [#162](https://github.com/humemai/tiervec/issues/162), under the adoption rule that is to be written there before it, and no default or threshold changes.
 
 ## Results
 
@@ -211,3 +266,108 @@ The [long churn](#the-long-churn) ran on commit `7ab31fd`, once per seed, with s
 | 3 | `tier-m1-insert` | 5 | 11 of 16 | 0.0002 | 0.0118 |
 
 S6 failed, also at the default `alpha` 1.0. The live graph and the insert merge both came apart on layer 0 with every seed, while no control had more than 2 unreached rows at any checkpoint, and they ended with far fewer edges between clusters than their controls. Recall stayed within its bounds in all comparisons but one while this happened. A probable reason, read from the code and not measured, is that a search starts layer 0 at the node that the upper layers lead to. `graph-a12`, which the bar does not judge and which here still selected in one pass, had a `recallChurnMean` 0.0448 to 0.0751 below that of `rebuild`, and up to 9,223 unreached rows. `INSERT` so stays off by default.
+
+### S7 and S8 results
+
+Both failed. Each held bar 2 in every cell and missed bars 1 and 3. The bars are those of commit `3dfa6b6`, written before the code and before the run, and are unchanged.
+
+The run is on commit `fb2fd59` ([#189](https://github.com/humemai/tiervec/pull/189)), [46135128948](https://github.com/humemai/tiervec/actions/runs/46135128948), one job per seed. The vector lanes of the runners were 16 with seed 1, 16 with seed 2, and 8 with seed 3. No job has a failure, and no query of any arm had fewer than 10 hits. Without a filter, the graph at `ef` 100 has a recall of 0.7128 to 0.7238 with 2,244 to 2,249 distances per query, so this data is hard for the graph before any filter. The recall of the exact scan is 0.9998 or more and not always 1; a probable reason, not checked, is that the brute force of the benchmark and the kernels of the library round differently where two rows are about equally near.
+
+| Idea | Bar | Cells that hold, seed 1 | seed 2 | seed 3 | Holds |
+|---|---|---|---|---|---|
+| S7 `acorn` | 1, recall | 11 of 12 | 11 of 12 | 11 of 12 | no |
+| S7 `acorn` | 2, cost | 12 of 12 | 12 of 12 | 12 of 12 | yes |
+| S7 `acorn` | 3, gain at share 0.1 | 1 of 3 | 1 of 3 | 1 of 3 | no |
+| S8 `navix` | 1, recall | 9 of 12 | 9 of 12 | 9 of 12 | no |
+| S8 `navix` | 2, cost | 12 of 12 | 12 of 12 | 12 of 12 | yes |
+| S8 `navix` | 3, gain at share 0.1 | 2 of 3 | 2 of 3 | 1 of 3 | no |
+
+Every miss:
+
+| Idea | Bar | Filter | Share | Seeds that miss it | Measured with those seeds |
+|---|---|---|---|---|---|
+| S7 `acorn` | 1 | random | 0.01 | 1, 2, 3 | recall below that of `walk` by 0.0432 to 0.0510 |
+| S7 `acorn` | 3 | positive | 0.1 | 1, 2, 3 | 1.029 to 1.041 times the distances of the cheaper plan |
+| S7 `acorn` | 3 | negative | 0.1 | 1, 2, 3 | 1.000 times the distances of the cheaper plan |
+| S8 `navix` | 1 | random | 0.01 | 1, 2, 3 | recall below that of `walk` by 0.0246 to 0.0262 |
+| S8 `navix` | 1 | positive | 0.1 | 1, 2, 3 | recall below that of `walk` by 0.0544 to 0.0580 |
+| S8 `navix` | 1 | negative | 0.5 | 1, 2, 3 | recall below that of `walk` by 0.0300 to 0.0442 |
+| S8 `navix` | 3 | positive | 0.1 | 3 | 0.702 times the distances of the cheaper plan |
+| S8 `navix` | 3 | negative | 0.1 | 1, 2, 3 | 0.989 to 0.997 times the distances of the cheaper plan |
+
+Recall@10, the lowest to the highest of the three seeds:
+
+| Filter | Share | Correlation | `walk` | `scanfirst` | `acorn` | `navix` |
+|---|---|---|---|---|---|---|
+| random | 0.5 | 1.00 | 0.8314 to 0.8366 | 1.0000 | 0.8774 to 0.8828 | 0.8396 to 0.8488 |
+| random | 0.1 | 0.99 to 1.00 | 0.8602 to 0.8660 | 1.0000 | 0.9044 to 0.9120 | 0.9854 to 0.9884 |
+| random | 0.01 | 0.96 to 1.04 | 0.9998 to 1.0000 | 0.9998 to 1.0000 | 0.9490 to 0.9566 | 0.9738 to 0.9754 |
+| random | 0.001 | 0.94 to 1.04 | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
+| positive | 0.5 | 2.00 | 0.7150 to 0.7238 | 0.9998 to 1.0000 | 0.7168 to 0.7238 | 0.7168 to 0.7238 |
+| positive | 0.1 | 7.99 to 8.00 | 0.7606 to 0.7670 | 1.0000 | 0.7930 to 0.8020 | 0.7032 to 0.7096 |
+| positive | 0.01 | 7.85 to 8.12 | 0.8596 to 0.8662 | 0.9998 to 1.0000 | 0.9666 to 0.9736 | 0.9880 to 0.9906 |
+| positive | 0.001 | 7.12 to 8.00 | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
+| negative | 0.5 | 0.00 | 0.9968 to 1.0000 | 1.0000 | 0.9950 to 1.0000 | 0.9526 to 0.9700 |
+| negative | 0.1 | 0.00 | 1.0000 | 1.0000 | 1.0000 | 0.9904 to 0.9968 |
+| negative | 0.01 | 0.00 | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
+| negative | 0.001 | 0.00 | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
+
+Distance computations per query:
+
+| Filter | Share | `walk` | `scanfirst` | `acorn` | `navix` |
+|---|---|---|---|---|---|
+| random | 0.5 | 3,611 to 3,623 | 50,081 to 50,082 | 2,881 to 2,884 | 2,614 to 2,628 |
+| random | 0.1 | 5,086 to 5,088 | 10,081 to 10,082 | 866 to 868 | 2,349 to 2,368 |
+| random | 0.01 | 6,086 to 6,088 | 1,081 to 1,082 | 272 to 301 | 322 to 348 |
+| random | 0.001 | 5,186 to 5,188 | 181 to 182 | 181 to 182 | 182 to 183 |
+| positive | 0.5 | 2,245 to 2,255 | 50,081 to 50,082 | 2,245 to 2,435 | 2,245 to 2,435 |
+| positive | 0.1 | 2,634 to 2,636 | 10,081 to 10,082 | 2,710 to 2,743 | 1,822 to 1,850 |
+| positive | 0.01 | 5,086 to 5,089 | 1,081 to 1,082 | 929 to 934 | 1,871 to 1,877 |
+| positive | 0.001 | 5,186 to 5,188 | 181 to 182 | 252 to 255 | 275 to 276 |
+| negative | 0.5 | 54,875 to 55,088 | 50,081 to 50,082 | 49,794 to 50,082 | 47,591 to 48,458 |
+| negative | 0.1 | 15,086 to 15,088 | 10,081 to 10,082 | 10,081 to 10,082 | 9,965 to 10,049 |
+| negative | 0.01 | 6,086 to 6,088 | 1,081 to 1,082 | 1,081 to 1,082 | 1,081 to 1,082 |
+| negative | 0.001 | 5,186 to 5,188 | 181 to 182 | 181 to 182 | 181 to 182 |
+
+Filter calls per query:
+
+| Filter | Share | `walk` | `scanfirst` | `acorn` | `navix` |
+|---|---|---|---|---|---|
+| random | 0.5 | 673 to 675 | 100,256 | 5,841 to 5,867 | 3,816 to 3,841 |
+| random | 0.1 | 2,288 to 2,295 | 100,256 | 8,100 to 8,108 | 10,613 to 10,631 |
+| random | 0.01 | 105,007 | 100,256 | 19,402 to 22,212 | 21,756 to 24,599 |
+| random | 0.001 | 105,007 | 100,256 | 100,619 to 100,630 | 101,382 to 101,408 |
+| positive | 0.5 | 369 to 384 | 100,256 | 2,420 to 2,812 | 2,164 to 2,558 |
+| positive | 0.1 | 450 to 463 | 100,256 | 3,540 to 3,936 | 2,174 to 2,564 |
+| positive | 0.01 | 2,654 to 2,867 | 100,256 | 11,498 to 11,833 | 10,677 to 11,034 |
+| positive | 0.001 | 105,007 | 100,256 | 109,737 to 110,074 | 110,335 to 110,370 |
+| negative | 0.5 | 104,588 to 105,007 | 100,256 | 99,741 to 100,330 | 95,633 to 97,399 |
+| negative | 0.1 | 105,007 | 100,256 | 100,524 | 99,361 to 100,332 |
+| negative | 0.01 | 105,007 | 100,256 | 100,524 to 100,525 | 100,723 to 100,731 |
+| negative | 0.001 | 105,007 | 100,256 | 100,524 to 100,525 | 100,723 to 100,766 |
+
+Scan rate (`scanfirst` is 1 in every cell):
+
+| Filter | Share | `walk` | `acorn` | `navix` |
+|---|---|---|---|---|
+| random | 0.5 | 0.000 | 0.000 | 0.000 |
+| random | 0.1 | 0.000 | 0.000 | 0.000 |
+| random | 0.01 | 1.000 | 0.080 to 0.112 | 0.106 to 0.134 |
+| random | 0.001 | 1.000 | 1.000 | 1.000 |
+| positive | 0.5 | 0.000 | 0.000 to 0.004 | 0.000 to 0.004 |
+| positive | 0.1 | 0.000 | 0.000 to 0.004 | 0.000 to 0.004 |
+| positive | 0.01 | 0.000 to 0.002 | 0.000 to 0.004 | 0.000 to 0.004 |
+| positive | 0.001 | 1.000 | 1.000 | 1.000 |
+| negative | 0.5 | 0.996 to 1.000 | 0.994 to 1.000 | 0.948 to 0.966 |
+| negative | 0.1 | 1.000 | 1.000 | 0.986 to 0.996 |
+| negative | 0.01 | 1.000 | 1.000 | 1.000 |
+| negative | 0.001 | 1.000 | 1.000 | 1.000 |
+
+What the cells show:
+
+- Random filters, share 0.1: `acorn` computed 0.17 times the distances of `walk` with a recall of 0.9044 to 0.9120 against 0.8602 to 0.8660, and `navix` 0.46 to 0.47 times with 0.9854 to 0.9884.
+- Random filters, share 0.01: `walk` scans every query. The new walks computed 272 to 301 (`acorn`) and 322 to 348 (`navix`) distances against 1,081 to 1,082 of `scanfirst`, at a recall of 0.9490 to 0.9566 and 0.9738 to 0.9754, which misses bar 1.
+- Negatively correlated filters: the new walks ended in a scan in a share of 0.948 to 1.000 of the queries of a cell, with 0.95 to 1.00 times the distances of `scanfirst`, so they gained little or nothing over a scan. A probable reason, read from the code and not measured, is that only passing rows become candidates and few or none is within two hops of the node where layer 0 starts.
+- Filter calls are the price where no scan runs. With random filters at share 0.1, `walk` asked 2,288 to 2,295 times per query, `acorn` 8,100 to 8,108, and `navix` 10,613 to 10,631.
+
+Neither arm goes to a timed comparison as registered. A rule that uses a walk only where it gained here would be a new idea, with bars written before its run. The timed comparison and the adoption rule stay open on [#162](https://github.com/humemai/tiervec/issues/162), and the library is unchanged.
